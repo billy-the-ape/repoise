@@ -9,7 +9,8 @@ migrated from commit `d235d9da50087217d94a2fe8188195e8a87e1779`.
 Pilot baseline inspected: ai-gateway main `4be9f83dba57f79f6c0f6086cefef90c5eca71e1`.
 The separate [documentation PR #220](https://github.com/billy-the-ape/ai-gateway/pull/220)
 is pilot context, not a dependency of Repoise. The repository currently contains documentation
-and a Rust .gitignore; no CLI, Cargo workspace, indexes, package releases or benchmarks exist.
+and a Rust .gitignore at intake. It now has the native CLI and packaging scaffolds;
+indexes and benchmarks do not exist, and registry setup/publication are tracked separately.
 Read [AGENTS.md](../../AGENTS.md) for repository working rules.
 
 ## 1. Outcome and boundaries
@@ -32,7 +33,8 @@ overlay contains config, agent wiring examples, and concise documentation hooks;
 the installed package rather than copying implementation into consuming repositories.
 Product, CLI and repository name: Repoise (`repoise`); owner: `billy-the-ape`.
 Use `repoise.config.json` and a `repoise` cache namespace in proposed contracts.
-Registry package/crate names or scopes, license, and public release timing remain to be finalized.
+MIT is selected. npm package name repoise and owner billytheape are selected; ownership
+is pending registry staging. Cargo registry names and stable public release timing remain open.
 The naming check found no exact package listings, but reserves nothing. Repowise is a similarly
 named existing developer tool; retain clear product descriptions and perform release naming checks.
 This document is the canonical master plan; ai-gateway retains a migration pointer.
@@ -779,8 +781,12 @@ greeting/help/version behavior, local check/build/install scripts and three-OS C
 Manual native artifact builds are engineering artifacts, not a release pipeline.
 See [architecture](../architecture.md) and [development](../development.md) for actual structure
 and commands. These choices establish part of K1 only; discovery/config/init/doctor,
-adapter contracts, npm scaffolding and all index functionality remain pending.
-Both crates are non-publishable until license, registry names and release policy are decided.
+adapter contracts and all index functionality remain pending. The thin npm launcher and
+three target binary packages are now scaffolded, with packed-consumer smoke and manual
+OIDC staging/native draft workflows. First distribution is 0.1.0-alpha.0 (CLI scaffold only),
+with no install-time downloads, models or indexing. Checksums accompany native archives.
+Both Cargo crates remain non-publishable; MIT is selected. npm packaging/release controls
+are documented in [release guide](../releases.md); registry ownership is a separate operation.
 Future subsystems gain crates only when real boundaries justify them.
 
 
@@ -846,7 +852,10 @@ devices later, include a final homelab-documentation PR to record those changes.
 
 The design defaults above let implementation start without choosing everything now.
 Settled: Repoise name, billy-the-ape/repoise repository, Rust core and npm-first native distribution.
-Remaining owner decisions: registry package/crate names or scopes, license, public release timing,
+Settled distribution choices: MIT license; intended npm repoise under billytheape;
+initial npm/native prerelease 0.1.0-alpha.0; staged npm approval and native draft release.
+See release guide for the initial OS/architecture/libc matrix and bootstrap procedure.
+Remaining owner decisions: Cargo registry package/crate names, stable public release timing,
 approved pilot corpus, actual embedding artifact,
 target client versions, maximum local cache/storage cost, and optional remote history scope.
 Initial scaffold selects Rust toolchain 1.99.0, MSRV 1.99 and Edition 2024.

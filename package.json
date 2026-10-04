@@ -1,0 +1,15 @@
+{
+  "name": "repoise-development",
+  "private": true,
+  "version": "0.1.0-alpha.0",
+  "type": "module",
+  "scripts": {
+    "format": "prettier --write \"scripts/release/*.mjs\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
+    "format:check": "prettier --check \"scripts/release/*.mjs\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
+    "test": "node --test scripts/release/*.test.mjs",
+    "release:claim": "node scripts/release/claim.mjs"
+  },
+  "devDependencies": {
+    "prettier": "3.9.9"
+  }
+}
