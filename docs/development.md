@@ -46,6 +46,7 @@ with npm and a pinned Prettier dev dependency; install using npm ci --ignore-scr
 Run npm run format before committing release JS/JSON/workflow changes, then
 npm run format:check and npm test. These development dependencies are not installed by
 consumers of the published launcher.
+Git attributes keep text checkouts at LF on every platform, including Windows.
 
 CI checks/tests/builds/smokes Linux, macOS and Windows. The manually dispatched
 **Build native artifacts** workflow produces binaries for Linux x86_64 GNU, macOS ARM64 and
