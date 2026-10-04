@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/repoise-core", "crates/repoise-cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+repository = "https://github.com/billy-the-ape/repoise"
+publish = false
+
+[workspace.dependencies]
+repoise-core = { path = "crates/repoise-core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

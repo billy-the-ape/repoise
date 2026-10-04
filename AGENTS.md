@@ -5,7 +5,8 @@
 Repoise is an offline-first repository knowledge indexer for coding agents.
 The planned engine is Rust, with a native CLI and stdio MCP; npm is the first distribution channel.
 Target repositories may use any language, framework, host or source-control system.
-This repository currently has planning documentation only: no Cargo workspace or working CLI.
+This repository has a Rust workspace and native CLI scaffold (greeting/help/version only).
+Indexing, MCP, npm packaging and persistence are not implemented yet.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
 ## Read only the context relevant to the task
@@ -14,7 +15,8 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | --- | --- |
 | Project overview and current readiness | [README.md](README.md) |
 | v1 scope, contracts, cards and acceptance criteria | [Master plan](docs/plans/v1_master_plan.md) |
-| Architecture and portability boundaries | Master plan section 3 |
+| Current code structure and portability boundaries | [Architecture](docs/architecture.md); master plan section 3 |
+| Toolchain, checks, build and local installation | [Development](docs/development.md) |
 | Intake, parsing, storage and freshness | Master plan sections 4–7 |
 | Agent interfaces and installation | Master plan sections 8–10 |
 | Benchmarks, resource budgets and adoption gates | Master plan section 11 |
@@ -41,25 +43,24 @@ Follow applicable scoped AGENTS.md files when they are added; keep subtree-speci
 
 ## Rust implementation and validation
 
-Once Cargo.toml exists, follow the pinned toolchain/MSRV and repository configurations.
-Do not add a toolchain pin or scaffold as part of an unrelated documentation change.
+Follow rust-toolchain.toml, the workspace MSRV and inherited repository lints.
 Use ordinary cargo commands unless project scripts or CI specify a more targeted equivalent:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 Apply cargo fmt --all before committing Rust changes; honor rustfmt/clippy and wrapper configs.
-These commands are not runnable in the current documentation-only repository.
+scripts/check.sh and scripts/check.ps1 also check rustdoc; see the development guide.
 Run affected tests and required CI checks; report unavailable checks and reasons accurately.
 Optional inference/platform features need their own relevant tests, not blind --all-features runs.
 Pin and justify dependencies; review licenses, native assets and supported targets.
 Use explicit error handling and contextual errors; avoid panics for normal input/I/O failures.
 Minimize unsafe code; document safety invariants and isolate unavoidable FFI boundaries.
 Do not block async executors with CPU-heavy parsing/inference; use bounded worker scheduling.
-Commit the application workspace Cargo.lock when the CLI is scaffolded.
+Keep the application workspace Cargo.lock committed and use locked builds.
 Test behavioral risks such as stale reads, containment, partial publication and cache compatibility.
 For documentation-only changes, validate links, consistency and whitespace; do not invent test passes.
 

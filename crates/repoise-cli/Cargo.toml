@@ -1,0 +1,18 @@
+[package]
+name = "repoise-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Native Repoise command-line adapter"
+
+[[bin]]
+name = "repoise"
+path = "src/main.rs"
+
+[dependencies]
+repoise-core.workspace = true
+
+[lints]
+workspace = true

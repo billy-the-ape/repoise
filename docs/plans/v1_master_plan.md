@@ -1,6 +1,6 @@
 # Repoise v1 — master implementation plan
 
-Status: proposed; planning only, no runtime implementation.
+Status: v1 design proposed; native CLI scaffold implemented, indexing not yet implemented.
 Project: [billy-the-ape/repoise](https://github.com/billy-the-ape/repoise).
 Target: a standalone Rust engine/native CLI, initially distributed through npm.
 Canonical planning location: `docs/plans/v1_master_plan.md` in this repository.
@@ -771,6 +771,19 @@ Include at least one comparable tool in later benchmark runs where setup/contrac
 
 ## 12. Implementation cards / reviewable PRs
 
+### Initial scaffold progress
+
+The first implementation slice establishes a Rust 2024/resolver 3 workspace with
+`repoise-core` and `repoise-cli`, toolchain/MSRV 1.99.0/1.99, a committed lockfile,
+greeting/help/version behavior, local check/build/install scripts and three-OS CI.
+Manual native artifact builds are engineering artifacts, not a release pipeline.
+See [architecture](../architecture.md) and [development](../development.md) for actual structure
+and commands. These choices establish part of K1 only; discovery/config/init/doctor,
+adapter contracts, npm scaffolding and all index functionality remain pending.
+Both crates are non-publishable until license, registry names and release policy are decided.
+Future subsystems gain crates only when real boundaries justify them.
+
+
 Each card points here plus only its relevant sections and fixture contracts. Target 6 core PRs
 in this repository, plus a separate ai-gateway consumer integration PR;
 split a card only if implementation/test scope exceeds the local agent's practical context.
@@ -836,7 +849,8 @@ Settled: Repoise name, billy-the-ape/repoise repository, Rust core and npm-first
 Remaining owner decisions: registry package/crate names or scopes, license, public release timing,
 approved pilot corpus, actual embedding artifact,
 target client versions, maximum local cache/storage cost, and optional remote history scope.
-Implementation decisions: Rust MSRV/toolchain and crate versions, native target/libc matrix,
+Initial scaffold selects Rust toolchain 1.99.0, MSRV 1.99 and Edition 2024.
+Remaining implementation decisions: future dependency versions, native target/libc matrix,
 SQLite binding/build options, parser/grammar distribution and local inference runtime/assets,
 validated tokenizer per provider, dependency licenses, and platform support matrix.
 Record chosen versions and benchmark evidence before distributing the overlay.

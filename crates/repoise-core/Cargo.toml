@@ -1,0 +1,11 @@
+[package]
+name = "repoise-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Shared offline-first Repoise engine (initial scaffold)"
+
+[lints]
+workspace = true
