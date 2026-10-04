@@ -41,13 +41,21 @@ when Cargo permits it; explicitly pass `--force` when replacement is intended.
 Uninstall with `cargo uninstall repoise-cli`, using the same `--root` if customized.
 This is local development installation, not a registry release.
 
+Rust-native checks/builds need no Node. Release tooling additionally uses Node 24 in CI,
+with npm and a pinned Prettier dev dependency; install using npm ci --ignore-scripts.
+Run npm run format before committing release JS/JSON/workflow changes, then
+npm run format:check and npm test. These development dependencies are not installed by
+consumers of the published launcher.
+Git attributes keep text checkouts at LF on every platform, including Windows.
+
 CI checks/tests/builds/smokes Linux, macOS and Windows. The manually dispatched
 **Build native artifacts** workflow produces binaries for Linux x86_64 GNU, macOS ARM64 and
 Windows x86_64 MSVC, retained for seven days. These are engineering artifacts: no installer,
 checksums/signing, compatibility guarantee, npm publication or GitHub release yet.
 Artifact targets are an initial test matrix, not the final distribution support policy.
 No server deployment or secrets are required. Both Cargo packages have `publish = false`;
-license, registry naming, release authorization and packaging must be settled before publication.
+MIT licensing is selected. Registry ownership and release activation remain separate steps.
+See [release guide](releases.md) for staged npm publishing and native archive workflows.
 
 ## Current references
 

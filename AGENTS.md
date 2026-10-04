@@ -6,7 +6,8 @@ Repoise is an offline-first repository knowledge indexer for coding agents.
 The planned engine is Rust, with a native CLI and stdio MCP; npm is the first distribution channel.
 Target repositories may use any language, framework, host or source-control system.
 This repository has a Rust workspace and native CLI scaffold (greeting/help/version only).
-Indexing, MCP, npm packaging and persistence are not implemented yet.
+Thin npm packaging and manual release preparation/staging are scaffolded.
+Indexing, MCP and persistence are not implemented yet; publication requires registry setup.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
 ## Read only the context relevant to the task
@@ -17,6 +18,7 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | v1 scope, contracts, cards and acceptance criteria | [Master plan](docs/plans/v1_master_plan.md) |
 | Current code structure and portability boundaries | [Architecture](docs/architecture.md); master plan section 3 |
 | Toolchain, checks, build and local installation | [Development](docs/development.md) |
+| npm ownership, release controls and distribution | [Release guide](docs/releases.md); [Changelog](CHANGELOG.md) |
 | Intake, parsing, storage and freshness | Master plan sections 4–7 |
 | Agent interfaces and installation | Master plan sections 8–10 |
 | Benchmarks, resource budgets and adoption gates | Master plan section 11 |
@@ -56,6 +58,7 @@ Apply cargo fmt --all before committing Rust changes; honor rustfmt/clippy and w
 scripts/check.sh and scripts/check.ps1 also check rustdoc; see the development guide.
 Run affected tests and required CI checks; report unavailable checks and reasons accurately.
 Optional inference/platform features need their own relevant tests, not blind --all-features runs.
+Release tooling: npm ci --ignore-scripts, npm run format:check and npm test.
 Pin and justify dependencies; review licenses, native assets and supported targets.
 Use explicit error handling and contextual errors; avoid panics for normal input/I/O failures.
 Minimize unsafe code; document safety invariants and isolate unavoidable FFI boundaries.

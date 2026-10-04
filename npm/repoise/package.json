@@ -1,0 +1,33 @@
+{
+  "name": "repoise",
+  "version": "0.1.0-alpha.0",
+  "description": "Offline-first repository knowledge for coding agents (early native CLI scaffold)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/billy-the-ape/repoise.git",
+    "directory": "npm/repoise"
+  },
+  "homepage": "https://github.com/billy-the-ape/repoise#readme",
+  "bugs": "https://github.com/billy-the-ape/repoise/issues",
+  "bin": {
+    "repoise": "bin/repoise.cjs"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "optionalDependencies": {
+    "repoise-linux-x64-gnu": "0.1.0-alpha.0",
+    "repoise-darwin-arm64": "0.1.0-alpha.0",
+    "repoise-win32-x64": "0.1.0-alpha.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
