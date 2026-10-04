@@ -1,0 +1,46 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: rustup show
+      - name: Check (Unix)
+        if: runner.os != 'Windows'
+        run: bash scripts/check.sh
+      - name: Check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check.ps1
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: bash scripts/build.sh
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - name: Smoke native executable (Unix)
+        if: runner.os != 'Windows'
+        run: ./target/release/repoise --version
+      - name: Smoke native executable (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./target/release/repoise.exe --version
