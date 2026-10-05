@@ -1,6 +1,7 @@
 # Repoise v1 — master implementation plan
 
-Status: v1 design proposed; native CLI scaffold implemented, indexing not yet implemented.
+Status: v1 design proposed; native CLI scaffold released as 0.1.0-alpha.0; npm rollout partial.
+Progress snapshot: October 4, 2026 (America/Denver); indexing not yet implemented.
 Project: [billy-the-ape/repoise](https://github.com/billy-the-ape/repoise).
 Target: a standalone Rust engine/native CLI, initially distributed through npm.
 Canonical planning location: `docs/plans/v1_master_plan.md` in this repository.
@@ -8,9 +9,11 @@ Origin: [ai-gateway planning PR #221](https://github.com/billy-the-ape/ai-gatewa
 migrated from commit `d235d9da50087217d94a2fe8188195e8a87e1779`.
 Pilot baseline inspected: ai-gateway main `4be9f83dba57f79f6c0f6086cefef90c5eca71e1`.
 The separate [documentation PR #220](https://github.com/billy-the-ape/ai-gateway/pull/220)
-is pilot context, not a dependency of Repoise. The repository currently contains documentation
-and a Rust .gitignore at intake. It now has the native CLI and packaging scaffolds;
-indexes and benchmarks do not exist, and registry setup/publication are tracked separately.
+is pilot context, not a dependency of Repoise. At intake the repository contained documentation
+and a Rust .gitignore. It now has the native CLI, tested packaging and a public
+native prerelease. Linux/macOS npm binaries are published; Windows npm name review and
+main wrapper publication remain pending. Indexes and benchmarks do not exist.
+See the [publishing guides](../publish/README.md) and [alpha execution record](../publish/alpha-0-status.md).
 Read [AGENTS.md](../../AGENTS.md) for repository working rules.
 
 ## 1. Outcome and boundaries
@@ -33,8 +36,9 @@ overlay contains config, agent wiring examples, and concise documentation hooks;
 the installed package rather than copying implementation into consuming repositories.
 Product, CLI and repository name: Repoise (`repoise`); owner: `billy-the-ape`.
 Use `repoise.config.json` and a `repoise` cache namespace in proposed contracts.
-MIT is selected. npm package name repoise and owner billytheape are selected; ownership
-is pending registry staging. Cargo registry names and stable public release timing remain open.
+MIT is selected. npm repoise is claimed under billytheape via an unapproved bootstrap;
+Linux/macOS native npm names are owned and published, while Windows name review is pending.
+Cargo registry names and stable public release timing remain open.
 The naming check found no exact package listings, but reserves nothing. Repowise is a similarly
 named existing developer tool; retain clear product descriptions and perform release naming checks.
 This document is the canonical master plan; ai-gateway retains a migration pointer.
@@ -65,16 +69,16 @@ No background daemon or scheduled job installed without an explicit operator act
 
 ## 2. Existing ai-gateway context and reuse assessment
 
-| Existing module | What exists | Decision |
-| --- | --- | --- |
-| [knowledgeFiles.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/knowledgeFiles.ts) | Recursive regular .md discovery | Do not reuse as generic Git-aware intake/security policy |
-| [chunk.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/chunk.ts) | Heading/character splits | Useful fixture baseline; use structural parsers for new tool |
-| [indexStore.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/indexStore.ts) | Version-1 JSON, full rebuild, partial embeddings | Preserve; new index has separate storage/schema/lifecycle |
-| [retrieval.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/retrieval.ts) | Cosine search | Mathematical baseline, not the full retrieval architecture |
-| [embeddingInput.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/embeddingInput.ts) | Model input profiles | Adapt the pattern; fingerprint model/profile/tokenizer separately |
-| [rag-index.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/scripts/rag-index.ts) | Home Lab CLI/config wiring | Keep pnpm rag:index unchanged |
-| [profiles.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/workflows/profiles.ts) | Route-attached context/tool grants | Future integration point, not part of standalone core |
-| [capabilities.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/orchestrator/capabilities.ts) | Validated capability operations | Optional gateway adapter only after core contracts settle |
+| Existing module                                                                                                                               | What exists                                      | Decision                                                          |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------- |
+| [knowledgeFiles.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/knowledgeFiles.ts)      | Recursive regular .md discovery                  | Do not reuse as generic Git-aware intake/security policy          |
+| [chunk.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/chunk.ts)                        | Heading/character splits                         | Useful fixture baseline; use structural parsers for new tool      |
+| [indexStore.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/indexStore.ts)              | Version-1 JSON, full rebuild, partial embeddings | Preserve; new index has separate storage/schema/lifecycle         |
+| [retrieval.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/retrieval.ts)                | Cosine search                                    | Mathematical baseline, not the full retrieval architecture        |
+| [embeddingInput.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/rag/embeddingInput.ts)      | Model input profiles                             | Adapt the pattern; fingerprint model/profile/tokenizer separately |
+| [rag-index.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/scripts/rag-index.ts)            | Home Lab CLI/config wiring                       | Keep pnpm rag:index unchanged                                     |
+| [profiles.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/workflows/profiles.ts)            | Route-attached context/tool grants               | Future integration point, not part of standalone core             |
+| [capabilities.ts](https://github.com/billy-the-ape/ai-gateway/blob/4be9f83dba57f79f6c0f6086cefef90c5eca71e1/src/orchestrator/capabilities.ts) | Validated capability operations                  | Optional gateway adapter only after core contracts settle         |
 
 Do not import gateway configuration, database stores, chat orchestration, or Home Lab paths
 into the standalone core. A pilot may use the same OpenAI-compatible embedding endpoint via
@@ -84,20 +88,20 @@ an independent provider adapter and separate configuration.
 
 Suggested standalone layout (names are proposed contracts):
 
-| Component | Responsibility |
-| --- | --- |
-| core/discovery | Git/non-Git inventory, include/exclude policy, scope checks |
-| core/documents | Text decoding, metadata, Markdown/text/config parsing |
-| core/code | Optional grammar registry, symbols, structural code chunks |
-| core/history | Optional bounded local commit and remote PR enrichment |
-| core/index | Schema, generations, manifest, incremental publication |
-| core/search | Exact/lexical/vector fusion, filtering, deduplication, budgets |
-| core/read | Revision-pinned reads and explicit working-tree reads |
-| adapters/embeddings | Optional local/OpenAI-compatible embedding transport |
-| cli | init, doctor, index, watch, check, search, read, status, purge |
-| mcp | Read-only search/read/status/related over stdio |
-| templates | Overlay manifest, sample config, agent integration snippets |
-| eval | Labeled queries, ablations, task replay and token/cost reports |
+| Component           | Responsibility                                                 |
+| ------------------- | -------------------------------------------------------------- |
+| core/discovery      | Git/non-Git inventory, include/exclude policy, scope checks    |
+| core/documents      | Text decoding, metadata, Markdown/text/config parsing          |
+| core/code           | Optional grammar registry, symbols, structural code chunks     |
+| core/history        | Optional bounded local commit and remote PR enrichment         |
+| core/index          | Schema, generations, manifest, incremental publication         |
+| core/search         | Exact/lexical/vector fusion, filtering, deduplication, budgets |
+| core/read           | Revision-pinned reads and explicit working-tree reads          |
+| adapters/embeddings | Optional local/OpenAI-compatible embedding transport           |
+| cli                 | init, doctor, index, watch, check, search, read, status, purge |
+| mcp                 | Read-only search/read/status/related over stdio                |
+| templates           | Overlay manifest, sample config, agent integration snippets    |
+| eval                | Labeled queries, ablations, task replay and token/cost reports |
 
 Choose Rust for the engine, CLI, and stdio MCP. Organize a Cargo workspace with core, adapter,
 CLI/MCP and evaluation crates; wrappers contain packaging/client glue only. Pin an MSRV/toolchain,
@@ -115,16 +119,16 @@ Separate source-control systems (Git, Mercurial, SVN, etc.) from hosts (GitHub, 
 Bitbucket, Azure DevOps, self-hosted services). A Git repository on another host needs no
 GitHub adapter to index locally. An ordinary directory requires neither VCS nor remote host.
 
-| Boundary | Contract | Initial support |
-| --- | --- | --- |
-| Source inventory/snapshots | Enumerate/read exact source, snapshot identity, containment | Filesystem + Git |
-| Source control | Opaque revisions, optional history/change detection/workspaces | Git; other VCS deferred |
-| Ignore policy | Explainable rule sources and adapter-owned native rules | Package globs + .gitignore/Git excludes |
-| Language/parser | Grammar, symbols, chunks, versions, explicit fallback coverage | TS/JS first; Rust self-hosting fixtures; generic text fallback |
-| Hosting/breadcrumbs | Validated source URLs and optional change-request associations | GitHub optional; other hosts deferred |
-| Embeddings | Fingerprinted local/runtime or endpoint provider | Offline lexical baseline; optional adapters |
-| Distribution | Install a versioned native executable and required assets | npm wrapper first; independent native build/run |
-| Agent/CI integration | Versioned CLI JSON and stdio MCP | Generic contracts; client/platform examples optional |
+| Boundary                   | Contract                                                       | Initial support                                                |
+| -------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
+| Source inventory/snapshots | Enumerate/read exact source, snapshot identity, containment    | Filesystem + Git                                               |
+| Source control             | Opaque revisions, optional history/change detection/workspaces | Git; other VCS deferred                                        |
+| Ignore policy              | Explainable rule sources and adapter-owned native rules        | Package globs + .gitignore/Git excludes                        |
+| Language/parser            | Grammar, symbols, chunks, versions, explicit fallback coverage | TS/JS first; Rust self-hosting fixtures; generic text fallback |
+| Hosting/breadcrumbs        | Validated source URLs and optional change-request associations | GitHub optional; other hosts deferred                          |
+| Embeddings                 | Fingerprinted local/runtime or endpoint provider               | Offline lexical baseline; optional adapters                    |
+| Distribution               | Install a versioned native executable and required assets      | npm wrapper first; independent native build/run                |
+| Agent/CI integration       | Versioned CLI JSON and stdio MCP                               | Generic contracts; client/platform examples optional           |
 
 Define capability flags rather than require every adapter to provide Git-like branches, atomic
 snapshots, history, diffs or immutable reads. Unsupported operations return explicit status.
@@ -262,15 +266,15 @@ Do not require two models or vectors for the offline baseline.
 
 Every result must trace to exact source, not just an embedding score.
 
-| Record | Required fields |
-| --- | --- |
-| Repository | repoId, root binding, sanitized remote identity (optional), visibility/scope |
-| Snapshot | snapshotId, sourceKind, opaque revisionId when available, content manifest hash, mode, optional branch/workspace hint, dirty overlay digest |
-| File | path, blob/content hash, role/lifecycle and classification source, language, parser version |
-| Chunk | opaque chunkId, parentId, exact line/byte ranges, heading/symbol ancestry, text hash |
-| Embedding | input hash, provider/model revision or operator artifact ID, dimension, profile/tokenizer version |
-| Generation | schema/parser/config fingerprints, inventory coverage, build timestamps, publication state |
-| History item | adapter-qualified revisionId, optional parents, affected paths, bounded summary; optional verified host/change-request association |
+| Record       | Required fields                                                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository   | repoId, root binding, sanitized remote identity (optional), visibility/scope                                                                |
+| Snapshot     | snapshotId, sourceKind, opaque revisionId when available, content manifest hash, mode, optional branch/workspace hint, dirty overlay digest |
+| File         | path, blob/content hash, role/lifecycle and classification source, language, parser version                                                 |
+| Chunk        | opaque chunkId, parentId, exact line/byte ranges, heading/symbol ancestry, text hash                                                        |
+| Embedding    | input hash, provider/model revision or operator artifact ID, dimension, profile/tokenizer version                                           |
+| Generation   | schema/parser/config fingerprints, inventory coverage, build timestamps, publication state                                                  |
+| History item | adapter-qualified revisionId, optional parents, affected paths, bounded summary; optional verified host/change-request association          |
 
 Chunk identity incorporates repo scope, file content and structural location; content-addressed
 embedding cache identity uses normalized embedding input plus the full embedding fingerprint.
@@ -289,12 +293,12 @@ Default cache root uses the platform user cache convention (XDG cache on Linux, 
 on macOS, LocalAppData on Windows), resolved through a tested platform adapter.
 Illustrative layout under that root:
 
-| Path | Contents |
-| --- | --- |
+| Path                                                       | Contents                                                                                     |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | repoise/repos/<repoId>/worktrees/<worktreeId>/index.sqlite | Source manifests, snapshot/generation metadata, chunks, symbols/edges, FTS, optional vectors |
-| repoise/repos/<repoId>/embedding-cache/ | Optional shared content-addressed vectors, isolated within the repository/access scope |
-| repoise/repos/<repoId>/worktrees/<worktreeId>/state.json | Versioned integration manifest and refresh diagnostics; database remains canonical |
-| repoise/repos/<repoId>/worktrees/<worktreeId>/tmp/ | Disposable build/import/export staging |
+| repoise/repos/<repoId>/embedding-cache/                    | Optional shared content-addressed vectors, isolated within the repository/access scope       |
+| repoise/repos/<repoId>/worktrees/<worktreeId>/state.json   | Versioned integration manifest and refresh diagnostics; database remains canonical           |
+| repoise/repos/<repoId>/worktrees/<worktreeId>/tmp/         | Disposable build/import/export staging                                                       |
 
 Database table boundaries distinguish docs/config/code/history; separate physical databases are
 not required. Embedding profiles/collections remain separate when their spaces differ.
@@ -356,6 +360,7 @@ other processes, or ignore/config changes. File watching accelerates detection b
 correctness proof. Watches observe saved filesystem contents, not unsaved editor buffers.
 
 Distinguish reading/parsing a file from updating index records and computing embeddings:
+
 - First implementation reads/hashes and structurally reparses only changed eligible files.
   Reconcile chunks against their previous embedding inputs; update only changed lexical records,
   removed chunks, affected relationships, and necessary location/provenance metadata.
@@ -510,6 +515,7 @@ Update is a three-way template migration with dry-run diff and rollback backup.
 Pin tool version and template version separately in the manifest.
 
 The optional owner-installed AGENTS snippet covers:
+
 - Read relevant current docs and scoped agent instructions before changes; distinguish proposals.
 - Use exact/lexical lookup for known identifiers, optional semantic search for unknown concepts,
   and bounded exact reads with scope/hash validation.
@@ -562,7 +568,7 @@ Build native release artifacts from the same Rust engine, with architecture/plat
 checksums and pinned versions. First npm release is a thin launcher with platform-specific
 binary packages/assets; prefer registry-delivered artifacts rather than unverified install-time
 downloads. No model downloads or indexing during installation. Direct native users can build
-with Cargo from day one; reviewed executable archives are the next distribution path.
+with Cargo from day one; reviewed 0.1.0-alpha.0 executable archives are now public.
 Homebrew, OS packages, containers and other ecosystem wrappers are future distribution choices,
 not separate implementations or current release promises. No silent source compilation fallback
 for unsupported npm targets: fail with a clear supported-target/native-build alternative.
@@ -574,6 +580,7 @@ shared libraries/model assets may be separate: do not promise a single fully sta
 without validating dependencies on each target. Installation UX must explain those requirements.
 
 Package release acceptance includes:
+
 - An explicit native target matrix (OS/architecture/libc), MSRV/toolchain, tests on Linux,
   macOS and Windows; separately document the npm wrapper's supported Node versions.
 - A packed-tarball smoke test in a clean consumer: init, lexical index/search/read, and stdio MCP.
@@ -606,6 +613,7 @@ artifact. A separately maintained thin Action wrapper is optional after the CLI 
 call the same APIs and add no parallel index implementation. Local use does not require GitHub.
 
 CI policy:
+
 - Explicit trigger/ref selection for pushes, pull requests, or scheduled refresh; retain the exact
   checked-out SHA and report shallow-history coverage.
 - A clean checkout can rebuild from scratch. Cache is optional acceleration, keyed by scope,
@@ -649,6 +657,7 @@ criteria fixed. Record output tokens from search/read, model input/output, tool 
 time, and task correctness. No claim of efficiency merely because search results are small.
 
 Initial acceptance targets (proposed gates, to be reviewed before implementation):
+
 - 100% exact path/symbol fixture lookup and valid source/range provenance.
 - Zero cross-scope/stale-text/secret-policy fixture leaks.
 - At least 85% evidence recall@5 on held-out eligible conceptual queries.
@@ -674,6 +683,7 @@ hardware/OS/runtime, versions and effective settings. Total checkout size is not
 Supplement with synthetic saves/bursts/large files/branch changes and immutable reference outputs.
 
 Report:
+
 - Cold/full runs: discovery, parse, lexical publication, model acquisition/loading, inference,
   vector publication, total wall time, peak RAM/CPU and temporary peak disk use.
 - Steady storage: source/chunk text, metadata/edges, FTS, vectors, model artifacts, retained
@@ -752,6 +762,7 @@ time in benchmarks. A built-in model removes provider setup, not inference/stora
 
 This is an established problem, not a novel category. Compare maintained versions of adjacent
 tools before committing to a new core:
+
 - [crumbs-cli](https://pypi.org/project/crumbs-cli/): compact local file/symbol maps, term-ranked
   search and CLI/MCP; Python AST and regex extraction for other languages. Compare this lightweight
   baseline before assuming body embeddings or a larger index improve task outcomes.
@@ -786,22 +797,39 @@ three target binary packages are now scaffolded, with packed-consumer smoke and 
 OIDC staging/native draft workflows. First distribution is 0.1.0-alpha.0 (CLI scaffold only),
 with no install-time downloads, models or indexing. Checksums accompany native archives.
 Both Cargo crates remain non-publishable; MIT is selected. npm packaging/release controls
-are documented in [release guide](../releases.md); registry ownership is a separate operation.
+are documented in [publishing guides](../publish/README.md). Native 0.1.0-alpha.0 and
+Linux/macOS npm binaries are published; Windows npm name review and wrapper publication
+remain pending. OIDC trust is configured for three packages but has not been exercised.
 Future subsystems gain crates only when real boundaries justify them.
 
+### Implementation status by card
+
+| Card / workstream               | Status                       | Completed evidence / remaining scope                                                                                                                                                                                                                                                     |
+| ------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| K1                              | Partial                      | Architecture/AGENTS map, Rust workspace/core/CLI, pinned toolchain/lockfile, checks/build/install scripts, three-OS CI and thin npm scaffold complete. Neutral adapters/provenance fixtures, config/init/discovery/doctor and their acceptance tests remain pending.                     |
+| K2                              | Not started                  | SQLite/FTS, indexing/search/exact reads, incremental generations and freshness remain pending.                                                                                                                                                                                           |
+| K3                              | Not started                  | Embedding adapters/cache/profiles, hybrid search and measured budgets remain pending.                                                                                                                                                                                                    |
+| K4                              | Not started                  | Language grammars, code symbols/chunks/references remain pending.                                                                                                                                                                                                                        |
+| K5                              | Not started                  | Local history and optional verified hosting enrichment remain pending.                                                                                                                                                                                                                   |
+| K6                              | Distribution groundwork only | Three-target offline packed-consumer smoke, checksums, release runbooks and public native alpha complete. Linux/macOS npm alphas public; Windows/main wrapper and OIDC validation pending. MCP/watch/overlay/build integration, feature acceptance, benchmarks and pilot remain pending. |
+| ai-gateway consumer integration | Not started                  | Separate pinned consumer PR follows functional offline indexing acceptance.                                                                                                                                                                                                              |
+
+No full implementation card is complete. Packaging a greeting CLI does not satisfy init,
+lexical index/search/read or MCP release acceptance. Initial build evidence is linked in the
+[alpha execution record](../publish/alpha-0-status.md); no agent task/token gains are measured.
 
 Each card points here plus only its relevant sections and fixture contracts. Target 6 core PRs
 in this repository, plus a separate ai-gateway consumer integration PR;
 split a card only if implementation/test scope exceeds the local agent's practical context.
 
-| Card | Scope | Depends on | Acceptance |
-| --- | --- | --- | --- |
-| K1 | Rust workspace/core/native CLI, thin npm scaffold, neutral adapter/provenance contracts, config/init/discovery/doctor | None | Native run without Node, Git/filesystem/fake-revision contracts, nested ignores, non-GitHub remotes, deterministic manifests, init idempotence |
-| K2 | Offline prose index/search/exact read, persistent SQLite/FTS generations, incremental chunk reconciliation, freshness checks | K1 | First offline install/init/index/search/read milestone, structural Markdown, line-shift reuse, restart persistence, atomic rebuild equivalence |
-| K3 | Embedding adapters/cache, compatible profiles, incremental hybrid search and budgets | K2 | No re-embed unchanged input, dimensions validated, lexical degradation, token caps |
-| K4 | Optional code grammars, symbols, structural chunks and related references | K2; K3 for vectors | TS/JS + fallback fixtures, parser errors, scope parents, code ablation |
-| K5 | Bounded local history and optional verified GitHub PR enrichment | K2 | Shallow/horizon reporting, PR verification, pagination/rate-limit/permission tests |
-| K6 | MCP/read and opt-in refresh, watch, overlay lifecycle, build/Actions examples, package release validation, evaluation/runbooks; separate ai-gateway consumer PR | K2; K3/K4/K5 for respective optional coverage | Shared APIs, refresh/branch-switch fixtures, safe CI/cache examples, packed install/platform smoke tests, non-destructive lifecycle, measured gates |
+| Card | Scope                                                                                                                                                           | Depends on                                    | Acceptance                                                                                                                                          |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| K1   | Rust workspace/core/native CLI, thin npm scaffold, neutral adapter/provenance contracts, config/init/discovery/doctor                                           | None                                          | Native run without Node, Git/filesystem/fake-revision contracts, nested ignores, non-GitHub remotes, deterministic manifests, init idempotence      |
+| K2   | Offline prose index/search/exact read, persistent SQLite/FTS generations, incremental chunk reconciliation, freshness checks                                    | K1                                            | First offline install/init/index/search/read milestone, structural Markdown, line-shift reuse, restart persistence, atomic rebuild equivalence      |
+| K3   | Embedding adapters/cache, compatible profiles, incremental hybrid search and budgets                                                                            | K2                                            | No re-embed unchanged input, dimensions validated, lexical degradation, token caps                                                                  |
+| K4   | Optional code grammars, symbols, structural chunks and related references                                                                                       | K2; K3 for vectors                            | TS/JS + fallback fixtures, parser errors, scope parents, code ablation                                                                              |
+| K5   | Bounded local history and optional verified GitHub PR enrichment                                                                                                | K2                                            | Shallow/horizon reporting, PR verification, pagination/rate-limit/permission tests                                                                  |
+| K6   | MCP/read and opt-in refresh, watch, overlay lifecycle, build/Actions examples, package release validation, evaluation/runbooks; separate ai-gateway consumer PR | K2; K3/K4/K5 for respective optional coverage | Shared APIs, refresh/branch-switch fixtures, safe CI/cache examples, packed install/platform smoke tests, non-destructive lifecycle, measured gates |
 
 K1 must establish interface fixtures so K4/K5 can be implemented without rewriting K2.
 K1/K2 deliver the first offline docs milestone without vectors/history/MCP/watch. K4 adds code
@@ -854,7 +882,8 @@ The design defaults above let implementation start without choosing everything n
 Settled: Repoise name, billy-the-ape/repoise repository, Rust core and npm-first native distribution.
 Settled distribution choices: MIT license; intended npm repoise under billytheape;
 initial npm/native prerelease 0.1.0-alpha.0; staged npm approval and native draft release.
-See release guide for the initial OS/architecture/libc matrix and bootstrap procedure.
+See [publishing guides](../publish/README.md) for targets/procedures and
+[alpha status](../publish/alpha-0-status.md) for completed and blocked operations.
 Remaining owner decisions: Cargo registry package/crate names, stable public release timing,
 approved pilot corpus, actual embedding artifact,
 target client versions, maximum local cache/storage cost, and optional remote history scope.

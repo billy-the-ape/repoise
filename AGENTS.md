@@ -6,23 +6,24 @@ Repoise is an offline-first repository knowledge indexer for coding agents.
 The planned engine is Rust, with a native CLI and stdio MCP; npm is the first distribution channel.
 Target repositories may use any language, framework, host or source-control system.
 This repository has a Rust workspace and native CLI scaffold (greeting/help/version only).
-Thin npm packaging and manual release preparation/staging are scaffolded.
-Indexing, MCP and persistence are not implemented yet; publication requires registry setup.
+Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
+The npm wrapper and Windows npm package remain pending a registry name review.
+Indexing, MCP and persistence are not implemented yet; OIDC staging is configured but unverified.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
 ## Read only the context relevant to the task
 
-| Need | Authoritative starting point |
-| --- | --- |
-| Project overview and current readiness | [README.md](README.md) |
-| v1 scope, contracts, cards and acceptance criteria | [Master plan](docs/plans/v1_master_plan.md) |
-| Current code structure and portability boundaries | [Architecture](docs/architecture.md); master plan section 3 |
-| Toolchain, checks, build and local installation | [Development](docs/development.md) |
-| npm ownership, release controls and distribution | [Release guide](docs/releases.md); [Changelog](CHANGELOG.md) |
-| Intake, parsing, storage and freshness | Master plan sections 4–7 |
-| Agent interfaces and installation | Master plan sections 8–10 |
-| Benchmarks, resource budgets and adoption gates | Master plan section 11 |
-| Implementation sequence and rollout | Master plan sections 12–14 |
+| Need                                               | Authoritative starting point                                                                                           |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Project overview and current readiness             | [README.md](README.md)                                                                                                 |
+| v1 scope, contracts, cards and acceptance criteria | [Master plan](docs/plans/v1_master_plan.md)                                                                            |
+| Current code structure and portability boundaries  | [Architecture](docs/architecture.md); master plan section 3                                                            |
+| Toolchain, checks, build and local installation    | [Development](docs/development.md)                                                                                     |
+| npm ownership, release controls and distribution   | [Publishing guides](docs/publish/README.md); [alpha status](docs/publish/alpha-0-status.md); [Changelog](CHANGELOG.md) |
+| Intake, parsing, storage and freshness             | Master plan sections 4–7                                                                                               |
+| Agent interfaces and installation                  | Master plan sections 8–10                                                                                              |
+| Benchmarks, resource budgets and adoption gates    | Master plan section 11                                                                                                 |
+| Implementation sequence and rollout                | Master plan sections 12–14                                                                                             |
 
 Read the assigned card and relevant plan sections, then inspect exact source and callers.
 Use rg/file discovery to navigate; avoid loading the whole plan or repository for every task.
