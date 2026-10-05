@@ -17,6 +17,7 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Project overview and current readiness             | [README.md](README.md)                                                                                                 |
 | v1 scope, contracts, cards and acceptance criteria | [Master plan](docs/plans/v1_master_plan.md)                                                                            |
+| Per-PR implementation specs (cards K1–K6 + consumer) | [PR documents](docs/plans/v1-0.md) (`v1-0.md` through `v1-6.md`)                                                     |
 | Current code structure and portability boundaries  | [Architecture](docs/architecture.md); master plan section 3                                                            |
 | Toolchain, checks, build and local installation    | [Development](docs/development.md)                                                                                     |
 | npm ownership, release controls and distribution   | [Publishing guides](docs/publish/README.md); [alpha status](docs/publish/alpha-0-status.md); [Changelog](CHANGELOG.md) |
