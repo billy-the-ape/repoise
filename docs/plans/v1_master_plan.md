@@ -1,7 +1,7 @@
 # Repoise v1 — master implementation plan
 
 Status: v1 design proposed; native CLI scaffold released as 0.1.0-alpha.0; npm rollout partial.
-Progress snapshot: October 4, 2026 (America/Denver); indexing not yet implemented.
+Progress snapshot: October 5, 2026 (America/Denver); indexing not yet implemented.
 Project: [billy-the-ape/repoise](https://github.com/billy-the-ape/repoise).
 Target: a standalone Rust engine/native CLI, initially distributed through npm.
 Canonical planning location: `docs/plans/v1_master_plan.md` in this repository.
@@ -98,7 +98,7 @@ Suggested standalone layout (names are proposed contracts):
 | core/search         | Exact/lexical/vector fusion, filtering, deduplication, budgets |
 | core/read           | Revision-pinned reads and explicit working-tree reads          |
 | adapters/embeddings | Optional local/OpenAI-compatible embedding transport           |
-| cli                 | init, doctor, index, watch, check, search, read, status, purge |
+| cli                 | init, doctor, explain, index, watch, check, search, read, status, purge, serve |
 | mcp                 | Read-only search/read/status/related over stdio                |
 | templates           | Overlay manifest, sample config, agent integration snippets    |
 | eval                | Labeled queries, ablations, task replay and token/cost reports |
@@ -818,9 +818,20 @@ No full implementation card is complete. Packaging a greeting CLI does not satis
 lexical index/search/read or MCP release acceptance. Initial build evidence is linked in the
 [alpha execution record](../publish/alpha-0-status.md); no agent task/token gains are measured.
 
-Each card points here plus only its relevant sections and fixture contracts. Target 6 core PRs
-in this repository, plus a separate ai-gateway consumer integration PR;
+Target 6 core PRs in this repository, plus a separate ai-gateway consumer integration PR;
 split a card only if implementation/test scope exceeds the local agent's practical context.
+Each card's actionable specification lives in its own PR document, which retains the
+relevant plan sections, acceptance criteria, fixture contracts and verification steps:
+
+| PR document            | Card / scope                                                                                                                    | Repository               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
+| [v1-0.md](v1-0.md)     | K1: adapter/provenance contracts, config/init/discovery/doctor                                                                 | billy-the-ape/repoise    |
+| [v1-1.md](v1-1.md)     | K2: offline prose index/search/exact read, SQLite/FTS generations, incremental reconciliation, freshness                        | billy-the-ape/repoise    |
+| [v1-2.md](v1-2.md)     | K3: embedding adapters/cache, compatible profiles, incremental hybrid search and budgets                                        | billy-the-ape/repoise    |
+| [v1-3.md](v1-3.md)     | K4: optional code grammars, symbols, structural chunks and related references                                                   | billy-the-ape/repoise    |
+| [v1-4.md](v1-4.md)     | K5: bounded local history and optional verified GitHub PR enrichment                                                            | billy-the-ape/repoise    |
+| [v1-5.md](v1-5.md)     | K6: MCP/read and opt-in refresh, watch, overlay lifecycle, build/Actions examples, package release validation, evaluation/runbooks | billy-the-ape/repoise |
+| [v1-6.md](v1-6.md)     | ai-gateway consumer integration (pinned release, pilot)                                                                          | billy-the-ape/ai-gateway |
 
 | Card | Scope                                                                                                                                                           | Depends on                                    | Acceptance                                                                                                                                          |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
