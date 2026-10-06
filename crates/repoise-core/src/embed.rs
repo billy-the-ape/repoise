@@ -452,16 +452,19 @@ impl EmbeddingCache {
         hash::sha256_hex(format!("{input_hash}\n{fingerprint}"))
     }
 
-    /// Reads many cached vectors in one connection (one query).
+    /// Reads many cached vectors in one connection.
     ///
     /// Returns `input_hash -> vector` for hits; corrupt or dimension-mismatched
-    /// entries are dropped (and deleted) and read as misses.
+    /// entries are dropped (and deleted) and read as misses. Keys are queried in
+    /// bounded chunks (500 per statement) so a single query never exceeds
+    /// SQLite's bound-variable limit on large indexes.
     pub fn get_many(
         &self,
         input_hashes: &[String],
         fingerprint: &str,
         dimension: u32,
     ) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+        const KEYS_PER_QUERY: usize = 500;
         let mut hits: std::collections::HashMap<String, Vec<f32>> =
             std::collections::HashMap::new();
         let mut keys: Vec<(String, String)> = input_hashes
@@ -474,32 +477,34 @@ impl EmbeddingCache {
             return Ok(hits);
         }
         let conn = self.conn()?;
-        let placeholders: Vec<String> = (1..=keys.len()).map(|i| format!("?{i}")).collect();
-        let sql = format!(
-            "SELECT input_hash, vector, dimension FROM embedding \
-             WHERE cache_key IN ({})",
-            placeholders.join(", ")
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let params = rusqlite::params_from_iter(keys.iter().map(|(_, key)| key.as_str()));
-        let rows = stmt
-            .query_map(params, |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?;
-        for (input_hash, bytes, stored_dim) in rows {
-            match decode_vector(&bytes, dimension) {
-                Some(vector) if stored_dim == dimension as i64 => {
-                    hits.insert(input_hash, vector);
-                }
-                _ => {
-                    let key = Self::cache_key(&input_hash, fingerprint);
-                    let _ =
-                        conn.execute("DELETE FROM embedding WHERE cache_key = ?1", params![key]);
+        for chunk in keys.chunks(KEYS_PER_QUERY) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT input_hash, vector, dimension FROM embedding \
+                 WHERE cache_key IN ({})",
+                placeholders.join(", ")
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params = rusqlite::params_from_iter(chunk.iter().map(|(_, key)| key.as_str()));
+            let rows = stmt
+                .query_map(params, |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?;
+            for (input_hash, bytes, stored_dim) in rows {
+                match decode_vector(&bytes, dimension) {
+                    Some(vector) if stored_dim == dimension as i64 => {
+                        hits.insert(input_hash, vector);
+                    }
+                    _ => {
+                        let key = Self::cache_key(&input_hash, fingerprint);
+                        let _ = conn
+                            .execute("DELETE FROM embedding WHERE cache_key = ?1", params![key]);
+                    }
                 }
             }
         }

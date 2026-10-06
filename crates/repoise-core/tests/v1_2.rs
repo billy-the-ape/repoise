@@ -642,3 +642,26 @@ fn v1_database_migrates_and_reopens() {
     let version = store::meta_value(&conn, "schema_version").unwrap().unwrap();
     assert_eq!(version, repoise_core::INDEX_SCHEMA_VERSION.to_string());
 }
+
+#[test]
+fn cache_get_many_handles_more_keys_than_the_sqlite_variable_limit() {
+    let dir = temp_dir("cache-many");
+    let cache = EmbeddingCache::open(dir.join("embeddings.sqlite")).unwrap();
+    let fp = fingerprint_for("v1");
+    // Seed one entry so a hit is found among the misses.
+    let known = hash::sha256_hex("known");
+    cache
+        .put(&known, &fp, 8, "test-hash:v1", &vector_for("known", 8), 1)
+        .unwrap();
+    // 40,000 unique hashes exceed SQLite's bound-variable limit per statement,
+    // so the lookup must be split across statements without failing.
+    let hashes: Vec<String> = (0..40_000u32)
+        .map(|i| hash::sha256_hex(format!("chunk-{i}")))
+        .collect();
+    assert!(hashes.iter().all(|h| *h != known));
+    let mut hashes = hashes;
+    hashes.push(known.clone());
+    let hits = cache.get_many(&hashes, &fp, 8).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits.get(&known), Some(&vector_for("known", 8)));
+}
