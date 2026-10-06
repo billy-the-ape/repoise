@@ -376,6 +376,9 @@ fn run_doctor(opts: &CliOptions) -> Result<ExitCode, String> {
     } else {
         print_doctor(&report);
     }
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
     if !report.diagnostics.is_empty() {
         for diagnostic in &report.diagnostics {
             eprintln!("diagnostic: {diagnostic}");
@@ -905,6 +908,7 @@ fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, St
 #[cfg(feature = "remote-embedding")]
 struct ProviderQueryEmbedder {
     provider: std::sync::Arc<dyn repoise_core::embed::EmbeddingProvider>,
+    profile_fingerprint: String,
 }
 
 #[cfg(feature = "remote-embedding")]
@@ -918,6 +922,10 @@ impl QueryEmbedder for ProviderQueryEmbedder {
             }
             _ => Ok(None),
         }
+    }
+
+    fn profile_fingerprint(&self) -> String {
+        self.profile_fingerprint.clone()
     }
 }
 
@@ -948,6 +956,7 @@ fn query_embedder_from_config(
         .map_err(|err| err.to_string())?;
         Ok(Some(Box::new(ProviderQueryEmbedder {
             provider: std::sync::Arc::new(provider),
+            profile_fingerprint: profile.fingerprint(),
         })))
     }
     #[cfg(not(feature = "remote-embedding"))]

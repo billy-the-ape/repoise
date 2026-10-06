@@ -289,6 +289,10 @@ impl QueryEmbedder for ProviderQueryEmbedder {
             _ => Ok(None),
         }
     }
+
+    fn profile_fingerprint(&self) -> String {
+        self.provider.profile().fingerprint()
+    }
 }
 
 struct NoopQueryEmbedder;
@@ -296,6 +300,11 @@ struct NoopQueryEmbedder;
 impl QueryEmbedder for NoopQueryEmbedder {
     fn embed_query(&self, _query: &str) -> repoise_core::Result<Option<Vec<f32>>> {
         Ok(None)
+    }
+
+    fn profile_fingerprint(&self) -> String {
+        // Never matches a stored profile (this embedder never produces vectors).
+        String::new()
     }
 }
 
@@ -469,4 +478,167 @@ fn gc_reclaims_unreferenced_embeddings_and_keeps_referenced() {
     assert_eq!(gc_repo_embeddings(&cache, repo_id).unwrap(), 1);
     assert!(embedding_db.get(&alpha_hash, &fp, 8).unwrap().is_some());
     assert!(embedding_db.get(&beta_hash, &fp, 8).unwrap().is_none());
+}
+
+#[test]
+fn vector_search_respects_path_and_role_filters() {
+    let files: Vec<(&str, &str)> = vec![
+        ("docs/a.md", "# Guide A\n\nThe gizmo guide explains setup."),
+        ("other/b.md", "# Guide B\n\nThe gizmo lives in guide B."),
+        ("conf/app.toml", "[section]\nkey = value\n"),
+    ];
+    let client = client(HashProvider::new(8));
+    let built = build_scope("vector-filters", &files, Some(&client));
+    let embedder = ProviderQueryEmbedder {
+        provider: Arc::new(HashProvider::new(8)),
+    };
+
+    for (mode, label) in [
+        (SearchMode::Hybrid, "hybrid"),
+        (SearchMode::VectorsOnly, "vectors-only"),
+    ] {
+        // Path filter: only docs/* may be returned.
+        let response = search::search(
+            &built.adapter,
+            SnapshotMode::PlainDirectory,
+            &built.store,
+            &SearchRequest {
+                query: "gizmo".to_string(),
+                path_filter: Some("docs/*".to_string()),
+                role_filter: None,
+                max_results: None,
+                max_output_tokens: None,
+                cursor: None,
+                mode,
+                rrf_k: None,
+            },
+            Some(&embedder),
+        )
+        .unwrap();
+        assert_eq!(response.retrieval_mode, label);
+        assert!(
+            response.results.iter().all(|hit| hit.path == "docs/a.md"),
+            "{label} path filter leaked results: {:?}",
+            response
+                .results
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // Role filter: only config files may be returned.
+        let response = search::search(
+            &built.adapter,
+            SnapshotMode::PlainDirectory,
+            &built.store,
+            &SearchRequest {
+                query: "gizmo".to_string(),
+                path_filter: None,
+                role_filter: Some(repoise_core::classify::Role::Config),
+                max_results: None,
+                max_output_tokens: None,
+                cursor: None,
+                mode,
+                rrf_k: None,
+            },
+            Some(&embedder),
+        )
+        .unwrap();
+        assert_eq!(response.retrieval_mode, label);
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|hit| hit.path == "conf/app.toml"),
+            "{label} role filter leaked results: {:?}",
+            response
+                .results
+                .iter()
+                .map(|hit| hit.path.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn profile_mismatch_degrades_to_lexical() {
+    let files: Vec<(&str, &str)> = vec![("docs/a.md", GUIDE_MD_V1)];
+    let client = client(HashProvider::new(8));
+    let built = build_scope("profile-mismatch", &files, Some(&client));
+
+    // Same dimension, different model: an incompatible embedding space.
+    let other = ProviderQueryEmbedder {
+        provider: Arc::new(HashProvider::other_model(8)),
+    };
+    let hybrid = run_search(&built, "gizmo", SearchMode::Hybrid, Some(&other)).unwrap();
+    assert_eq!(hybrid.retrieval_mode, "lexical");
+    assert!(
+        hybrid.coverage.vector.contains("differs"),
+        "coverage must explain the mismatch: {}",
+        hybrid.coverage.vector
+    );
+
+    let vectors_only = run_search(&built, "gizmo", SearchMode::VectorsOnly, Some(&other)).unwrap();
+    assert_eq!(vectors_only.retrieval_mode, "lexical");
+    assert!(vectors_only.coverage.vector.contains("differs"));
+}
+
+#[test]
+fn character_budget_counts_the_first_input_and_keeps_the_rest_pending() {
+    let provider = HashProvider::new(8);
+    let budgets = EmbeddingBudgets {
+        batch_size: 4,
+        max_input_chars_per_build: 10,
+        max_requests_per_build: 10,
+        ..EmbeddingBudgets::default()
+    };
+    let session = EmbeddingClient::new(Box::new(provider), budgets, CancellationToken::new());
+    let inputs = vec!["a".repeat(100); 40];
+    let (outcomes, stats) = session.embed_all(&inputs);
+    assert!(
+        outcomes.iter().all(|vector| vector.is_none()),
+        "an exhausted character budget must not produce vectors"
+    );
+    assert_eq!(stats.pending, 40);
+    assert_eq!(stats.embedded, 0);
+    assert_eq!(
+        stats.requests, 0,
+        "an exhausted budget must not call the provider"
+    );
+}
+
+#[test]
+fn v1_database_migrates_and_reopens() {
+    let dir = temp_dir("migration");
+    let db_path = dir.join("index.sqlite");
+    // Simulate a card-K2 (schema v1) database.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+             CREATE TABLE generation ( \
+               id INTEGER PRIMARY KEY AUTOINCREMENT, \
+               repo_id TEXT NOT NULL, worktree_id TEXT NOT NULL, \
+               snapshot_id TEXT NOT NULL, snapshot_mode TEXT NOT NULL, \
+               revision_id TEXT, manifest_hash TEXT NOT NULL, \
+               config_fingerprint TEXT NOT NULL, parser_fingerprint TEXT NOT NULL, \
+               built_at_ms INTEGER NOT NULL, state TEXT NOT NULL, \
+               files INTEGER NOT NULL, chunks INTEGER NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', '1')",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::new(db_path);
+    let conn = store.open().unwrap();
+    let version = store::meta_value(&conn, "schema_version").unwrap().unwrap();
+    assert_eq!(version, repoise_core::INDEX_SCHEMA_VERSION.to_string());
+    drop(conn);
+    // A second open must succeed (no duplicate-column error).
+    let conn = store.open().unwrap();
+    let version = store::meta_value(&conn, "schema_version").unwrap().unwrap();
+    assert_eq!(version, repoise_core::INDEX_SCHEMA_VERSION.to_string());
 }

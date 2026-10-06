@@ -56,6 +56,8 @@ pub struct DoctorReport {
     pub config_fingerprint: String,
     /// Validation problems; doctor exits non-empty when present.
     pub diagnostics: Vec<String>,
+    /// Non-fatal advisories (doctor still succeeds).
+    pub warnings: Vec<String>,
 }
 
 /// Runs doctor for the root directory.
@@ -98,6 +100,7 @@ pub fn doctor(root: &Path, cli: &CliOverrides, paths: &ConfigPaths) -> Result<Do
         .collect();
     native_ignore_sources.sort();
     native_ignore_sources.dedup();
+    let warnings = embedding_endpoint_warnings(&effective);
     Ok(DoctorReport {
         root: root.clone(),
         adapter: adapter.kind(),
@@ -123,5 +126,36 @@ pub fn doctor(root: &Path, cli: &CliOverrides, paths: &ConfigPaths) -> Result<Do
         },
         config_fingerprint: effective.fingerprint(),
         diagnostics,
+        warnings,
     })
+}
+
+/// Non-fatal advisories about the operator's embedding configuration.
+fn embedding_endpoint_warnings(effective: &EffectiveConfig) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+    if let Some(settings) = &effective.embedding {
+        let resolves_to_non_tls_remote = settings
+            .endpoint
+            .as_deref()
+            .and_then(|endpoint_ref| endpoint_ref.strip_prefix("env:"))
+            .and_then(|name| std::env::var(name).ok())
+            .map(|endpoint| {
+                let trimmed = endpoint.trim().trim_end_matches('/');
+                let Some(host) = trimmed.strip_prefix("http://") else {
+                    return false;
+                };
+                let host = host.split('/').next().unwrap_or("");
+                !(host == "127.0.0.1" || host == "localhost" || host == "[::1]")
+            })
+            .unwrap_or(false);
+        if resolves_to_non_tls_remote {
+            warnings.push(
+                "embedding.endpoint resolves to a non-TLS http:// remote endpoint: \
+                 chunk text and the API key travel in cleartext; use https, or a \
+                 localhost endpoint for a local inference server"
+                    .to_string(),
+            );
+        }
+    }
+    warnings
 }

@@ -185,24 +185,26 @@ pub fn status(
     let schema_version = store::meta_value(&conn, "schema_version")?
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
-    let index = current.as_ref().map(|meta| {
-        let (_chunk_count, vector_count) =
-            store::vector_coverage(&conn, meta.generation_id, meta.vector_profile.as_deref())
-                .unwrap_or((meta.chunks, 0));
-        StatusIndex {
-            generation_id: meta.generation_id,
-            schema_version,
-            files: meta.files,
-            chunks: meta.chunks,
-            built_at_ms: meta.built_at_ms,
-            manifest_hash: meta.manifest_hash.clone(),
-            config_fingerprint: meta.config_fingerprint.clone(),
-            parser_fingerprint: meta.parser_fingerprint.clone(),
-            vectors: vector_count,
-            vector_profile: meta.vector_profile.clone(),
-            vectors_pending: (meta.chunks - vector_count).max(0),
-        }
-    });
+    let index = match current.as_ref() {
+        Some(meta) => Some({
+            let (_chunk_count, vector_count) =
+                store::vector_coverage(&conn, meta.generation_id, meta.vector_profile.as_deref())?;
+            StatusIndex {
+                generation_id: meta.generation_id,
+                schema_version,
+                files: meta.files,
+                chunks: meta.chunks,
+                built_at_ms: meta.built_at_ms,
+                manifest_hash: meta.manifest_hash.clone(),
+                config_fingerprint: meta.config_fingerprint.clone(),
+                parser_fingerprint: meta.parser_fingerprint.clone(),
+                vectors: vector_count,
+                vector_profile: meta.vector_profile.clone(),
+                vectors_pending: (meta.chunks - vector_count).max(0),
+            }
+        }),
+        None => None,
+    };
     let last_error = store::last_error(&conn)?;
 
     let (freshness_status, reasons) = match &current {

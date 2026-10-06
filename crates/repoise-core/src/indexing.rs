@@ -412,13 +412,15 @@ pub fn index(
         let outcome = crate::embed::embed_chunks(&embedding_cache, client, &work, built_at_ms)?;
         embedding_stats = Some(outcome.stats);
         vector_profile = Some(fingerprint.clone());
+        let text_hash_by_id: std::collections::HashMap<&str, &str> = chunk_rows
+            .iter()
+            .map(|chunk| (chunk.chunk_id.as_str(), chunk.text_hash.as_str()))
+            .collect();
         for (chunk_id, vector) in outcome.vectors {
-            let input_hash = chunk_rows
-                .iter()
-                .find(|chunk| chunk.chunk_id == chunk_id)
+            let input_hash = text_hash_by_id
+                .get(chunk_id.as_str())
                 .expect("vector belongs to this generation's chunk")
-                .text_hash
-                .clone();
+                .to_string();
             vectors.push(store::ChunkVecRow {
                 chunk_id,
                 fingerprint: fingerprint.clone(),

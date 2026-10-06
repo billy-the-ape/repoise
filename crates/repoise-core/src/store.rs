@@ -143,6 +143,10 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA_SQL)?;
+        // Version seeding, check and migration run inside one transaction so a
+        // concurrent open or a crash can never leave a half-migrated database
+        // (a rollback restores the previous state).
+        conn.execute("BEGIN IMMEDIATE", [])?;
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?1)",
             params![INDEX_SCHEMA_VERSION.to_string()],
@@ -155,7 +159,9 @@ impl Store {
             )
             .map_err(|err| Error::IndexState(err.to_string()))?;
         match stored.as_str() {
-            version if version == INDEX_SCHEMA_VERSION.to_string().as_str() => {}
+            version if version == INDEX_SCHEMA_VERSION.to_string().as_str() => {
+                conn.execute("COMMIT", [])?;
+            }
             "1" => {
                 // Additive card-K3 upgrade: vector table and columns.
                 conn.execute_batch(MIGRATION_SQL_V1_TO_V2)?;
@@ -164,8 +170,10 @@ impl Store {
                      ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     params![INDEX_SCHEMA_VERSION.to_string()],
                 )?;
+                conn.execute("COMMIT", [])?;
             }
             _ => {
+                let _ = conn.execute("ROLLBACK", []);
                 return Err(Error::IndexState(format!(
                     "index schema version {stored} is incompatible with engine version {}; rebuild the scope",
                     INDEX_SCHEMA_VERSION
@@ -764,6 +772,73 @@ pub fn vectors_for_generation(
             ))
         })
         .map_err(Error::Sqlite)?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (chunk_id, dimension, bytes) = row.map_err(Error::Sqlite)?;
+        match crate::embed::decode_vector(&bytes, dimension as u32) {
+            Some(vector) => {
+                out.insert(chunk_id, vector);
+            }
+            None => {
+                return Err(Error::IndexState(format!(
+                    "corrupt stored vector for chunk {chunk_id}"
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Reads one (chunk id, dimension, vector bytes) row from the vector queries.
+fn read_vector_row(row: &rusqlite::Row) -> rusqlite::Result<(String, i64, Vec<u8>)> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+}
+
+/// Validated vectors of one generation and profile, by chunk id, restricted
+/// to chunks whose path matches `path_filter` (SQLite GLOB) and/or whose file
+/// role matches `role_filter` — the same semantics as the lexical query.
+pub fn vectors_for_generation_filtered(
+    conn: &Connection,
+    generation_id: i64,
+    fingerprint: &str,
+    path_filter: Option<&str>,
+    role_filter: Option<&str>,
+) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+    let mut sql = String::from(
+        "SELECT v.chunk_id, v.dimension, v.vector FROM chunk_vec v \
+         JOIN chunk c ON c.generation_id = v.generation_id AND c.chunk_id = v.chunk_id \
+         JOIN file fr ON fr.generation_id = v.generation_id AND fr.path = c.path \
+         WHERE v.generation_id = ?1 AND v.fingerprint = ?2",
+    );
+    if path_filter.is_some() {
+        sql.push_str(" AND c.path GLOB ?3");
+    }
+    if role_filter.is_some() {
+        sql.push_str(if path_filter.is_some() {
+            " AND fr.role = ?4"
+        } else {
+            " AND fr.role = ?3"
+        });
+    }
+    sql.push_str(" ORDER BY v.chunk_id");
+    let mut stmt = conn.prepare(&sql).map_err(Error::Sqlite)?;
+    let rows = match (path_filter, role_filter) {
+        (Some(path), Some(role)) => stmt
+            .query_map(
+                params![generation_id, fingerprint, path, role],
+                read_vector_row,
+            )
+            .map_err(Error::Sqlite)?,
+        (Some(path), None) => stmt
+            .query_map(params![generation_id, fingerprint, path], read_vector_row)
+            .map_err(Error::Sqlite)?,
+        (None, Some(role)) => stmt
+            .query_map(params![generation_id, fingerprint, role], read_vector_row)
+            .map_err(Error::Sqlite)?,
+        (None, None) => stmt
+            .query_map(params![generation_id, fingerprint], read_vector_row)
+            .map_err(Error::Sqlite)?,
+    };
     let mut out = std::collections::HashMap::new();
     for row in rows {
         let (chunk_id, dimension, bytes) = row.map_err(Error::Sqlite)?;

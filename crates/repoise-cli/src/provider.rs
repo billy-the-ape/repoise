@@ -30,6 +30,23 @@ struct EmbeddingResponse {
 #[derive(Deserialize)]
 struct DataPoint {
     embedding: Vec<f32>,
+    /// Position of this point in the request input (optional per spec).
+    index: Option<usize>,
+}
+
+/// Orders the response data points back into request input order. When the
+/// endpoint reports the optional `index` field, it is authoritative (points
+/// without one keep their own position); otherwise the provider's return
+/// order is assumed to match the input order.
+fn order_by_index(points: Vec<DataPoint>) -> Vec<Vec<f32>> {
+    let mut points = points;
+    if points.iter().any(|point| point.index.is_some()) {
+        for (position, point) in points.iter_mut().enumerate() {
+            point.index.get_or_insert(position);
+        }
+        points.sort_by_key(|point| point.index.expect("index backfilled"));
+    }
+    points.into_iter().map(|point| point.embedding).collect()
 }
 
 impl OpenAiCompatibleProvider {
@@ -106,12 +123,45 @@ impl EmbeddingProvider for OpenAiCompatibleProvider {
             )));
         }
         Ok(EmbeddingBatch {
-            vectors: parsed
-                .data
-                .into_iter()
-                .map(|point| point.embedding)
-                .collect(),
+            vectors: order_by_index(parsed.data),
             model_revision: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_points_ordered_by_reported_index() {
+        let points = vec![
+            DataPoint {
+                embedding: vec![1.0],
+                index: Some(1),
+            },
+            DataPoint {
+                embedding: vec![2.0],
+                index: Some(0),
+            },
+        ];
+        let vectors = order_by_index(points);
+        assert_eq!(vectors, vec![vec![2.0], vec![1.0]]);
+    }
+
+    #[test]
+    fn response_points_without_index_keep_input_order() {
+        let points = vec![
+            DataPoint {
+                embedding: vec![1.0],
+                index: None,
+            },
+            DataPoint {
+                embedding: vec![2.0],
+                index: None,
+            },
+        ];
+        let vectors = order_by_index(points);
+        assert_eq!(vectors, vec![vec![1.0], vec![2.0]]);
     }
 }

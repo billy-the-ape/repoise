@@ -89,7 +89,8 @@ explicit note. Budgets (`batchSize`, `timeoutMs`, `maxRetries`,
 `maxRequestsPerBuild`, `maxInputCharsPerBuild`) and `search.rrfK` are configurable.
 The HTTPS transport is built into the CLI behind the default `remote-embedding`
 feature; `cargo check -p repoise-cli --no-default-features` produces the lexical-only
-binary.
+binary. `doctor` additionally warns (without failing) when `endpoint` resolves to a
+non-TLS `http://` remote host: source text and the API key would travel in cleartext.
 
 ## Installation and artifacts
 

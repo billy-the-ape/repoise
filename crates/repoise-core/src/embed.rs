@@ -288,8 +288,16 @@ impl EmbeddingClient {
                 stats.pending += inputs.len() - i;
                 break;
             }
+            // The first input counts against the remaining character budget
+            // too; once it is exhausted the rest stay pending (never sent).
+            let first_chars = inputs[i].chars().count() as u64;
+            if char_budget < first_chars {
+                stats.pending += inputs.len() - i;
+                break;
+            }
+            char_budget -= first_chars;
             // Grow the batch as far as the per-batch size and the remaining
-            // character budget allow (at least one input per batch).
+            // character budget allow.
             let max_end = (i + self.budgets.batch_size as usize).min(inputs.len());
             let mut end = i + 1;
             while end < max_end {
@@ -300,7 +308,6 @@ impl EmbeddingClient {
                 char_budget -= next_chars;
                 end += 1;
             }
-            char_budget = char_budget.saturating_sub(inputs[i].chars().count() as u64);
             let batch: Vec<String> = inputs[i..end].to_vec();
             batches += 1;
             match self.run_batch(&batch) {
@@ -445,6 +452,98 @@ impl EmbeddingCache {
         hash::sha256_hex(format!("{input_hash}\n{fingerprint}"))
     }
 
+    /// Reads many cached vectors in one connection (one query).
+    ///
+    /// Returns `input_hash -> vector` for hits; corrupt or dimension-mismatched
+    /// entries are dropped (and deleted) and read as misses.
+    pub fn get_many(
+        &self,
+        input_hashes: &[String],
+        fingerprint: &str,
+        dimension: u32,
+    ) -> Result<std::collections::HashMap<String, Vec<f32>>> {
+        let mut hits: std::collections::HashMap<String, Vec<f32>> =
+            std::collections::HashMap::new();
+        let mut keys: Vec<(String, String)> = input_hashes
+            .iter()
+            .map(|input_hash| (input_hash.clone(), Self::cache_key(input_hash, fingerprint)))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        if keys.is_empty() {
+            return Ok(hits);
+        }
+        let conn = self.conn()?;
+        let placeholders: Vec<String> = (1..=keys.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT input_hash, vector, dimension FROM embedding \
+             WHERE cache_key IN ({})",
+            placeholders.join(", ")
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params = rusqlite::params_from_iter(keys.iter().map(|(_, key)| key.as_str()));
+        let rows = stmt
+            .query_map(params, |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?;
+        for (input_hash, bytes, stored_dim) in rows {
+            match decode_vector(&bytes, dimension) {
+                Some(vector) if stored_dim == dimension as i64 => {
+                    hits.insert(input_hash, vector);
+                }
+                _ => {
+                    let key = Self::cache_key(&input_hash, fingerprint);
+                    let _ =
+                        conn.execute("DELETE FROM embedding WHERE cache_key = ?1", params![key]);
+                }
+            }
+        }
+        Ok(hits)
+    }
+
+    /// Stores many validated vectors in one transaction (one prepared
+    /// statement). `items` are (input hash, vector).
+    pub fn put_many(
+        &self,
+        items: &[(String, Vec<f32>)],
+        fingerprint: &str,
+        dimension: u32,
+        model_revision: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn()?;
+        let tx = conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare(
+            "INSERT INTO embedding \
+                 (cache_key, input_hash, fingerprint, dimension, model_revision, vector, created_at_ms) \
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+              ON CONFLICT(cache_key) DO UPDATE SET \
+                  vector = excluded.vector, model_revision = excluded.model_revision",
+        )?;
+        for (input_hash, vector) in items {
+            stmt.execute(params![
+                Self::cache_key(input_hash, fingerprint),
+                input_hash,
+                fingerprint,
+                dimension as i64,
+                model_revision,
+                encode_vector(vector),
+                now_ms,
+            ])?;
+        }
+        drop(stmt);
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Reads a cached vector for one input and profile. Corrupt entries are
     /// dropped and read as a miss.
     pub fn get(
@@ -579,43 +678,53 @@ pub fn embed_chunks(
     let mut stats = EmbeddingStats::default();
     let mut vectors: Vec<(String, Vec<f32>)> = Vec::new();
     let mut pending: Vec<String> = Vec::new();
-    let mut misses: Vec<usize> = Vec::new();
+    let mut misses: Vec<&EmbeddingWork> = Vec::new();
 
-    // Phase 1: content-addressed cache (unchanged input is never re-embedded).
-    for (position, item) in work.iter().enumerate() {
-        match cache.get(&item.input_hash, &fingerprint, profile.dimension)? {
+    // Phase 1: content-addressed cache (one lookup pass; unchanged input is
+    // never re-embedded).
+    let cache_hits = cache.get_many(
+        &work
+            .iter()
+            .map(|item| item.input_hash.clone())
+            .collect::<Vec<_>>(),
+        &fingerprint,
+        profile.dimension,
+    )?;
+    for item in work {
+        match cache_hits.get(&item.input_hash) {
             Some(vector) => {
                 stats.cache_hits += 1;
-                vectors.push((item.chunk_id.clone(), vector));
+                vectors.push((item.chunk_id.clone(), vector.clone()));
             }
-            None => misses.push(position),
+            None => misses.push(item),
         }
     }
 
     // Phase 2: bounded provider calls for the misses.
     if !misses.is_empty() {
-        let miss_inputs: Vec<String> = misses.iter().map(|i| work[*i].input.clone()).collect();
+        let miss_inputs: Vec<String> = misses.iter().map(|item| item.input.clone()).collect();
         let (results, session) = client.embed_all(&miss_inputs);
         stats.embedded += session.embedded;
         stats.failed += session.failed;
         stats.pending += session.pending;
         stats.requests += session.requests;
         stats.retries += session.retries;
-        for (position, index) in misses.iter().enumerate() {
+        let mut to_store: Vec<(String, Vec<f32>)> = Vec::new();
+        for (position, item) in misses.iter().enumerate() {
             let Some(vector) = results.get(position).cloned().flatten() else {
-                pending.push(work[*index].chunk_id.clone());
+                pending.push(item.chunk_id.clone());
                 continue;
             };
-            cache.put(
-                &work[*index].input_hash,
-                &fingerprint,
-                profile.dimension,
-                &profile.model,
-                &vector,
-                now_ms,
-            )?;
-            vectors.push((work[*index].chunk_id.clone(), vector));
+            vectors.push((item.chunk_id.clone(), vector.clone()));
+            to_store.push((item.input_hash.clone(), vector));
         }
+        cache.put_many(
+            &to_store,
+            &fingerprint,
+            profile.dimension,
+            &profile.model,
+            now_ms,
+        )?;
     }
 
     Ok(EmbeddingOutcome {
@@ -642,10 +751,14 @@ pub fn gc_repo_embeddings(cache_paths: &crate::cache::CachePaths, repo_id: &str)
             if !db.exists() {
                 continue;
             }
-            match crate::store::Store::new(db).open() {
-                Ok(conn) => {
-                    referenced.extend(crate::store::referenced_embedding_keys(&conn, repo_id)?);
-                }
+            // Fail closed (skip GC entirely) when any sibling database cannot
+            // be opened or its references cannot be read.
+            let conn = match crate::store::Store::new(db).open() {
+                Ok(conn) => conn,
+                Err(_) => return Ok(0),
+            };
+            match crate::store::referenced_embedding_keys(&conn, repo_id) {
+                Ok(keys) => referenced.extend(keys),
                 Err(_) => return Ok(0),
             }
         }

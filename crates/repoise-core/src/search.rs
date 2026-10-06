@@ -64,6 +64,11 @@ pub enum SearchMode {
 pub trait QueryEmbedder {
     /// Embeds one natural-language query (validated vector or `None`).
     fn embed_query(&self, query: &str) -> Result<Option<Vec<f32>>>;
+
+    /// Fingerprint of the embedding space this embedder produces. Search
+    /// compares it against the generation's stored profile and degrades to
+    /// lexical when the spaces are incompatible.
+    fn profile_fingerprint(&self) -> String;
 }
 
 /// Words that mark history/rationale-oriented questions.
@@ -463,9 +468,18 @@ pub fn search(
     // failed query embedding degrades to the lexical baseline (the coverage
     // report still shows the stored vector count).
     let has_vectors = meta.vector_profile.is_some();
+    // The query embedder's space must match the stored profile's fingerprint;
+    // incompatible spaces are never compared (degrade to lexical, with a
+    // coverage note).
+    let profile_mismatch = query_embedder
+        .map(|embedder| {
+            meta.vector_profile.as_deref() != Some(embedder.profile_fingerprint().as_str())
+        })
+        .unwrap_or(false)
+        && has_vectors;
     let query_vector: Option<Vec<f32>> = match request.mode {
         SearchMode::Lexical => None,
-        _ if has_vectors => match query_embedder {
+        _ if has_vectors && !profile_mismatch => match query_embedder {
             Some(embedder) => embedder.embed_query(&request.query).ok().flatten(),
             None => None,
         },
@@ -478,12 +492,24 @@ pub fn search(
         (_, _, _) => RunMode::Lexical,
     };
 
-    // Exact cosine rank over this generation's stored vectors (one profile).
+    // Exact cosine rank over this generation's stored vectors (one profile),
+    // restricted to the requested path/role filters (same semantics as the
+    // lexical query).
     let mut vector_rank: Vec<(String, f64)> = Vec::new();
     if let (Some(query_vector), Some(fingerprint)) =
         (query_vector.as_ref(), meta.vector_profile.as_deref())
     {
-        let vectors = store::vectors_for_generation(&conn, meta.generation_id, fingerprint)?;
+        let vectors = if request.path_filter.is_some() || request.role_filter.is_some() {
+            store::vectors_for_generation_filtered(
+                &conn,
+                meta.generation_id,
+                fingerprint,
+                request.path_filter.as_deref(),
+                request.role_filter.as_ref().map(|role| role.name()),
+            )?
+        } else {
+            store::vectors_for_generation(&conn, meta.generation_id, fingerprint)?
+        };
         vector_rank = vectors
             .into_iter()
             .map(|(chunk_id, vector)| (chunk_id, crate::embed::cosine(query_vector, &vector)))
@@ -763,7 +789,12 @@ pub fn search(
         files: meta.files,
         chunks: meta.chunks,
         lexical: format!("{} chunks, fts5 unicode61", meta.chunks),
-        vector: if vector_count == 0 {
+        vector: if profile_mismatch {
+            format!(
+                "none (query profile differs from the stored profile; lexical only; \
+                 {vector_count} vectors stored)"
+            )
+        } else if vector_count == 0 {
             "none (offline lexical only)".to_string()
         } else {
             format!(
