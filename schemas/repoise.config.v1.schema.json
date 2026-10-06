@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/billy-the-ape/repoise/schemas/repoise.config.v1.schema.json",
+  "title": "Repoise repository configuration (schema version 1)",
+  "description": "Committed root configuration for the offline-first repository knowledge indexer. Configuration is data only; it is never executed. Secret material must be referenced through environment variables, never stored here. The local operator override file repoise.local.json uses the same shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "description": "Configuration schema version. Must be 1 for this build.",
+      "type": "integer",
+      "const": 1
+    },
+    "preset": {
+      "description": "Corpus preset. docs-only indexes documentation and configuration only; docs-code-lexical (default) adds offline lexical code indexing; hybrid adds embedding search and requires an explicitly selected provider.",
+      "type": "string",
+      "enum": ["docs-only", "docs-code-lexical", "hybrid"]
+    },
+    "inheritGitIgnores": {
+      "description": "Whether native Git ignore files (.gitignore, .git/info/exclude) are inherited (default true). Secret deny rules and containment checks always remain enforced.",
+      "type": "boolean"
+    },
+    "include": {
+      "description": "Narrow gitignore-style re-include patterns. A broad include never overrides secret deny rules or mandatory containment.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "exclude": {
+      "description": "Extra gitignore-style exclude patterns applied after package defaults.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "maxFileBytes": {
+      "description": "Maximum file size in bytes accepted into the corpus (default 1048576). Larger files are skipped with a diagnostic.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "documentRoles": {
+      "description": "Configured role mappings: gitignore-style pattern to document role. Last matching rule wins. Explicit front matter still takes precedence.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pattern", "role"],
+        "properties": {
+          "pattern": { "type": "string", "minLength": 1 },
+          "role": {
+            "type": "string",
+            "enum": [
+              "instruction",
+              "current-doc",
+              "decision",
+              "plan",
+              "execution-record",
+              "historical",
+              "code",
+              "config"
+            ]
+          }
+        }
+      }
+    },
+    "cacheDir": {
+      "description": "Generated-data directory, kept out of the corpus by default (default .repoise). Never point this into version control.",
+      "type": "string",
+      "minLength": 1
+    },
+    "embedding": {
+      "description": "Optional embedding provider settings (operator-selected, never mandatory). Secrets resolve only through environment references.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "description": "Provider name chosen by the operator.",
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "description": "Endpoint reference; must be an environment reference like env:VAR_NAME, never a literal secret-bearing URL.",
+          "type": "string",
+          "pattern": "^env:[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "model": {
+          "description": "Model identifier.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

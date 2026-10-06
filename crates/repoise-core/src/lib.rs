@@ -1,6 +1,39 @@
-//! Shared Repoise engine entry point.
+//! Shared Repoise engine services.
 //!
-//! Indexing services will live here; this scaffold only exposes project identity.
+//! This crate provides the neutral source-adapter and provenance contracts, the
+//! versioned `repoise.config.json` configuration layer, the explainable
+//! include/exclude/secret policy, deterministic discovery/inventory and the
+//! `init`/`doctor` services. The CLI (and a future MCP adapter) are thin
+//! adapters over these services; see `docs/architecture.md` for boundaries.
+
+pub mod adapter;
+pub mod classify;
+pub mod config;
+pub mod discovery;
+pub mod doctor;
+pub mod error;
+pub mod hash;
+pub mod ignore;
+pub mod init;
+pub mod provenance;
 
 /// Human-readable project identity used by the native CLI.
 pub const NAME: &str = "Repoise";
+
+/// Committed root configuration file name.
+pub const CONFIG_FILENAME: &str = "repoise.config.json";
+/// Untracked local override file name (operator-only; must never be committed).
+pub const LOCAL_CONFIG_FILENAME: &str = "repoise.local.json";
+/// Manifest file that records the files `repoise init` manages.
+pub const OVERLAY_FILENAME: &str = "repoise.overlay.json";
+/// Default generated-data directory, always excluded from the corpus.
+pub const DEFAULT_CACHE_DIR: &str = ".repoise";
+/// Version of the files and blocks `repoise init` writes.
+pub const TEMPLATE_VERSION: &str = "1.0.0";
+/// Default maximum file size accepted into the corpus (1 MiB).
+pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024;
+/// Versioned JSON schema file published alongside the package.
+pub const CONFIG_SCHEMA_FILE: &str = "schemas/repoise.config.v1.schema.json";
+
+/// Engine error type shared by all core services.
+pub type Result<T> = std::result::Result<T, error::Error>;

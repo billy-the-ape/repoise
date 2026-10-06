@@ -1,13 +1,23 @@
 # Code structure
 
 Repoise is a Rust 2024 workspace with resolver 3 and one shared application lockfile.
-This initial scaffold has no parser, index, database, provider, or network dependencies.
+The core crate currently has no parser, index, database, provider, or network dependencies;
+the Git adapter shells out to `git` with argument arrays when operating on a Git repository.
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/repoise-core/src/lib.rs` | Shared engine boundary; currently project identity only |
-| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O |
-| `crates/repoise-cli/tests/` | Executable behavior tests |
+| `crates/repoise-core/src/lib.rs` | Shared engine boundary; exposes the services below plus config/init file names and defaults |
+| `crates/repoise-core/src/adapter/` | Neutral `SourceAdapter` contract: opaque revisions, capability flags, enumerate/read with containment; filesystem and Git adapters plus a synthetic fake-revision test adapter |
+| `crates/repoise-core/src/config.rs` | Versioned `repoise.config.json` parsing, precedence (CLI > local > committed > default) and redaction-safe validation |
+| `crates/repoise-core/src/ignore.rs` | Explainable include/exclude/secret-deny policy: package defaults, config, native ignore inheritance, gitignore-style matching, stable fingerprints |
+| `crates/repoise-core/src/classify.rs` | Role/lifecycle classification: explicit front matter, configured rules, path inference |
+| `crates/repoise-core/src/discovery.rs` | Deterministic inventory: snapshot manifest, file records, skip diagnostics |
+| `crates/repoise-core/src/provenance.rs` | Versioned repository/snapshot/file provenance record shapes and remote identity sanitization |
+| `crates/repoise-core/src/init.rs` and `doctor.rs` | Idempotent overlay init (config, overlay manifest, optional managed block) and effective-settings reporting |
+| `crates/repoise-core/src/hash.rs` | Lowercase SHA-256 helpers used across manifests and fingerprints |
+| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init adapters) |
+| `crates/repoise-core/tests/` and `crates/repoise-cli/tests/` | Contract and executable behavior fixtures |
+| `schemas/` | Published versioned configuration schema |
 | `npm/repoise/` | Thin launcher and allowlisted npm package metadata |
 | `scripts/release/` | Claim preparation, packaging, smoke tests and release staging |
 | `scripts/` | Local checks, release build and installation helpers |
