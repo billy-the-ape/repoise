@@ -26,3 +26,7 @@ rustc-ice-*.txt
 # Node release tooling and generated distribution artifacts
 node_modules/
 dist/
+
+# Repoise generated data and operator-only local overrides (never commit)
+.repoise/
+repoise.local.json

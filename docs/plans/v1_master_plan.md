@@ -806,7 +806,7 @@ Future subsystems gain crates only when real boundaries justify them.
 
 | Card / workstream               | Status                       | Completed evidence / remaining scope                                                                                                                                                                                                                                                     |
 | ------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| K1                              | Partial                      | Architecture/AGENTS map, Rust workspace/core/CLI, pinned toolchain/lockfile, checks/build/install scripts, three-OS CI and thin npm scaffold complete. Neutral adapters/provenance fixtures, config/init/discovery/doctor and their acceptance tests remain pending.                     |
+| K1                              | Complete (v1-0)            | Architecture/AGENTS map, Rust workspace/core/CLI, pinned toolchain/lockfile, checks/build/install scripts, three-OS CI and thin npm scaffold complete. Neutral adapter/provenance contracts (filesystem, Git, fake-revision), versioned config + published schema, explainable ignore policy, deterministic discovery/inventory, idempotent init, doctor/explain and acceptance tests complete. |
 | K2                              | Not started                  | SQLite/FTS, indexing/search/exact reads, incremental generations and freshness remain pending.                                                                                                                                                                                           |
 | K3                              | Not started                  | Embedding adapters/cache/profiles, hybrid search and measured budgets remain pending.                                                                                                                                                                                                    |
 | K4                              | Not started                  | Language grammars, code symbols/chunks/references remain pending.                                                                                                                                                                                                                        |
@@ -814,8 +814,9 @@ Future subsystems gain crates only when real boundaries justify them.
 | K6                              | Distribution groundwork only | Three-target offline packed-consumer smoke, checksums, release runbooks and public native alpha complete. Linux/macOS npm alphas public; Windows/main wrapper and OIDC validation pending. MCP/watch/overlay/build integration, feature acceptance, benchmarks and pilot remain pending. |
 | ai-gateway consumer integration | Not started                  | Separate pinned consumer PR follows functional offline indexing acceptance.                                                                                                                                                                                                              |
 
-No full implementation card is complete. Packaging a greeting CLI does not satisfy init,
-lexical index/search/read or MCP release acceptance. Initial build evidence is linked in the
+No full indexing/search or MCP card is complete. K1 establishes the adapter/provenance
+contracts, configuration, init, discovery and doctor; indexing, lexical search, exact
+reads and MCP release acceptance remain pending. Initial build evidence is linked in the
 [alpha execution record](../publish/alpha-0-status.md); no agent task/token gains are measured.
 
 Target 6 core PRs in this repository, plus a separate ai-gateway consumer integration PR;
