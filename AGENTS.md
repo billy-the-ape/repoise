@@ -90,3 +90,8 @@ Prominently list required environment variables, settings, migrations or deploym
 state none when applicable. Include an easy test path for each added feature.
 Do not publish packages/releases or modify deployment devices as part of ordinary implementation.
 When a separately authorized change modifies deployment devices, also update homelab documentation.
+
+## Editing
+
+- Tool parameter inputs, especially editor, should be kept below 6000 characters
+- Use rustfmt to format files instead of ruminating over formatting
