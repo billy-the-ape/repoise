@@ -1,8 +1,10 @@
 # Code structure
 
 Repoise is a Rust 2024 workspace with resolver 3 and one shared application lockfile.
-The core crate currently has no parser, index, database, provider, or network dependencies;
-the Git adapter shells out to `git` with argument arrays when operating on a Git repository.
+The core crate's only external dependencies are serde (configuration/JSON) and
+`rusqlite` with the bundled SQLite build (persistent index); there are no parser,
+provider, or network dependencies. The Git adapter shells out to `git` with argument
+arrays when operating on a Git repository.
 
 | Path | Responsibility |
 | --- | --- |
@@ -15,7 +17,15 @@ the Git adapter shells out to `git` with argument arrays when operating on a Git
 | `crates/repoise-core/src/provenance.rs` | Versioned repository/snapshot/file provenance record shapes and remote identity sanitization |
 | `crates/repoise-core/src/init.rs` and `doctor.rs` | Idempotent overlay init (config, overlay manifest, optional managed block) and effective-settings reporting |
 | `crates/repoise-core/src/hash.rs` | Lowercase SHA-256 helpers used across manifests and fingerprints |
-| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init adapters) |
+| `crates/repoise-core/src/store.rs` | SQLite (WAL) + FTS5 persistent store: transactional generation publication, retention, current/previous generation access |
+| `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references |
+| `crates/repoise-core/src/indexing.rs` | Incremental index build: reuse/reparse/tombstone reconciliation, secret redaction, `state.json` publication |
+| `crates/repoise-core/src/search.rs` | Offline lexical search: BM25 + explainable boosts, per-file cap, bound cursors, fallback suggestions; scope resolution and GitHub permalink validation |
+| `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; `Stale` diagnostics |
+| `crates/repoise-core/src/status.rs` | Scope/snapshot/index/freshness view with config and cache diagnostics |
+| `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |
+| `crates/repoise-core/src/purge.rs` | Removal of generated cache data only, with scope-id validation |
+| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge adapters) |
 | `crates/repoise-core/tests/` and `crates/repoise-cli/tests/` | Contract and executable behavior fixtures |
 | `schemas/` | Published versioned configuration schema |
 | `npm/repoise/` | Thin launcher and allowlisted npm package metadata |
@@ -23,11 +33,13 @@ the Git adapter shells out to `git` with argument arrays when operating on a Git
 | `scripts/` | Local checks, release build and installation helpers |
 | `.github/workflows/` | Cross-platform checks and manually requested build artifacts |
 | `docs/plans/` | Intended scope and acceptance gates, not shipped behavior |
+| `docs/storage.md` | Current-state guide for the persistent index and cache layout |
 
 The CLI depends on the core; the core must not depend on a CLI or agent client.
-Future indexing/search/exact-read services belong in core or focused engine crates.
+A future MCP adapter must call the same core services (`indexing`, `search`, `read`,
+`status`) that the CLI adapters already use.
 Add crates when real dependency, platform or feature boundaries justify them; avoid empty
-placeholder crates. A future MCP adapter should call the same services as the CLI.
+placeholder crates.
 
 Keep language parsers, source-control adapters, hosting enrichment, embeddings and persistence
 behind explicit contracts as they are implemented. Do not let npm, GitHub, Git or a particular

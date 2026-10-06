@@ -135,3 +135,108 @@ fn init_is_non_interactive_and_idempotent() {
             .contains("unchanged: repoise.config.json")
     );
 }
+
+#[test]
+fn status_exit_codes_and_freshness_after_index() {
+    let root = temp_root("status");
+    // No index yet: exit 3, freshness unknown.
+    let before = cli(&["status", root.to_str().unwrap()]);
+    assert_eq!(before.status.code(), Some(3));
+    assert!(
+        String::from_utf8(before.stdout)
+            .unwrap()
+            .contains("freshness: unknown")
+    );
+    assert!(cli(&["index", root.to_str().unwrap()]).status.success());
+    let after = cli(&["status", root.to_str().unwrap()]);
+    assert!(after.status.success());
+    let text = String::from_utf8(after.stdout).unwrap();
+    assert!(text.contains("freshness: fresh"));
+    assert!(text.contains("generation"));
+    // Content changes after the build: stale (exit 3).
+    std::fs::write(root.join("README.md"), "hello again\n").unwrap();
+    let stale = cli(&["status", root.to_str().unwrap()]);
+    assert_eq!(stale.status.code(), Some(3));
+    assert!(
+        String::from_utf8(stale.stdout)
+            .unwrap()
+            .contains("freshness: stale")
+    );
+}
+
+#[test]
+fn search_and_read_round_trip_with_json() {
+    let root = temp_root("search");
+    // Search before any index: exit 3.
+    let before = cli(&["search", "--query", "hello", root.to_str().unwrap()]);
+    assert_eq!(before.status.code(), Some(3));
+    assert!(cli(&["index", root.to_str().unwrap()]).status.success());
+    let output = cli(&[
+        "search",
+        "--query",
+        "hello",
+        "--json",
+        root.to_str().unwrap(),
+    ]);
+    assert!(output.status.success());
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let results = response["results"].as_array().expect("results array");
+    assert!(!results.is_empty());
+    let source_id = results[0]["source_id"].as_str().unwrap().to_string();
+    let hit = &results[0];
+    assert_eq!(hit["path"].as_str().unwrap(), "README.md");
+    assert_eq!(hit["line_start"], 1);
+    let read = cli(&[
+        "read",
+        "--source-id",
+        &source_id,
+        "--json",
+        root.to_str().unwrap(),
+    ]);
+    assert!(read.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(result["path"].as_str().unwrap(), "README.md");
+    assert_eq!(result["text"].as_str().unwrap(), "hello");
+    // A source id from a stale generation fails as an operational error.
+    std::fs::write(root.join("README.md"), "changed\n").unwrap();
+    let stale_read = cli(&["read", "--source-id", &source_id, root.to_str().unwrap()]);
+    assert_eq!(stale_read.status.code(), Some(1));
+    assert!(
+        String::from_utf8(stale_read.stderr)
+            .unwrap()
+            .contains("stale source")
+    );
+}
+
+#[test]
+fn purge_requires_scope_or_all_and_removes_cache_only() {
+    let root = temp_root("purge");
+    assert!(cli(&["index", root.to_str().unwrap()]).status.success());
+    let bin = env!("CARGO_BIN_EXE_repoise");
+    // Neither --all nor a scope: an operational error, nothing removed.
+    let bad = Command::new(bin)
+        .args(["purge"])
+        .current_dir(&root)
+        .output()
+        .expect("CLI should start");
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(root.join(".repoise").exists());
+    // Invalid scope ids are rejected before anything is removed.
+    let invalid = Command::new(bin)
+        .args(["purge", "--repo-id", "../..", "--worktree-id", "x"])
+        .current_dir(&root)
+        .output()
+        .expect("CLI should start");
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(root.join(".repoise").exists());
+    // --all removes the generated cache root; sources survive.
+    let all = Command::new(bin)
+        .args(["purge", "--all"])
+        .current_dir(&root)
+        .output()
+        .expect("CLI should start");
+    assert!(all.status.success());
+    // The generated layout is removed (the empty root directory may remain).
+    assert!(!root.join(".repoise").join("repos").exists());
+    assert!(root.join("README.md").exists());
+}

@@ -10,7 +10,7 @@ No Node, Git installation, credentials, embedding model or runtime environment v
 are required to run this scaffold. Git must be available only when operating on a Git
 repository (the Git adapter shells out to `git` with argument arrays). First toolchain
 installation requires network access; subsequent builds are offline-capable once tools are
-installed (there are no external crates).
+installed. `rusqlite` uses the bundled SQLite build, so no system SQLite is needed.
 
 ## Local workflow
 
@@ -32,22 +32,31 @@ parser/database dependencies or micro-optimizations until a feature and measurem
 
 ## CLI commands
 
-The native CLI works without Node/npm. Commands (all accept an optional positional root):
+The native CLI works without Node/npm. Commands (all accept an optional positional
+root; `purge` operates on the current directory's resolved cache root):
 
 ```sh
 repoise doctor [ROOT]                 # effective settings, capabilities, policy summary
 repoise explain --path <REL> [ROOT]   # explainable include/exclude decision for one path
-repoise index [ROOT]                  # deterministic snapshot manifest and file inventory
+repoise index [ROOT]                  # build and publish the offline index (incremental)
+repoise status [ROOT]                 # scope, snapshot, index and freshness (exit 3 when missing/stale)
+repoise search --query <Q> [ROOT]     # offline lexical search over the current index
+repoise read --source-id <ID> [ROOT]  # exact read-back of a search result
 repoise init [ROOT]                   # idempotent, non-interactive configuration
+repoise purge                         # remove generated cache data (--all or one scope)
 repoise greet | help | version
 ```
 
 Global options: `--json` (machine-readable output), `--config <PATH>` and
-`--local-config <PATH>` (explicit config locations), `--max-file-bytes <N>`.
+`--local-config <PATH>` (explicit config locations), `--max-file-bytes <N>`,
+`--committed` (use the committed Git snapshot instead of the working tree).
+Search options: `--path-filter <GLOB>`, `--role <ROLE>`, `--max-results <N>`
+(default 5, cap 20), `--max-output-tokens <N>`, `--cursor <TOKEN>`.
+Purge options: `--all` or both `--repo-id <ID>` and `--worktree-id <ID>`.
 Init options: `--preset docs-only|docs-code-lexical|hybrid`, `--provider <NAME>`
 (required for hybrid), `--adopt-managed-block <FILE>`, `--dry-run`, `--yes`.
-Unsupported arguments exit 2 with the usage on stderr; I/O and service failures exit 1.
-Search, persistence and MCP are not implemented yet.
+Unsupported arguments exit 2 with the usage on stderr; I/O and service failures
+exit 1; a missing or stale index exits 3 for `status`, `search` and `read`.
 
 Easy fixture path (no credentials, no network):
 
@@ -56,13 +65,17 @@ tmp=$(mktemp -d) && printf 'hello\n' > "$tmp/README.md"
 repoise init --preset docs-only --adopt-managed-block README.md "$tmp"
 repoise doctor "$tmp"
 repoise explain --path .env "$tmp"     # excluded by secret deny
-repoise index "$tmp"                   # manifest hash over the included files
+repoise index "$tmp"                   # chunk, store and publish the index
+repoise status "$tmp"                  # freshness: fresh (exit 0)
+repoise search --query hello "$tmp"    # offline lexical hit with source id
+repoise read --source-id <ID> "$tmp"   # exact text with hash validation
 ```
 
 The workspace test suite covers these behaviors end to end:
 `cargo test --workspace --locked` (contract fixtures live in
-`crates/repoise-core/tests/v1_0.rs` and `crates/repoise-cli/tests/cli.rs`; secret fixtures
-are generated in memory and never stored in Git).
+`crates/repoise-core/tests/v1_0.rs`, `crates/repoise-core/tests/v1_1.rs` and
+`crates/repoise-cli/tests/cli.rs`; secret fixtures are generated in memory and
+never stored in Git). See [storage.md](storage.md) for the persistent index layout.
 
 ## Installation and artifacts
 

@@ -2,11 +2,16 @@
 //!
 //! This crate provides the neutral source-adapter and provenance contracts, the
 //! versioned `repoise.config.json` configuration layer, the explainable
-//! include/exclude/secret policy, deterministic discovery/inventory and the
-//! `init`/`doctor` services. The CLI (and a future MCP adapter) are thin
-//! adapters over these services; see `docs/architecture.md` for boundaries.
+//! include/exclude/secret policy, deterministic discovery/inventory, the
+//! `init`/`doctor` services and the first offline docs milestone: persistent
+//! SQLite/FTS5 index storage with transactional generation publication,
+//! structural prose chunking, incremental reconciliation, lexical search and
+//! exact reads. The CLI (and a future MCP adapter) are thin adapters over
+//! these services; see `docs/architecture.md` for boundaries.
 
 pub mod adapter;
+pub mod cache;
+pub mod chunk;
 pub mod classify;
 pub mod config;
 pub mod discovery;
@@ -14,8 +19,14 @@ pub mod doctor;
 pub mod error;
 pub mod hash;
 pub mod ignore;
+pub mod indexing;
 pub mod init;
 pub mod provenance;
+pub mod purge;
+pub mod read;
+pub mod search;
+pub mod status;
+pub mod store;
 
 /// Human-readable project identity used by the native CLI.
 pub const NAME: &str = "Repoise";
@@ -34,6 +45,13 @@ pub const TEMPLATE_VERSION: &str = "1.0.0";
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// Versioned JSON schema file published alongside the package.
 pub const CONFIG_SCHEMA_FILE: &str = "schemas/repoise.config.v1.schema.json";
+
+/// Version of the persistent index schema (SQLite tables + FTS layout).
+pub const INDEX_SCHEMA_VERSION: i64 = 1;
+/// How many complete published generations a scope retains (current + previous).
+pub const GENERATION_RETENTION: i64 = 2;
+/// Environment variable that overrides the resolved cache root (tests/containers).
+pub const CACHE_ENV_VAR: &str = "REPOISE_CACHE_DIR";
 
 /// Engine error type shared by all core services.
 pub type Result<T> = std::result::Result<T, error::Error>;

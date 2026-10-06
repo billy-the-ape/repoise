@@ -541,3 +541,78 @@ fn has_prefixed(text: &str, prefix: &str, count: usize, valid: &dyn Fn(char) -> 
     }
     false
 }
+
+/// Defense-in-depth redaction: replaces common secret shapes in text with a
+/// `[REDACTED]` marker. Returns the input unchanged when no shape matches.
+/// Not a guarantee of complete secret detection.
+pub fn redact_secret_content(text: &str) -> String {
+    let mut out = text.to_string();
+    redact_prefixed(&mut out, "AKIA", 16, &|c| {
+        c.is_ascii_digit() || c.is_ascii_uppercase()
+    });
+    redact_prefixed(&mut out, "ghp_", 36, &|c| {
+        c.is_ascii_alphanumeric() || c == '_'
+    });
+    redact_prefixed(&mut out, "github_pat_", 22, &|c| {
+        c.is_ascii_alphanumeric() || c == '_'
+    });
+    redact_prefixed(&mut out, "xoxb-", 10, &|c| {
+        c.is_ascii_alphanumeric() || c == '-'
+    });
+    redact_prefixed(&mut out, "xoxp-", 10, &|c| {
+        c.is_ascii_alphanumeric() || c == '-'
+    });
+    redact_prefixed(&mut out, "AIza", 35, &|c| {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_'
+    });
+    // PEM private key blocks: replace from the BEGIN marker to the matching
+    // END marker inclusive.
+    if out.contains("-----BEGIN") && out.contains("PRIVATE KEY-----") {
+        let mut result = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(begin) = rest.find("-----BEGIN") {
+            let after_begin = &rest[begin + 9..];
+            if let Some(end) = after_begin.find("-----END") {
+                let block = &after_begin[..end + 6];
+                if block.contains("PRIVATE KEY-----") {
+                    result.push_str(&rest[..begin]);
+                    result.push_str("[REDACTED]");
+                    rest = &after_begin[end + 6..];
+                    continue;
+                }
+            }
+            // Not a private key block: keep this marker, keep scanning after it.
+            result.push_str(&rest[..begin + 9]);
+            rest = after_begin;
+        }
+        if !rest.is_empty() {
+            result.push_str(rest);
+        }
+        out = result;
+    }
+    out
+}
+
+/// Replaces every `prefix` + `count` valid-char token in `out` in place.
+fn redact_prefixed(out: &mut String, prefix: &str, count: usize, valid: &dyn Fn(char) -> bool) {
+    let bytes = out.as_str();
+    let mut result = String::with_capacity(bytes.len());
+    let mut start = 0usize;
+    while let Some(found) = bytes[start..].find(prefix) {
+        let abs = start + found;
+        let after = abs + prefix.len();
+        let candidate: Vec<char> = bytes[after..].chars().take(count).collect();
+        if candidate.len() == count && candidate.iter().all(|c| valid(*c)) {
+            result.push_str(&bytes[start..abs]);
+            result.push_str("[REDACTED]");
+            start = after + candidate.iter().map(|c| c.len_utf8()).sum::<usize>();
+        } else {
+            result.push_str(&bytes[start..after]);
+            start = after;
+        }
+    }
+    if start > 0 {
+        result.push_str(&bytes[start..]);
+        *out = result;
+    }
+}

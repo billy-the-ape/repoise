@@ -2,8 +2,8 @@
 //!
 //! Every result must trace to exact source: repository, snapshot and file
 //! records pin source kind, opaque revision, content manifest hash and
-//! per-file content hash. Chunk, embedding, generation and history-item
-//! shapes arrive with their implementing PRs (K2/K3/K5).
+//! per-file content hash. Chunk and generation records ship with the K2
+//! offline index; embedding and history-item shapes arrive with K3/K5.
 
 use std::path::PathBuf;
 
@@ -103,6 +103,56 @@ pub struct FileRecord {
     pub language: String,
     /// Parser version that would process this file.
     pub parser_version: String,
+}
+
+/// Chunk-level provenance record (K2).
+///
+/// Identity incorporates repo scope, structural position and chunk content;
+/// line/byte ranges are location metadata that update on line moves without
+/// changing identity when the chunk input is unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkRecord {
+    /// Opaque chunk id (unique within a scope).
+    pub chunk_id: String,
+    /// Opaque parent chunk id for labeled splits of oversized units.
+    pub parent_chunk_id: Option<String>,
+    /// Repository-relative path.
+    pub path: PathBuf,
+    /// Heading ancestry (outermost first).
+    pub heading_path: Vec<String>,
+    /// Logical corpus (docs/config; code in a later PR).
+    pub corpus: String,
+    /// Exact 1-based inclusive line range in the snapshot.
+    pub line_start: u32,
+    pub line_end: u32,
+    /// Inclusive byte range in the snapshot file.
+    pub byte_start: u64,
+    pub byte_end: u64,
+    /// SHA-256 of the chunk text.
+    pub text_hash: String,
+}
+
+/// Generation-level provenance record (K2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenerationRecord {
+    /// Generation id (monotonic per scope database).
+    pub generation_id: i64,
+    /// Schema version of the index.
+    pub schema_version: i64,
+    /// Effective config fingerprint at build time.
+    pub config_fingerprint: String,
+    /// Combined parser fingerprint at build time.
+    pub parser_fingerprint: String,
+    /// Content manifest hash (inventory coverage).
+    pub manifest_hash: String,
+    /// Build timestamp, milliseconds since the Unix epoch.
+    pub built_at_ms: i64,
+    /// Publication state (`published` for served generations).
+    pub publication_state: String,
+    /// File record count.
+    pub files: i64,
+    /// Chunk record count.
+    pub chunks: i64,
 }
 
 /// Deterministic snapshot manifest over included entries.
