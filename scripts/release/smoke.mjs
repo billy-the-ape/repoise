@@ -52,7 +52,7 @@ try {
   );
   assert.match(
     run(process.execPath, [launch, "--help"], { cwd: consumer }),
-    /Usage: repoise/,
+    /USAGE:\s+repoise/,
   );
   const invalid = spawnSync(process.execPath, [launch, "--unknown"], {
     cwd: consumer,

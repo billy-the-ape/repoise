@@ -169,7 +169,10 @@ fn main() -> ExitCode {
     let opts = match parse_args(&args) {
         Ok(opts) => opts,
         Err(message) => {
-            let _ = writeln!(io::stderr().lock(), "error: {message}");
+            let _ = writeln!(
+                io::stderr().lock(),
+                "error: {message}\nTry 'repoise --help' for usage."
+            );
             let _ = write!(io::stderr().lock(), "\n{USAGE}");
             return ExitCode::from(2);
         }
