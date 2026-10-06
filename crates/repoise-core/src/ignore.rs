@@ -238,7 +238,7 @@ pub fn rule_matches(rule: &Rule, relative: &Path, is_dir: Option<bool>) -> bool 
     let Some(base_rel) = relative.strip_prefix(&rule.base).ok() else {
         return false;
     };
-    let text = base_rel.to_string_lossy();
+    let text = crate::adapter::to_posix(base_rel);
     let matched = if rule.anchored {
         glob_match(&rule.pattern, &text)
     } else {
@@ -263,7 +263,7 @@ fn suffix_matches(pattern: &str, path: &Path) -> bool {
         let Some(suffix) = suffix else {
             continue;
         };
-        if glob_match(pattern, &suffix.to_string_lossy()) {
+        if glob_match(pattern, &crate::adapter::to_posix(&suffix)) {
             return true;
         }
     }
@@ -293,7 +293,7 @@ impl MatchedRule {
         let display = if rule.base.as_os_str().is_empty() {
             rule.raw.clone()
         } else {
-            format!("{}/{}", rule.base.to_string_lossy(), rule.raw)
+            format!("{}/{}", crate::adapter::to_posix(&rule.base), rule.raw)
         };
         Self {
             source: rule.source.name(),
@@ -482,7 +482,7 @@ impl Policy {
             key.push('|');
             key.push_str(&rule.source.name());
             key.push('|');
-            key.push_str(&rule.base.to_string_lossy());
+            key.push_str(&crate::adapter::to_posix(&rule.base));
             key.push('|');
             key.push_str(&rule.raw);
             key.push('\n');

@@ -339,7 +339,7 @@ fn filesystem_adapter_never_follows_symlinks_and_contains_reads() {
         .unwrap();
     let paths: Vec<String> = entries
         .iter()
-        .map(|e| e.path.to_string_lossy().into_owned())
+        .map(|e| repoise_core::adapter::to_posix(&e.path))
         .collect();
     assert!(paths.contains(&"docs/a.md".to_string()));
     #[cfg(unix)]

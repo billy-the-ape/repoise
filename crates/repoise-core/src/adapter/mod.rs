@@ -258,6 +258,21 @@ pub fn normalize_relative(path: &Path) -> Result<PathBuf, AdapterError> {
     Ok(out)
 }
 
+/// Renders a relative path with `/` separators on every platform.
+///
+/// Used wherever a path becomes a key, hash input, glob subject or Git
+/// revision spec so behavior and manifests do not depend on the host OS.
+pub fn to_posix(path: &Path) -> String {
+    let mut out = String::new();
+    for component in path.components() {
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str(&component.as_os_str().to_string_lossy());
+    }
+    out
+}
+
 /// Neutral source adapter: enumerate and read exact source at a revision.
 pub trait SourceAdapter {
     /// The kind of source this adapter reads.

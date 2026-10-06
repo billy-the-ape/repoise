@@ -129,7 +129,7 @@ impl SnapshotManifest {
     pub fn hash(entries: &[SourceEntry]) -> String {
         let mut key = String::new();
         for entry in entries {
-            key.push_str(&entry.path.to_string_lossy());
+            key.push_str(&crate::adapter::to_posix(&entry.path));
             key.push('\0');
             key.push_str(&entry.content_hash);
             key.push('\0');

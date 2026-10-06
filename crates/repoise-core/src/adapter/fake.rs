@@ -108,7 +108,7 @@ impl SourceAdapter for FakeRevisionAdapter {
         relative: &Path,
     ) -> Result<Vec<u8>, AdapterError> {
         let relative = normalize_relative(relative)?;
-        let key = relative.to_string_lossy().into_owned();
+        let key = super::to_posix(&relative);
         let tree = self
             .revisions
             .get(revision.id.as_str())

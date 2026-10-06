@@ -210,7 +210,7 @@ pub fn classify(
 
 /// Built-in path heuristics; never claims implementation from structure alone.
 pub fn infer_role(relative: &Path) -> (Role, Lifecycle) {
-    let path = relative.to_string_lossy().to_lowercase();
+    let path = crate::adapter::to_posix(relative).to_lowercase();
     let file_name = relative
         .file_name()
         .map(|name| name.to_string_lossy().to_lowercase())

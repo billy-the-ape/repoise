@@ -73,7 +73,7 @@ impl GitAdapter {
     /// Exact bytes of the file at `commit:path`, or `MissingFile`.
     fn blob_at(&self, commit: &str, relative: &Path) -> Result<Vec<u8>, AdapterError> {
         let relative = normalize_relative(relative)?;
-        let spec = relative.to_string_lossy().into_owned();
+        let spec = super::to_posix(&relative);
         let blob = match self.run_git(&["rev-parse", "--verify", &format!("{commit}:{spec}")]) {
             Ok(value) => value,
             Err(_) => return Err(AdapterError::MissingFile(relative)),
