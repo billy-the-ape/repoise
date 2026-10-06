@@ -76,7 +76,7 @@ impl CachePaths {
             };
             #[cfg(target_os = "macos")]
             {
-                return base.join("Library").join("Caches").join("repoise");
+                base.join("Library").join("Caches").join("repoise")
             }
             #[cfg(not(target_os = "macos"))]
             {
