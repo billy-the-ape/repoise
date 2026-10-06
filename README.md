@@ -3,11 +3,12 @@
 An offline-first repository knowledge indexer for coding agents, designed to help them find
 relevant code, documentation and history with compact, source-linked context.
 
-**Status: offline docs index.** The native CLI supports `init`, `doctor`, `explain`,
-`index` (incremental chunking and persistent SQLite/FTS5 publication), `status`
-(scope/snapshot/freshness), `search` (offline lexical search) and `read` (exact
-read-back with hash validation), plus `purge` for generated cache data. Embeddings,
-code grammars, history and MCP are not implemented yet. Native `0.1.0-alpha.0`
+**Status: offline docs index with opt-in hybrid search.** The native CLI supports
+`init`, `doctor`, `explain`, `index` (incremental chunking and persistent SQLite/FTS5
+publication), `status` (scope/snapshot/freshness), `search` (offline lexical search,
+plus hybrid search over an operator-configured OpenAI-compatible embedding provider)
+and `read` (exact read-back with hash validation), plus `purge` for generated cache
+data. Code grammars, history and MCP are not implemented yet. Native `0.1.0-alpha.0`
 archives are published, along with Linux/macOS npm binary packages. The main npm
 launcher and Windows npm package are pending a registry name review; `npx repoise`
 is not yet a usable installation path.

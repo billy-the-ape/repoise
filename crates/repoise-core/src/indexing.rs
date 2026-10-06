@@ -72,6 +72,10 @@ pub struct IndexOutcome {
     pub chunks_removed: usize,
     /// Inventory skip count (diagnostics, never content).
     pub files_skipped: usize,
+    /// Vector records published in the new generation (0 when lexical-only).
+    pub vectors_total: usize,
+    /// Embedding session stats, when embedding ran for this build.
+    pub embedding: Option<crate::embed::EmbeddingStats>,
 }
 
 /// The versioned `state.json` integration manifest (non-canonical; the
@@ -238,7 +242,9 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Builds one index generation and publishes it transactionally.
+/// Builds one index generation and publishes it transactionally. When an
+/// embedding session is provided, chunk vectors are embedded (cache-first,
+/// bounded provider calls) and published with the same generation.
 pub fn index(
     adapter: &dyn crate::adapter::SourceAdapter,
     mode: SnapshotMode,
@@ -246,6 +252,7 @@ pub fn index(
     store: &Store,
     cache: &CachePaths,
     request: &IndexRequest,
+    embed_session: Option<&crate::embed::EmbeddingClient>,
 ) -> Result<IndexOutcome> {
     let inventory = discovery::inventory(adapter, mode, eff)?;
     let canonical_root = adapter.canonical_root()?;
@@ -381,6 +388,49 @@ pub fn index(
         }
     }
 
+    // Optional embedding pass: cache-first, bounded provider calls. Vectors
+    // publish only with this generation (same transaction), so failed or
+    // pending chunks never serve a vector and superseded vectors are
+    // discarded. Unchanged chunk inputs are served from the content-
+    // addressed cache without re-embedding.
+    let mut vectors: Vec<store::ChunkVecRow> = Vec::new();
+    let mut vector_profile: Option<String> = None;
+    let mut embedding_stats: Option<crate::embed::EmbeddingStats> = None;
+    if let Some(client) = embed_session {
+        let profile = client.profile();
+        let fingerprint = profile.fingerprint();
+        let embedding_cache =
+            crate::embed::EmbeddingCache::open(cache.embedding_cache_path(&repo_id))?;
+        let work: Vec<crate::embed::EmbeddingWork> = chunk_rows
+            .iter()
+            .map(|chunk| crate::embed::EmbeddingWork {
+                chunk_id: chunk.chunk_id.clone(),
+                input: chunk.text.clone(),
+                input_hash: chunk.text_hash.clone(),
+            })
+            .collect();
+        let outcome = crate::embed::embed_chunks(&embedding_cache, client, &work, built_at_ms)?;
+        embedding_stats = Some(outcome.stats);
+        vector_profile = Some(fingerprint.clone());
+        let text_hash_by_id: std::collections::HashMap<&str, &str> = chunk_rows
+            .iter()
+            .map(|chunk| (chunk.chunk_id.as_str(), chunk.text_hash.as_str()))
+            .collect();
+        for (chunk_id, vector) in outcome.vectors {
+            let input_hash = text_hash_by_id
+                .get(chunk_id.as_str())
+                .expect("vector belongs to this generation's chunk")
+                .to_string();
+            vectors.push(store::ChunkVecRow {
+                chunk_id,
+                fingerprint: fingerprint.clone(),
+                input_hash,
+                dimension: profile.dimension,
+                vector,
+            });
+        }
+    }
+
     let snapshot = inventory.snapshot.clone();
     let mode_name = format!("{mode:?}");
     let input = GenerationInput {
@@ -398,6 +448,8 @@ pub fn index(
         built_at_ms,
         files: file_rows.clone(),
         chunks: chunk_rows.clone(),
+        vectors,
+        vector_profile,
     };
     let generation_id = match store::publish(&conn, &input) {
         Ok(id) => {
@@ -409,6 +461,11 @@ pub fn index(
             return Err(err);
         }
     };
+    // Reclaim shared embeddings no longer referenced by retained generations.
+    // A GC problem never fails the build (lexical operation is unaffected).
+    if embedding_stats.is_some() {
+        let _ = crate::embed::gc_repo_embeddings(cache, &repo_id);
+    }
     let state = StateFile {
         version: 1,
         repo_id: repo_id.clone(),
@@ -439,6 +496,8 @@ pub fn index(
         chunks_added,
         chunks_removed,
         files_skipped: inventory.skips.len(),
+        vectors_total: input.vectors.len(),
+        embedding: embedding_stats,
     })
 }
 

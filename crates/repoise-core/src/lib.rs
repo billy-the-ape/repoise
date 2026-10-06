@@ -6,7 +6,10 @@
 //! `init`/`doctor` services and the first offline docs milestone: persistent
 //! SQLite/FTS5 index storage with transactional generation publication,
 //! structural prose chunking, incremental reconciliation, lexical search and
-//! exact reads. The CLI (and a future MCP adapter) are thin adapters over
+//! exact reads. Optional hybrid embedding search (operator-selected providers
+//! behind a versioned interface, content-addressed vector cache, RRF fusion)
+//! degrades to the offline lexical baseline without provider credentials.
+//! The CLI (and a future MCP adapter) are thin adapters over
 //! these services; see `docs/architecture.md` for boundaries.
 
 pub mod adapter;
@@ -16,6 +19,7 @@ pub mod classify;
 pub mod config;
 pub mod discovery;
 pub mod doctor;
+pub mod embed;
 pub mod error;
 pub mod hash;
 pub mod ignore;
@@ -47,7 +51,8 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const CONFIG_SCHEMA_FILE: &str = "schemas/repoise.config.v1.schema.json";
 
 /// Version of the persistent index schema (SQLite tables + FTS layout).
-pub const INDEX_SCHEMA_VERSION: i64 = 1;
+/// Version 2 adds the per-generation `chunk_vec` vector table (card K3).
+pub const INDEX_SCHEMA_VERSION: i64 = 2;
 /// How many complete published generations a scope retains (current + previous).
 pub const GENERATION_RETENTION: i64 = 2;
 /// Environment variable that overrides the resolved cache root (tests/containers).

@@ -231,6 +231,8 @@ fn store_publishes_generations_and_retains_current_plus_previous() {
                 built_at_ms: generation,
                 files: vec![file],
                 chunks: vec![chunk],
+                vectors: Vec::new(),
+                vector_profile: None,
             },
         )
         .unwrap();
@@ -297,6 +299,7 @@ fn build(files: &[(&str, &str)], h: &Harness) -> indexing::IndexOutcome {
         &h.store,
         &h.cache,
         &IndexRequest::default(),
+        None,
     )
     .unwrap()
 }
@@ -314,7 +317,10 @@ fn search_files(files: &[(&str, &str)], h: &Harness, query: &str) -> search::Sea
             max_results: None,
             max_output_tokens: None,
             cursor: None,
+            mode: search::SearchMode::Lexical,
+            rrf_k: None,
         },
+        None,
     )
     .unwrap()
 }
@@ -467,7 +473,10 @@ fn search_pagination_per_file_cap_and_cursor_binding() {
             max_results: None,
             max_output_tokens: None,
             cursor: None,
+            mode: search::SearchMode::Lexical,
+            rrf_k: None,
         },
+        None,
     )
     .unwrap_err();
     match err {
@@ -501,8 +510,11 @@ fn search_pagination_per_file_cap_and_cursor_binding() {
         max_results: None,
         max_output_tokens: None,
         cursor: Some(cursor.clone()),
+        mode: search::SearchMode::Lexical,
+        rrf_k: None,
     };
-    let err = search::search(&adapter, SnapshotMode::PlainDirectory, &h.store, &bad).unwrap_err();
+    let err =
+        search::search(&adapter, SnapshotMode::PlainDirectory, &h.store, &bad, None).unwrap_err();
     assert!(
         matches!(err, repoise_core::error::Error::IndexState(_)),
         "{err:?}"
@@ -515,9 +527,17 @@ fn search_pagination_per_file_cap_and_cursor_binding() {
         max_results: None,
         max_output_tokens: None,
         cursor: Some(cursor),
+        mode: search::SearchMode::Lexical,
+        rrf_k: None,
     };
-    let second_page =
-        search::search(&adapter, SnapshotMode::PlainDirectory, &h.store, &second).unwrap();
+    let second_page = search::search(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &h.store,
+        &second,
+        None,
+    )
+    .unwrap();
     assert!(!second_page.results.is_empty());
     let first_ids: Vec<&str> = first_page
         .results
@@ -545,12 +565,15 @@ fn search_pagination_per_file_cap_and_cursor_binding() {
         max_results: None,
         max_output_tokens: None,
         cursor: Some(first_page.next_cursor.clone().unwrap()),
+        mode: search::SearchMode::Lexical,
+        rrf_k: None,
     };
     let err = search::search(
         &adapter,
         SnapshotMode::PlainDirectory,
         &h.store,
         &stale_cursor,
+        None,
     )
     .unwrap_err();
     assert!(

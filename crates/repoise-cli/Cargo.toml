@@ -12,10 +12,17 @@ description = "Native Repoise command-line adapter"
 name = "repoise"
 path = "src/main.rs"
 
+[features]
+default = ["remote-embedding"]
+# HTTPS transport for the OpenAI-compatible embedding provider. Disabling it
+# removes the network stack from the binary; lexical operation is unaffected.
+remote-embedding = ["ureq"]
+
 [dependencies]
 repoise-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "json"], optional = true }
 
 [lints]
 workspace = true

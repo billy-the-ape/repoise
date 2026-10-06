@@ -51,7 +51,8 @@ Global options: `--json` (machine-readable output), `--config <PATH>` and
 `--local-config <PATH>` (explicit config locations), `--max-file-bytes <N>`,
 `--committed` (use the committed Git snapshot instead of the working tree).
 Search options: `--path-filter <GLOB>`, `--role <ROLE>`, `--max-results <N>`
-(default 5, cap 20), `--max-output-tokens <N>`, `--cursor <TOKEN>`.
+(default 5, cap 20), `--max-output-tokens <N>`, `--cursor <TOKEN>`,
+`--mode <lexical|hybrid|vectors-only>` (default lexical), `--rrf-k <N>`.
 Purge options: `--all` or both `--repo-id <ID>` and `--worktree-id <ID>`.
 Init options: `--preset docs-only|docs-code-lexical|hybrid`, `--provider <NAME>`
 (required for hybrid), `--adopt-managed-block <FILE>`, `--dry-run`, `--yes`.
@@ -76,6 +77,20 @@ The workspace test suite covers these behaviors end to end:
 `crates/repoise-core/tests/v1_0.rs`, `crates/repoise-core/tests/v1_1.rs` and
 `crates/repoise-cli/tests/cli.rs`; secret fixtures are generated in memory and
 never stored in Git). See [storage.md](storage.md) for the persistent index layout.
+
+## Optional hybrid search
+
+`search --mode hybrid|vectors-only` and `index` use an embedding provider only when
+the effective config has a complete profile: `embedding.provider`, `model`,
+`dimensions`, `endpoint` (must be an `env:` reference) and `apiKeyEnv`. Endpoint and
+API-key values resolve from the referenced environment variables at runtime and never
+enter config or caches; missing values degrade to the lexical baseline with an
+explicit note. Budgets (`batchSize`, `timeoutMs`, `maxRetries`,
+`maxRequestsPerBuild`, `maxInputCharsPerBuild`) and `search.rrfK` are configurable.
+The HTTPS transport is built into the CLI behind the default `remote-embedding`
+feature; `cargo check -p repoise-cli --no-default-features` produces the lexical-only
+binary. `doctor` additionally warns (without failing) when `endpoint` resolves to a
+non-TLS `http://` remote host: source text and the API key would travel in cleartext.
 
 ## Installation and artifacts
 

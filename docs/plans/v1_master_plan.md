@@ -808,16 +808,17 @@ Future subsystems gain crates only when real boundaries justify them.
 | ------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | K1                              | Complete (v1-0)            | Architecture/AGENTS map, Rust workspace/core/CLI, pinned toolchain/lockfile, checks/build/install scripts, three-OS CI and thin npm scaffold complete. Neutral adapter/provenance contracts (filesystem, Git, fake-revision), versioned config + published schema, explainable ignore policy, deterministic discovery/inventory, idempotent init, doctor/explain and acceptance tests complete. |
 | K2                              | Complete (v1-1)            | SQLite/FTS5 persistent store with transactional generation publication and bounded retention, structural Markdown/text/config chunking, incremental reconciliation, offline lexical search with cursors, exact reads with hash validation, status freshness and purge complete, with core and CLI acceptance tests. |
-| K3                              | Not started                  | Embedding adapters/cache/profiles, hybrid search and measured budgets remain pending.                                                                                                                                                                                                    |
+| K3                              | Complete (v1-2)            | Versioned provider adapter (OpenAI-compatible endpoint), content-addressed embedding cache with profile fingerprints, per-generation vector publication, hybrid RRF search with coverage and lexical degradation, bounded budgets and embedding-cache GC complete, with core acceptance tests. The local inference preset remains evaluation-only. |
 | K4                              | Not started                  | Language grammars, code symbols/chunks/references remain pending.                                                                                                                                                                                                                        |
 | K5                              | Not started                  | Local history and optional verified hosting enrichment remain pending.                                                                                                                                                                                                                   |
 | K6                              | Distribution groundwork only | Three-target offline packed-consumer smoke, checksums, release runbooks and public native alpha complete. Linux/macOS npm alphas public; Windows/main wrapper and OIDC validation pending. MCP/watch/overlay/build integration, feature acceptance, benchmarks and pilot remain pending. |
 | ai-gateway consumer integration | Not started                  | Separate pinned consumer PR follows functional offline indexing acceptance.                                                                                                                                                                                                              |
 
-K1 and K2 establish the first offline docs milestone: adapter/provenance contracts,
-configuration, init, discovery, doctor, and the persistent SQLite/FTS5 index with
-offline lexical search, exact reads and freshness. Embeddings, code grammars, history
-and MCP release acceptance remain pending. Initial build evidence is linked in the
+K1, K2 and K3 establish the first offline docs milestone plus opt-in hybrid search:
+adapter/provenance contracts, configuration, init, discovery, doctor, the persistent
+SQLite/FTS5 index with offline lexical search, exact reads and freshness, and
+fingerprinted embeddings with RRF fusion. Code grammars, history and MCP release
+acceptance remain pending. Initial build evidence is linked in the
 [alpha execution record](../publish/alpha-0-status.md); no agent task/token gains are measured.
 
 Target 6 core PRs in this repository, plus a separate ai-gateway consumer integration PR;

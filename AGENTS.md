@@ -7,11 +7,13 @@ The planned engine is Rust, with a native CLI and stdio MCP; npm is the first di
 Target repositories may use any language, framework, host or source-control system.
 This repository has a Rust workspace and native CLI with configuration, discovery, init,
 doctor, and the offline docs index: incremental SQLite/FTS5 chunking and publication,
-status freshness, offline lexical search, exact read-back and purge (cards K1–K2).
+status freshness, offline lexical search, exact read-back and purge (cards K1–K2),
+plus card K3: opt-in OpenAI-compatible embeddings with a content-addressed cache,
+vector coverage, hybrid RRF search, budgets and embedding-cache GC.
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
 The npm wrapper and Windows npm package remain pending a registry name review.
-Embeddings, code grammars, history and MCP are not implemented yet; OIDC staging is
-configured but unverified.
+Code grammars, history and MCP are not implemented yet; the local inference embedding
+preset is evaluated, not shipped; OIDC staging is configured but unverified.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
 ## Read only the context relevant to the task

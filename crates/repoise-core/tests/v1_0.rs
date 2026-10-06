@@ -240,7 +240,7 @@ fn embedding_endpoint_must_be_environment_reference() {
 
     write(
         &root.join("repoise.config.json"),
-        r#"{"schemaVersion":1,"preset":"hybrid","embedding":{"provider":"openai","endpoint":"env:OPENAI_ENDPOINT","model":"m1"}}"#,
+        r#"{"schemaVersion":1,"preset":"hybrid","embedding":{"provider":"openai-compatible","endpoint":"env:OPENAI_ENDPOINT","model":"m1","dimensions":8,"apiKeyEnv":"OPENAI_API_KEY"}}"#,
     );
     let eff = EffectiveConfig::resolve(&root, &CliOverrides::default()).expect("resolve");
     assert!(eff.validate().is_empty());
