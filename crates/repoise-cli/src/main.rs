@@ -196,7 +196,7 @@ fn run(opts: CliOptions) -> Result<(), String> {
             Ok(())
         }
         Command::Version => {
-            println!("{NAME} {}", env!("CARGO_PKG_VERSION"));
+            println!("repoise {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Command::Doctor => run_doctor(&opts),
