@@ -18,6 +18,19 @@ pub enum Error {
     Init(String),
     /// JSON parsing or serialization failure.
     Json(String),
+    /// Persistent index (SQLite) failure.
+    Sqlite(rusqlite::Error),
+    /// The index is missing or stale for the requested scope.
+    IndexState(String),
+    /// The exact source changed since the index was built (validation failed).
+    Stale {
+        /// Relative path that is stale.
+        path: String,
+        /// Current content hash when re-read.
+        revision_hash: String,
+        /// Why validation failed.
+        reason: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -29,6 +42,11 @@ impl fmt::Display for Error {
             Error::Policy(msg) => write!(f, "policy error: {msg}"),
             Error::Init(msg) => write!(f, "init error: {msg}"),
             Error::Json(msg) => write!(f, "json error: {msg}"),
+            Error::Sqlite(err) => write!(f, "index storage error: {err}"),
+            Error::IndexState(msg) => write!(f, "index state error: {msg}"),
+            Error::Stale { path, reason, .. } => {
+                write!(f, "stale source ({path}): {reason}")
+            }
         }
     }
 }
@@ -37,6 +55,7 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Error::Io(err) => Some(err),
+            Error::Sqlite(err) => Some(err),
             _ => None,
         }
     }
@@ -57,5 +76,11 @@ impl From<crate::adapter::AdapterError> for Error {
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
         Error::Json(err.to_string())
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(err: rusqlite::Error) -> Self {
+        Error::Sqlite(err)
     }
 }

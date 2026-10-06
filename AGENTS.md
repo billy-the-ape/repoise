@@ -5,10 +5,13 @@
 Repoise is an offline-first repository knowledge indexer for coding agents.
 The planned engine is Rust, with a native CLI and stdio MCP; npm is the first distribution channel.
 Target repositories may use any language, framework, host or source-control system.
-This repository has a Rust workspace and native CLI scaffold (greeting/help/version only).
+This repository has a Rust workspace and native CLI with configuration, discovery, init,
+doctor, and the offline docs index: incremental SQLite/FTS5 chunking and publication,
+status freshness, offline lexical search, exact read-back and purge (cards K1–K2).
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
 The npm wrapper and Windows npm package remain pending a registry name review.
-Indexing, MCP and persistence are not implemented yet; OIDC staging is configured but unverified.
+Embeddings, code grammars, history and MCP are not implemented yet; OIDC staging is
+configured but unverified.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
 ## Read only the context relevant to the task
@@ -21,7 +24,8 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | Current code structure and portability boundaries  | [Architecture](docs/architecture.md); master plan section 3                                                            |
 | Toolchain, checks, build and local installation    | [Development](docs/development.md)                                                                                     |
 | npm ownership, release controls and distribution   | [Publishing guides](docs/publish/README.md); [alpha status](docs/publish/alpha-0-status.md); [Changelog](CHANGELOG.md) |
-| Intake, parsing, storage and freshness             | Master plan sections 4–7                                                                                               |
+| Intake, parsing and freshness planning             | Master plan sections 4–7                                                                                               |
+| Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
 | Agent interfaces and installation                  | Master plan sections 8–10                                                                                              |
 | Benchmarks, resource budgets and adoption gates    | Master plan section 11                                                                                                 |
 | Implementation sequence and rollout                | Master plan sections 12–14                                                                                             |

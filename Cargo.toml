@@ -15,6 +15,7 @@ repoise-core = { path = "crates/repoise-core" }
 serde = { version = "=1.0.219", features = ["derive"] }
 serde_json = "=1.0.140"
 sha2 = "=0.10.9"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

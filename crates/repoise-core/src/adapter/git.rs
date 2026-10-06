@@ -54,6 +54,12 @@ impl GitAdapter {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// Counts modified/untracked entries via `git status --porcelain`.
+    pub fn dirty_count(&self) -> Result<usize, AdapterError> {
+        let out = self.run_git(&["status", "--porcelain"])?;
+        Ok(out.lines().filter(|line| !line.trim().is_empty()).count())
+    }
+
     /// Resolves `git:<object id>` style revisions to a commit id.
     pub fn resolve_commit(&self, revision_id: &RevisionId) -> Result<String, AdapterError> {
         let Some(object) = revision_id.as_str().strip_prefix("git:") else {
