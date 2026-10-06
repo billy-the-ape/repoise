@@ -93,5 +93,5 @@ When a separately authorized change modifies deployment devices, also update hom
 
 ## Editing
 
-- Tool parameter inputs, especially editor, should be kept below 6000 characters
+- Tool parameter inputs, especially editor, should be kept below 5000 characters
 - Use rustfmt to format files instead of ruminating over formatting
