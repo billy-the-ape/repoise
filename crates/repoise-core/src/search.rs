@@ -1,13 +1,21 @@
-//! Offline lexical search (master plan section 8, PR 2 scope).
+//! Offline lexical search, with optional hybrid retrieval (master plan
+//! section 8, cards K2–K3).
 //!
-//! Search runs entirely against the current published generation of the
-//! declared scope using SQLite FTS5. Ranking is BM25 plus explainable
-//! boosts: exact path/symbol precedence for identifier queries and a modest
+//! The baseline runs entirely against the current published generation of the
+//! declared scope using SQLite FTS5. Ranking is BM25 plus explainable boosts:
+//! exact path/symbol precedence for identifier queries and a modest
 //! current-document preference (history/plan/decision roles win only for
 //! history-oriented queries). Results carry exact provenance and, for GitHub
 //! remotes with Git revisions, a validated permalink. No matches yield a
 //! lexical/filesystem fallback suggestion. Cursored pagination binds the
 //! cursor to the generation, query and filters, with an expiry.
+//!
+//! When the served generation stores vectors for one profile, hybrid mode
+//! embeds the query once (provider failure degrades to lexical) and fuses the
+//! lexical rank with an exact cosine rank using reciprocal rank fusion (RRF,
+//! configurable `k`). `--mode lexical` forces the offline baseline (no query
+//! embedding call, no vector candidate scan); `--mode vectors-only` serves
+//! the cosine rank alone.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +23,7 @@ use crate::Result;
 use crate::adapter::SnapshotMode;
 use crate::cache::worktree_id;
 use crate::classify::Role;
+use crate::embed::DEFAULT_RRF_K;
 use crate::error::Error;
 use crate::hash;
 use crate::provenance::RepositoryRecord;
@@ -34,6 +43,28 @@ const MAX_HITS_PER_FILE: usize = 3;
 const CANDIDATE_CAP: usize = 400;
 /// Cursor time-to-live (milliseconds).
 const CURSOR_TTL_MS: i64 = 60 * 60 * 1000;
+/// Candidate cap for the vector rank fed into fusion.
+const VECTOR_RANK_CAP: usize = 200;
+
+/// Retrieval mode requested by the caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchMode {
+    /// Offline lexical baseline (no query embedding, no vector scan).
+    #[default]
+    Lexical,
+    /// Lexical plus vector candidates fused by reciprocal rank fusion.
+    Hybrid,
+    /// Vector cosine rank only (degrades to lexical when unavailable).
+    VectorsOnly,
+}
+
+/// One seam for embedding the query itself (a provider call). A `None`
+/// result, or an error, degrades the search to the lexical baseline.
+pub trait QueryEmbedder {
+    /// Embeds one natural-language query (validated vector or `None`).
+    fn embed_query(&self, query: &str) -> Result<Option<Vec<f32>>>;
+}
 
 /// Words that mark history/rationale-oriented questions.
 const HISTORY_WORDS: &[&str] = &[
@@ -65,6 +96,10 @@ pub struct SearchRequest {
     pub max_output_tokens: Option<u64>,
     /// Opaque pagination cursor from a previous response.
     pub cursor: Option<String>,
+    /// Retrieval mode (default lexical).
+    pub mode: SearchMode,
+    /// Reciprocal-rank-fusion `k` override for hybrid mode (default 60).
+    pub rrf_k: Option<u32>,
 }
 
 /// One ranked result.
@@ -293,6 +328,7 @@ pub fn fts_match_expression(query: &str) -> Option<String> {
 }
 
 /// One FTS candidate row before ranking.
+#[derive(Clone, Debug)]
 struct Candidate {
     chunk_id: String,
     path: String,
@@ -360,12 +396,35 @@ pub fn github_url(
     ))
 }
 
-/// Runs one offline lexical search against the current published generation.
+/// The retrieval mode actually executed for one search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunMode {
+    /// Lexical only (baseline, or degraded hybrid/vectors-only).
+    Lexical,
+    /// Lexical fused with the vector rank.
+    Hybrid,
+    /// Vector cosine rank only.
+    Vectors,
+}
+
+impl RunMode {
+    fn label(self) -> &'static str {
+        match self {
+            RunMode::Lexical => "lexical",
+            RunMode::Hybrid => "hybrid",
+            RunMode::Vectors => "vectors-only",
+        }
+    }
+}
+
+/// Runs one search (lexical baseline or hybrid) against the current
+/// published generation.
 pub fn search(
     adapter: &dyn crate::adapter::SourceAdapter,
     mode: SnapshotMode,
     store: &Store,
     request: &SearchRequest,
+    query_embedder: Option<&dyn QueryEmbedder>,
 ) -> Result<SearchResponse> {
     let (repo_id, worktree_id, remote_identity) = scope_for_search(adapter, mode)?;
     let conn = store.open()?;
@@ -376,8 +435,8 @@ pub fn search(
     };
     let now = crate::indexing::now_ms();
     let filters = format!(
-        "{:?}|{:?}|{:?}",
-        request.path_filter, request.role_filter, request.max_results
+        "{:?}|{:?}|{:?}|{:?}|{:?}",
+        request.path_filter, request.role_filter, request.max_results, request.mode, request.rrf_k
     );
     let offset = match &request.cursor {
         Some(cursor) => decode_cursor(cursor, meta.generation_id, &request.query, &filters, now)?,
@@ -398,7 +457,42 @@ pub fn search(
 
     let mut candidates: Vec<Candidate> = Vec::new();
     let matched_any = fts_match_expression(&request.query).is_some();
-    if matched_any {
+
+    // Determine the mode actually executable: hybrid/vectors-only need stored
+    // vectors for the generation and a query vector. A missing provider or a
+    // failed query embedding degrades to the lexical baseline (the coverage
+    // report still shows the stored vector count).
+    let has_vectors = meta.vector_profile.is_some();
+    let query_vector: Option<Vec<f32>> = match request.mode {
+        SearchMode::Lexical => None,
+        _ if has_vectors => match query_embedder {
+            Some(embedder) => embedder.embed_query(&request.query).ok().flatten(),
+            None => None,
+        },
+        _ => None,
+    };
+    let run_mode = match (request.mode, has_vectors, query_vector.is_some()) {
+        (SearchMode::Lexical, _, _) => RunMode::Lexical,
+        (SearchMode::Hybrid, true, true) => RunMode::Hybrid,
+        (SearchMode::VectorsOnly, true, true) => RunMode::Vectors,
+        (_, _, _) => RunMode::Lexical,
+    };
+
+    // Exact cosine rank over this generation's stored vectors (one profile).
+    let mut vector_rank: Vec<(String, f64)> = Vec::new();
+    if let (Some(query_vector), Some(fingerprint)) =
+        (query_vector.as_ref(), meta.vector_profile.as_deref())
+    {
+        let vectors = store::vectors_for_generation(&conn, meta.generation_id, fingerprint)?;
+        vector_rank = vectors
+            .into_iter()
+            .map(|(chunk_id, vector)| (chunk_id, crate::embed::cosine(query_vector, &vector)))
+            .collect();
+        vector_rank.sort_by(|a, b| b.1.total_cmp(&a.1));
+        vector_rank.truncate(VECTOR_RANK_CAP);
+    }
+
+    if matched_any && run_mode != RunMode::Vectors {
         let match_expr = fts_match_expression(&request.query).expect("terms");
         let mut sql = String::from(
             "SELECT chunk_fts.chunk_id, chunk_fts.path, chunk_fts.heading, \
@@ -508,14 +602,66 @@ pub fn search(
             .then_with(|| a.2.line_start.cmp(&b.2.line_start))
     });
 
+    // Lexical rank order and reasons by chunk id (for fusion and explanations).
+    let lexical_rank: std::collections::HashMap<String, usize> = ranked
+        .iter()
+        .enumerate()
+        .map(|(index, (_, _, candidate))| (candidate.chunk_id.clone(), index))
+        .collect();
+    let lexical_order: Vec<String> = ranked
+        .iter()
+        .map(|(_, _, candidate)| candidate.chunk_id.clone())
+        .collect();
+    let reasons_by_id: std::collections::HashMap<&str, String> = ranked
+        .iter()
+        .map(|(_, reasons, candidate)| (candidate.chunk_id.as_str(), reasons.clone()))
+        .collect();
+    let vector_rank_index: std::collections::HashMap<&str, (usize, f64)> = vector_rank
+        .iter()
+        .enumerate()
+        .map(|(index, (chunk_id, score))| (chunk_id.as_str(), (index, *score)))
+        .collect();
+
+    // Reciprocal rank fusion over the ranks that ran in this mode.
+    let rrf_k = request.rrf_k.filter(|k| *k > 0).unwrap_or(DEFAULT_RRF_K) as f64;
+    let mut fused: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    if run_mode != RunMode::Vectors {
+        for (rank, chunk_id) in lexical_order.iter().enumerate() {
+            *fused.entry(chunk_id.clone()).or_default() += 1.0 / (rrf_k + rank as f64 + 1.0);
+        }
+    }
+    if run_mode != RunMode::Lexical {
+        for (rank, (chunk_id, _score)) in vector_rank.iter().enumerate() {
+            *fused.entry(chunk_id.clone()).or_default() += 1.0 / (rrf_k + rank as f64 + 1.0);
+        }
+    }
+    let mut ordered: Vec<(String, f64)> = fused.into_iter().collect();
+    ordered.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    // Resolve every ordered candidate: lexical rows stay in memory;
+    // vector-only rows are loaded from the generation.
+    let cand_by_id: std::collections::HashMap<&str, &Candidate> = candidates
+        .iter()
+        .map(|candidate| (candidate.chunk_id.as_str(), candidate))
+        .collect();
+    let mut resolved: Vec<Candidate> = Vec::new();
+    for (chunk_id, _score) in &ordered {
+        let candidate = if let Some(candidate) = cand_by_id.get(chunk_id.as_str()) {
+            (*candidate).clone()
+        } else {
+            load_candidate(&conn, meta.generation_id, chunk_id)?
+        };
+        resolved.push(candidate);
+    }
+
     // Cap hits per file, then paginate from the validated offset.
     let mut per_file: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    let mut deduped: Vec<(f64, String, &Candidate)> = Vec::new();
-    for entry in ranked {
-        let count = per_file.entry(entry.2.path.as_str()).or_insert(0);
+    let mut deduped: Vec<&Candidate> = Vec::new();
+    for candidate in &resolved {
+        let count = per_file.entry(candidate.path.as_str()).or_insert(0);
         if *count < MAX_HITS_PER_FILE {
             *count += 1;
-            deduped.push(entry);
+            deduped.push(candidate);
         }
     }
     let page_start = (offset as usize).min(deduped.len());
@@ -526,7 +672,34 @@ pub fn search(
     let mut results: Vec<SearchHit> = Vec::new();
     let mut output_tokens: u64 = 0;
     let mut budget_exhausted = false;
-    for (_score, reasons, candidate) in page {
+    for candidate in page {
+        let explanation = match run_mode {
+            RunMode::Lexical => reasons_by_id
+                .get(candidate.chunk_id.as_str())
+                .cloned()
+                .unwrap_or_default(),
+            RunMode::Hybrid => {
+                let mut parts = Vec::new();
+                if let Some(rank) = lexical_rank.get(&candidate.chunk_id) {
+                    parts.push(format!("rrf: lexical rank {}", rank + 1));
+                }
+                if let Some((rank, score)) = vector_rank_index.get(candidate.chunk_id.as_str()) {
+                    parts.push(format!("vector rank {} (cosine {score:.4})", rank + 1));
+                }
+                if let Some(reasons) = reasons_by_id.get(candidate.chunk_id.as_str()) {
+                    parts.push(reasons.clone());
+                }
+                if parts.is_empty() {
+                    "rrf fusion".to_string()
+                } else {
+                    parts.join("; ")
+                }
+            }
+            RunMode::Vectors => match vector_rank_index.get(candidate.chunk_id.as_str()) {
+                Some((_rank, score)) => format!("vector cosine similarity {score:.4}"),
+                None => "vector candidate".to_string(),
+            },
+        };
         let title = if candidate.heading.is_empty() {
             std::path::Path::new(&candidate.path)
                 .file_name()
@@ -538,7 +711,7 @@ pub fn search(
         let hit_excerpt = excerpt(&candidate.text, &terms);
         let hit_tokens = estimate_tokens(&hit_excerpt)
             .saturating_add(estimate_tokens(&title))
-            .saturating_add(estimate_tokens(reasons));
+            .saturating_add(estimate_tokens(&explanation));
         if output_tokens.saturating_add(hit_tokens) > budget && !results.is_empty() {
             budget_exhausted = true;
             break;
@@ -561,7 +734,7 @@ pub fn search(
             line_end: candidate.line_end,
             title,
             excerpt: hit_excerpt,
-            explanation: reasons.to_string(),
+            explanation,
             url,
         });
     }
@@ -578,18 +751,33 @@ pub fn search(
         snapshot_id: meta.snapshot_id.clone(),
         revision: meta.revision_id.clone(),
     };
+    let vector_count = match meta.vector_profile.as_deref() {
+        Some(fingerprint) => {
+            let (_chunks, vectors) =
+                store::vector_coverage(&conn, meta.generation_id, Some(fingerprint))?;
+            vectors
+        }
+        None => 0,
+    };
     let coverage = Coverage {
         files: meta.files,
         chunks: meta.chunks,
         lexical: format!("{} chunks, fts5 unicode61", meta.chunks),
-        vector: "none (offline lexical only)".into(),
+        vector: if vector_count == 0 {
+            "none (offline lexical only)".to_string()
+        } else {
+            format!(
+                "{vector_count} vectors / {} chunks (one profile)",
+                meta.chunks
+            )
+        },
     };
     let truncated = more_pages || budget_exhausted;
     Ok(SearchResponse {
         schema_version: RESPONSE_SCHEMA_VERSION,
         scope,
         generation_id: meta.generation_id,
-        retrieval_mode: "lexical".into(),
+        retrieval_mode: run_mode.label().to_string(),
         coverage,
         truncated,
         next_cursor: if truncated && !results.is_empty() {
@@ -656,4 +844,29 @@ fn fallback_paths(
     } else {
         Ok(Some(paths))
     }
+}
+
+/// Loads one chunk (with its file record) for a vector-only candidate that
+/// was not present in the lexical candidate set.
+fn load_candidate(
+    conn: &rusqlite::Connection,
+    generation_id: i64,
+    chunk_id: &str,
+) -> Result<Candidate> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.chunk_id, c.path, c.heading_path, 0.0, c.line_start, c.line_end, \
+              c.text, fr.role, fr.lifecycle, fr.content_hash \
+              FROM chunk c \
+              JOIN file fr ON fr.generation_id = c.generation_id AND fr.path = c.path \
+              WHERE c.generation_id = ?1 AND c.chunk_id = ?2",
+        )
+        .map_err(Error::Sqlite)?;
+    stmt.query_row(rusqlite::params![generation_id, chunk_id], read_candidate)
+        .map_err(|err| match err {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Error::IndexState(format!("missing chunk record: {chunk_id}"))
+            }
+            other => Error::Sqlite(other),
+        })
 }

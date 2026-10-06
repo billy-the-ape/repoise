@@ -11,11 +11,13 @@
 //! Layout under the root (generated data, never committed to Git):
 //!
 //! - `repos/<repoId>/worktrees/<worktreeId>/index.sqlite` — source manifests,
-//!   generation metadata, chunks, FTS (and vectors in a later PR)
+//!   generation metadata, chunks, FTS and per-generation vectors
 //! - `repos/<repoId>/worktrees/<worktreeId>/state.json` — versioned integration
 //!   manifest and refresh diagnostics; the database remains canonical
 //! - `repos/<repoId>/worktrees/<worktreeId>/tmp/` — disposable build staging
-//! - `repos/<repoId>/embedding-cache/` — reserved for PR 3
+//! - `repos/<repoId>/embedding-cache/` — shared content-addressed vectors,
+//!   isolated within the repository scope (referenced by retained
+//!   generations; GC reclaims unreferenced entries)
 //!
 //! SQLite opens in WAL mode, so `-wal`/`-shm` sidecars exist next to the
 //! database; tooling that moves or removes a scope must treat the whole
@@ -115,6 +117,21 @@ impl CachePaths {
     /// Disposable build staging directory for one scope.
     pub fn tmp_path(&self, repo_id: &str, worktree_id: &str) -> PathBuf {
         self.worktree_dir(repo_id, worktree_id).join("tmp")
+    }
+
+    /// Worktree directories of one repository scope.
+    pub fn worktrees_dir(&self, repo_id: &str) -> PathBuf {
+        self.repo_dir(repo_id).join("worktrees")
+    }
+
+    /// Shared embedding-cache directory for one repository scope.
+    pub fn embedding_cache_dir(&self, repo_id: &str) -> PathBuf {
+        self.repo_dir(repo_id).join("embedding-cache")
+    }
+
+    /// Shared content-addressed embedding-cache database path.
+    pub fn embedding_cache_path(&self, repo_id: &str) -> PathBuf {
+        self.embedding_cache_dir(repo_id).join("embeddings.sqlite")
     }
 }
 

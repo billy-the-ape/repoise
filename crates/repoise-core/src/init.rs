@@ -110,6 +110,13 @@ pub fn render_config(opts: &InitOptions) -> Result<String, Error> {
             provider: Some(provider.to_string()),
             endpoint: None,
             model: None,
+            dimensions: None,
+            api_key_env: None,
+            batch_size: None,
+            timeout_ms: None,
+            max_retries: None,
+            max_requests_per_build: None,
+            max_input_chars_per_build: None,
         };
         obj.insert("embedding".into(), serde_json::to_value(&embedding)?);
     }

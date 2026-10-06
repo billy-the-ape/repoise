@@ -15,12 +15,19 @@ use repoise_core::adapter::{SnapshotMode, SourceAdapter};
 use repoise_core::cache::CachePaths;
 use repoise_core::classify::Role;
 use repoise_core::config::{CliOverrides, ConfigPaths, EffectiveConfig, Preset};
+#[cfg(feature = "remote-embedding")]
+use repoise_core::embed::CancellationToken;
+use repoise_core::embed::EmbeddingClient;
 use repoise_core::error::Error;
+use repoise_core::search::{QueryEmbedder, SearchMode};
 use repoise_core::store::Store;
 use repoise_core::{CACHE_ENV_VAR, CONFIG_FILENAME};
 
 mod output;
 use output::{json, print_doctor, print_explain, print_init};
+
+#[cfg(feature = "remote-embedding")]
+mod provider;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
@@ -58,6 +65,8 @@ struct CliOptions {
     max_output_tokens: Option<u64>,
     cursor: Option<String>,
     source_id: Option<String>,
+    search_mode: Option<String>,
+    rrf_k: Option<u32>,
     purge_all: bool,
     repo_id: Option<String>,
     worktree_id: Option<String>,
@@ -95,6 +104,8 @@ SEARCH OPTIONS:
     --max-results <N>           Page size (default 5, cap 20)
     --max-output-tokens <N>     Output token budget (estimated)
     --cursor <TOKEN>            Opaque pagination token from a previous page
+    --mode <MODE>               Retrieval mode: lexical (default), hybrid, vectors-only
+    --rrf-k <N>                 Reciprocal-rank-fusion k for hybrid mode (default from config)
 
 READ OPTIONS:
     --source-id <ID>            Opaque source id from a search result
@@ -133,6 +144,8 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         max_output_tokens: None,
         cursor: None,
         source_id: None,
+        search_mode: None,
+        rrf_k: None,
         purge_all: false,
         repo_id: None,
         worktree_id: None,
@@ -226,6 +239,19 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "--source-id" => {
                 i += 1;
                 opts.source_id = Some(require_value(args, i, "--source-id")?);
+            }
+            "--mode" => {
+                i += 1;
+                opts.search_mode = Some(require_value(args, i, "--mode")?);
+            }
+            "--rrf-k" => {
+                i += 1;
+                let value = require_value(args, i, "--rrf-k")?;
+                opts.rrf_k = Some(
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| format!("--rrf-k must be a positive integer: {value}"))?,
+                );
             }
             "--all" => opts.purge_all = true,
             "--repo-id" => {
@@ -389,6 +415,8 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     let ctx = build_context(opts)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::indexing::IndexRequest::default();
+    let client = embedding_client(&ctx.effective)?;
+    let session = client.as_ref();
     let outcome = repoise_core::indexing::index(
         ctx.adapter.as_ref(),
         ctx.mode,
@@ -396,6 +424,7 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
         &store,
         &ctx.cache,
         &request,
+        session,
     )
     .map_err(|err| err.to_string())?;
     if opts.json {
@@ -428,6 +457,19 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
             outcome.chunks_added,
             outcome.chunks_removed
         );
+        if let Some(stats) = &outcome.embedding {
+            println!(
+                "vectors: {} ({} cached, {} embedded, {} failed, {} pending, {} requests)",
+                outcome.vectors_total,
+                stats.cache_hits,
+                stats.embedded,
+                stats.failed,
+                stats.pending,
+                stats.requests
+            );
+        } else {
+            println!("vectors: 0 (lexical-only build)");
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -468,10 +510,26 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
         );
         println!("dirty: {}", view.snapshot.dirty_count);
         match &view.index {
-            Some(index) => println!(
-                "index: generation {} ({} files, {} chunks, built {})",
-                index.generation_id, index.files, index.chunks, index.built_at_ms
-            ),
+            Some(index) => {
+                println!(
+                    "index: generation {} ({} files, {} chunks, built {})",
+                    index.generation_id, index.files, index.chunks, index.built_at_ms
+                );
+                let profile = index
+                    .vector_profile
+                    .as_deref()
+                    .map(|p| format!(" profile {p}"))
+                    .unwrap_or_default();
+                let pending = if index.vectors_pending > 0 {
+                    format!(" ({} pending)", index.vectors_pending)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "vectors: {} / {} chunks{}{}",
+                    index.vectors, index.chunks, profile, pending
+                );
+            }
             None => println!("index: (none)"),
         }
         println!("freshness: {}", view.freshness.status);
@@ -641,6 +699,16 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
     };
     let ctx = build_context(opts)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
+    let mode = match opts.search_mode.as_deref() {
+        None | Some("lexical") => SearchMode::Lexical,
+        Some("hybrid") => SearchMode::Hybrid,
+        Some("vectors-only") => SearchMode::VectorsOnly,
+        Some(other) => {
+            return Err(format!(
+                "unknown search mode: {other} (expected lexical, hybrid, or vectors-only)"
+            ));
+        }
+    };
     let request = repoise_core::search::SearchRequest {
         query,
         path_filter: opts.path_filter.clone(),
@@ -648,22 +716,36 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
         max_results: opts.max_results,
         max_output_tokens: opts.max_output_tokens,
         cursor: opts.cursor.clone(),
+        mode,
+        rrf_k: opts.rrf_k.or(Some(ctx.effective.rrf_k)),
     };
-    let response =
-        match repoise_core::search::search(ctx.adapter.as_ref(), ctx.mode, &store, &request) {
-            Ok(response) => response,
-            Err(Error::IndexState(message)) if message.starts_with("no published index") => {
-                return Ok(ExitCode::from(3));
-            }
-            Err(err) => return Err(err.to_string()),
-        };
+    let query_embedder = if mode == SearchMode::Lexical {
+        None
+    } else {
+        query_embedder_from_config(&ctx.effective)?
+    };
+    let response = match repoise_core::search::search(
+        ctx.adapter.as_ref(),
+        ctx.mode,
+        &store,
+        &request,
+        query_embedder.as_deref(),
+    ) {
+        Ok(response) => response,
+        Err(Error::IndexState(message)) if message.starts_with("no published index") => {
+            return Ok(ExitCode::from(3));
+        }
+        Err(err) => return Err(err.to_string()),
+    };
     if opts.json {
         println!("{}", json(&response)?);
     } else {
         println!(
-            "{} result(s), generation {}",
+            "{} result(s), generation {} ({}; {})",
             response.results.len(),
-            response.generation_id
+            response.generation_id,
+            response.retrieval_mode,
+            response.coverage.vector
         );
         for hit in &response.results {
             println!(
@@ -752,4 +834,125 @@ fn run_purge(opts: &CliOptions) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Resolves the endpoint (an `env:` reference) and the API key (the named
+/// environment variable) from embedding settings. Missing values degrade the
+/// operation to lexical-only (with a note) rather than failing it.
+#[cfg(feature = "remote-embedding")]
+fn resolve_provider_credentials(
+    settings: &repoise_core::config::EmbeddingConfig,
+) -> Result<Option<(String, String)>, String> {
+    let Some(endpoint_ref) = settings.endpoint.as_deref() else {
+        return Ok(None);
+    };
+    let Some(var_name) = endpoint_ref.strip_prefix("env:") else {
+        return Err("embedding.endpoint must be an env: reference".into());
+    };
+    let Some(endpoint) = env::var(var_name).ok() else {
+        eprintln!("note: endpoint variable {var_name} is not set; continuing lexical-only");
+        return Ok(None);
+    };
+    let Some(key_env) = settings.api_key_env.as_deref() else {
+        eprintln!("note: no API key variable configured; continuing lexical-only");
+        return Ok(None);
+    };
+    let Some(api_key) = env::var(key_env).ok() else {
+        eprintln!("note: API key variable {key_env} is not set; continuing lexical-only");
+        return Ok(None);
+    };
+    Ok(Some((endpoint, api_key)))
+}
+
+/// Builds the optional embedding session for a build, from effective config.
+/// A missing profile, endpoint, or credential keeps the build lexical-only.
+fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, String> {
+    let Some(settings) = &eff.embedding else {
+        return Ok(None);
+    };
+    let Some(profile) = repoise_core::config::profile_from_config(settings) else {
+        return Ok(None);
+    };
+    #[cfg(feature = "remote-embedding")]
+    {
+        let Some((endpoint, api_key)) = resolve_provider_credentials(settings)? else {
+            return Ok(None);
+        };
+        let budgets = repoise_core::config::budgets_from_config(settings);
+        let provider = provider::OpenAiCompatibleProvider::new(
+            &endpoint,
+            &api_key,
+            &profile.model,
+            profile.dimension,
+            budgets.timeout,
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(Some(EmbeddingClient::new(
+            Box::new(provider),
+            budgets,
+            CancellationToken::new(),
+        )))
+    }
+    #[cfg(not(feature = "remote-embedding"))]
+    {
+        let _ = profile;
+        eprintln!("note: this binary has no remote embedding transport; continuing lexical-only");
+        Ok(None)
+    }
+}
+
+/// Wraps a provider as a query-time embedder (single-input batch).
+#[cfg(feature = "remote-embedding")]
+struct ProviderQueryEmbedder {
+    provider: std::sync::Arc<dyn repoise_core::embed::EmbeddingProvider>,
+}
+
+#[cfg(feature = "remote-embedding")]
+impl QueryEmbedder for ProviderQueryEmbedder {
+    fn embed_query(&self, query: &str) -> repoise_core::Result<Option<Vec<f32>>> {
+        let batch = self.provider.embed(&[query.to_string()])?;
+        let dimension = self.provider.profile().dimension;
+        match batch.vectors.first() {
+            Some(vector) if repoise_core::embed::validate_vector(vector, dimension) => {
+                Ok(Some(vector.clone()))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+/// Builds the optional query-time embedder for hybrid retrieval. Missing
+/// profile, endpoint, or credential degrades hybrid search to lexical.
+fn query_embedder_from_config(
+    eff: &EffectiveConfig,
+) -> Result<Option<Box<dyn QueryEmbedder>>, String> {
+    let Some(settings) = &eff.embedding else {
+        return Ok(None);
+    };
+    let Some(profile) = repoise_core::config::profile_from_config(settings) else {
+        return Ok(None);
+    };
+    #[cfg(feature = "remote-embedding")]
+    {
+        let Some((endpoint, api_key)) = resolve_provider_credentials(settings)? else {
+            return Ok(None);
+        };
+        let budgets = repoise_core::config::budgets_from_config(settings);
+        let provider = provider::OpenAiCompatibleProvider::new(
+            &endpoint,
+            &api_key,
+            &profile.model,
+            profile.dimension,
+            budgets.timeout,
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(Some(Box::new(ProviderQueryEmbedder {
+            provider: std::sync::Arc::new(provider),
+        })))
+    }
+    #[cfg(not(feature = "remote-embedding"))]
+    {
+        let _ = profile;
+        Ok(None)
+    }
 }

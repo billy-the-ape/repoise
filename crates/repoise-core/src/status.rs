@@ -83,6 +83,12 @@ pub struct StatusIndex {
     pub config_fingerprint: String,
     /// Parser fingerprint at build time.
     pub parser_fingerprint: String,
+    /// Vector record count in the current generation (0 when lexical-only).
+    pub vectors: i64,
+    /// Full embedding profile fingerprint when vectors are present.
+    pub vector_profile: Option<String>,
+    /// Chunk records without a vector (failed or pending embedding work).
+    pub vectors_pending: i64,
 }
 
 /// Freshness section of the status view.
@@ -179,15 +185,23 @@ pub fn status(
     let schema_version = store::meta_value(&conn, "schema_version")?
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
-    let index = current.as_ref().map(|meta| StatusIndex {
-        generation_id: meta.generation_id,
-        schema_version,
-        files: meta.files,
-        chunks: meta.chunks,
-        built_at_ms: meta.built_at_ms,
-        manifest_hash: meta.manifest_hash.clone(),
-        config_fingerprint: meta.config_fingerprint.clone(),
-        parser_fingerprint: meta.parser_fingerprint.clone(),
+    let index = current.as_ref().map(|meta| {
+        let (_chunk_count, vector_count) =
+            store::vector_coverage(&conn, meta.generation_id, meta.vector_profile.as_deref())
+                .unwrap_or((meta.chunks, 0));
+        StatusIndex {
+            generation_id: meta.generation_id,
+            schema_version,
+            files: meta.files,
+            chunks: meta.chunks,
+            built_at_ms: meta.built_at_ms,
+            manifest_hash: meta.manifest_hash.clone(),
+            config_fingerprint: meta.config_fingerprint.clone(),
+            parser_fingerprint: meta.parser_fingerprint.clone(),
+            vectors: vector_count,
+            vector_profile: meta.vector_profile.clone(),
+            vectors_pending: (meta.chunks - vector_count).max(0),
+        }
     });
     let last_error = store::last_error(&conn)?;
 

@@ -19,8 +19,9 @@ arrays when operating on a Git repository.
 | `crates/repoise-core/src/hash.rs` | Lowercase SHA-256 helpers used across manifests and fingerprints |
 | `crates/repoise-core/src/store.rs` | SQLite (WAL) + FTS5 persistent store: transactional generation publication, retention, current/previous generation access |
 | `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references |
-| `crates/repoise-core/src/indexing.rs` | Incremental index build: reuse/reparse/tombstone reconciliation, secret redaction, `state.json` publication |
-| `crates/repoise-core/src/search.rs` | Offline lexical search: BM25 + explainable boosts, per-file cap, bound cursors, fallback suggestions; scope resolution and GitHub permalink validation |
+| `crates/repoise-core/src/indexing.rs` | Incremental index build: reuse/reparse/tombstone reconciliation, secret redaction, optional cache-first embedding with atomic vector publication, embedding-cache GC, `state.json` publication |
+| `crates/repoise-core/src/embed.rs` | Versioned embedding provider interface, profile fingerprinting, vector dimension/finiteness validation, bounded embedding client (batching, timeout, retry, cancellation, budgets), content-addressed SQLite embedding cache and reference-counted GC |
+| `crates/repoise-core/src/search.rs` | Lexical search (BM25 + explainable boosts, per-file cap, bound cursors, fallback suggestions) plus hybrid RRF fusion over stored vectors with retrieval-mode/coverage reporting and lexical degradation; scope resolution and GitHub permalink validation |
 | `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; `Stale` diagnostics |
 | `crates/repoise-core/src/status.rs` | Scope/snapshot/index/freshness view with config and cache diagnostics |
 | `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |

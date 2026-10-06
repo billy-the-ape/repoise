@@ -22,6 +22,8 @@ pub enum Error {
     Sqlite(rusqlite::Error),
     /// The index is missing or stale for the requested scope.
     IndexState(String),
+    /// An embedding provider request or response failed.
+    Provider(String),
     /// The exact source changed since the index was built (validation failed).
     Stale {
         /// Relative path that is stale.
@@ -44,6 +46,7 @@ impl fmt::Display for Error {
             Error::Json(msg) => write!(f, "json error: {msg}"),
             Error::Sqlite(err) => write!(f, "index storage error: {err}"),
             Error::IndexState(msg) => write!(f, "index state error: {msg}"),
+            Error::Provider(msg) => write!(f, "embedding provider error: {msg}"),
             Error::Stale { path, reason, .. } => {
                 write!(f, "stale source ({path}): {reason}")
             }

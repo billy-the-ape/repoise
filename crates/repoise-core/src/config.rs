@@ -48,6 +48,9 @@ pub struct Config {
     /// Optional embedding settings; secrets only via environment references.
     #[serde(default)]
     pub embedding: Option<EmbeddingConfig>,
+    /// Optional search settings (hybrid fusion parameters).
+    #[serde(default)]
+    pub search: Option<SearchConfig>,
 }
 
 /// Optional embedding provider settings (operator-selected, never mandatory).
@@ -60,9 +63,39 @@ pub struct EmbeddingConfig {
     /// Endpoint URL reference; must be an `env:` reference when present.
     #[serde(default)]
     pub endpoint: Option<String>,
-    /// Model identifier.
+    /// Model identifier (provider/model revision).
     #[serde(default)]
     pub model: Option<String>,
+    /// Vector dimension the model produces.
+    #[serde(default)]
+    pub dimensions: Option<u32>,
+    /// Environment variable name holding the API key (never the secret).
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Maximum inputs per provider batch (default 32).
+    #[serde(default)]
+    pub batch_size: Option<u32>,
+    /// Per-batch request timeout in milliseconds (default 30000).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Retries after the first attempt for a failed batch (default 2).
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+    /// Maximum provider batches per build (default 500).
+    #[serde(default)]
+    pub max_requests_per_build: Option<u32>,
+    /// Maximum input characters accepted per build (default 1000000).
+    #[serde(default)]
+    pub max_input_chars_per_build: Option<u64>,
+}
+
+/// Optional search settings for hybrid retrieval.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SearchConfig {
+    /// Reciprocal-rank-fusion `k` (default 60).
+    #[serde(default)]
+    pub rrf_k: Option<u32>,
 }
 
 /// Corpus preset selected by `init` or configuration.
@@ -164,6 +197,8 @@ pub struct EffectiveConfig {
     pub cache_dir: String,
     /// Optional embedding settings.
     pub embedding: Option<EmbeddingConfig>,
+    /// Resolved reciprocal-rank-fusion `k` (default 60).
+    pub rrf_k: u32,
 }
 
 impl EffectiveConfig {
@@ -215,6 +250,7 @@ impl EffectiveConfig {
         let mut document_roles: Vec<(RoleRule, Origin)> = Vec::new();
         let mut cache_dir = DEFAULT_CACHE_DIR.to_string();
         let mut embedding: Option<EmbeddingConfig> = None;
+        let mut rrf_k = crate::embed::DEFAULT_RRF_K;
 
         for (origin, config) in [(Origin::Committed, committed), (Origin::Local, local)] {
             if let Some(config) = config {
@@ -243,6 +279,11 @@ impl EffectiveConfig {
                 }
                 if let Some(settings) = &config.embedding {
                     embedding = Some(settings.clone());
+                }
+                if let Some(search) = &config.search
+                    && let Some(k) = search.rrf_k.filter(|k| *k > 0)
+                {
+                    rrf_k = k;
                 }
             }
         }
@@ -278,6 +319,7 @@ impl EffectiveConfig {
             document_roles,
             cache_dir,
             embedding,
+            rrf_k,
         })
     }
 }
@@ -299,6 +341,60 @@ impl EffectiveConfig {
         {
             problems
                 .push("embedding.endpoint must be an environment reference like env:VAR".into());
+        }
+        match &self.embedding {
+            Some(settings) => {
+                let provider = settings.provider.as_deref().unwrap_or("");
+                if provider.is_empty() {
+                    problems
+                        .push("embedding.provider is required when embedding is configured".into());
+                } else if !known_provider_names().contains(&provider) {
+                    problems.push(format!(
+                        "no built-in embedding transport for provider '{provider}' in this build \
+                         (the local inference preset is evaluated, not shipped); lexical operation is unaffected"
+                    ));
+                }
+                if self.preset == Preset::Hybrid {
+                    if settings.model.as_deref().unwrap_or("").is_empty() {
+                        problems.push("embedding.model is required for the hybrid preset".into());
+                    }
+                    if settings.dimensions.filter(|d| *d > 0).is_none() {
+                        problems.push(
+                            "embedding.dimensions must be a positive integer for the hybrid preset"
+                                .into(),
+                        );
+                    }
+                }
+                if let Some(name) = &settings.api_key_env
+                    && !name
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                {
+                    problems.push(format!(
+                        "embedding.apiKeyEnv must be a valid environment variable name: {name}"
+                    ));
+                }
+                if settings.batch_size.is_some_and(|v| v == 0) {
+                    problems.push("embedding.batchSize must be greater than 0".into());
+                }
+                if settings.max_retries.is_some_and(|v| v == 0) {
+                    problems.push("embedding.maxRetries must be greater than 0".into());
+                }
+                if settings.max_requests_per_build.is_some_and(|v| v == 0) {
+                    problems.push("embedding.maxRequestsPerBuild must be greater than 0".into());
+                }
+                if settings.max_input_chars_per_build.is_some_and(|v| v == 0) {
+                    problems.push("embedding.maxInputCharsPerBuild must be greater than 0".into());
+                }
+            }
+            None if self.preset == Preset::Hybrid => {
+                problems.push(
+                    "the hybrid preset requires embedding settings (provider, model, dimensions)"
+                        .into(),
+                );
+            }
+            None => {}
         }
         problems
     }
@@ -327,6 +423,22 @@ impl EffectiveConfig {
         key.push_str(&self.max_file_bytes.to_string());
         key.push('\n');
         key.push_str(&self.cache_dir);
+        if let Some(settings) = &self.embedding {
+            key.push('\n');
+            key.push_str(&format!(
+                "embed|{}|{}|{:?}|{}|{}|{}|{}|{}|{}\n",
+                settings.provider.as_deref().unwrap_or(""),
+                settings.model.as_deref().unwrap_or(""),
+                settings.dimensions,
+                settings.api_key_env.as_deref().unwrap_or(""),
+                settings.batch_size.unwrap_or(0),
+                settings.timeout_ms.unwrap_or(0),
+                settings.max_retries.unwrap_or(0),
+                settings.max_requests_per_build.unwrap_or(0),
+                settings.max_input_chars_per_build.unwrap_or(0),
+            ));
+        }
+        key.push_str(&self.rrf_k.to_string());
         hash::sha256_hex(key)
     }
 }
@@ -349,4 +461,63 @@ pub fn load(path: &Path) -> Result<Option<Config>, Error> {
         )));
     }
     Ok(Some(config))
+}
+
+/// Provider names with a built-in transport in this build.
+fn known_provider_names() -> &'static [&'static str] {
+    &["openai-compatible"]
+}
+
+/// Builds the embedding profile from valid settings, or `None` when the
+/// settings cannot form one (missing model/dimensions, unknown provider).
+pub fn profile_from_config(settings: &EmbeddingConfig) -> Option<crate::embed::EmbeddingProfile> {
+    let provider = settings.provider.as_deref()?;
+    if !known_provider_names().contains(&provider) {
+        return None;
+    }
+    let model = settings.model.as_deref()?.trim();
+    if model.is_empty() {
+        return None;
+    }
+    let dimension = settings.dimensions?;
+    if dimension == 0 {
+        return None;
+    }
+    Some(crate::embed::EmbeddingProfile {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        dimension,
+        profile_version: crate::embed::PROFILE_VERSION,
+    })
+}
+
+/// Builds the effective embedding budgets from settings (defaults fill gaps).
+pub fn budgets_from_config(settings: &EmbeddingConfig) -> crate::embed::EmbeddingBudgets {
+    let defaults = crate::embed::EmbeddingBudgets::default();
+    crate::embed::EmbeddingBudgets {
+        batch_size: settings
+            .batch_size
+            .filter(|v| *v > 0)
+            .unwrap_or(defaults.batch_size),
+        max_requests_per_build: settings
+            .max_requests_per_build
+            .filter(|v| *v > 0)
+            .unwrap_or(defaults.max_requests_per_build),
+        max_input_chars_per_build: settings
+            .max_input_chars_per_build
+            .filter(|v| *v > 0)
+            .unwrap_or(defaults.max_input_chars_per_build),
+        timeout: std::time::Duration::from_millis(
+            settings
+                .timeout_ms
+                .filter(|v| *v > 0)
+                .unwrap_or(defaults.timeout.as_millis() as u64),
+        ),
+        max_retries: settings
+            .max_retries
+            .filter(|v| *v > 0)
+            .unwrap_or(defaults.max_retries),
+        backoff_initial: defaults.backoff_initial,
+        backoff_max: defaults.backoff_max,
+    }
 }
