@@ -460,6 +460,12 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
             outcome.chunks_added,
             outcome.chunks_removed
         );
+        if outcome.symbols_total > 0 || outcome.references_total > 0 {
+            println!(
+                "code: {} symbols, {} reference edges",
+                outcome.symbols_total, outcome.references_total
+            );
+        }
         if let Some(stats) = &outcome.embedding {
             println!(
                 "vectors: {} ({} cached, {} embedded, {} failed, {} pending, {} requests)",

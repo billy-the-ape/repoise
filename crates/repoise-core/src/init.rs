@@ -112,6 +112,7 @@ pub fn render_config(opts: &InitOptions) -> Result<String, Error> {
             model: None,
             dimensions: None,
             api_key_env: None,
+            scope: None,
             batch_size: None,
             timeout_ms: None,
             max_retries: None,

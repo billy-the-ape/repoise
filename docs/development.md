@@ -27,8 +27,11 @@ On Windows use `./scripts/check.ps1`, `./scripts/build.ps1` and
 Checks enforce formatting, Clippy without warnings, workspace tests and rustdoc without warnings.
 Cargo.lock is committed; builds/tests use `--locked`. Workspace crates inherit package metadata
 and lints. Unsafe code is forbidden until an explicitly reviewed boundary requires a policy change.
-Use idiomatic ownership, explicit error propagation and bounded work; do not add async runtimes,
-parser/database dependencies or micro-optimizations until a feature and measurements require them.
+Use idiomatic ownership, explicit error propagation and bounded work; do not add async runtimes
+or micro-optimizations until a feature and measurements require them. Code chunking relies on
+the pinned, offline tree-sitter TypeScript/TSX and JavaScript/JSX grammars; new grammars
+join only behind the `chunk::code` boundary with their own version, fixtures and license
+review.
 
 ## CLI commands
 

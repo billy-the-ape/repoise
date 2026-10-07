@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS generation (
   files INTEGER NOT NULL,
   chunks INTEGER NOT NULL,
   vectors INTEGER NOT NULL DEFAULT 0,
-  vector_profile TEXT
+  vector_profile TEXT,
+  embedding_scope TEXT NOT NULL DEFAULT 'docs'
 );
 CREATE INDEX IF NOT EXISTS idx_generation_scope
   ON generation(repo_id, worktree_id, id);
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS file (
   language TEXT NOT NULL,
   parser_version TEXT,
   corpus TEXT,
+  parser_errors INTEGER NOT NULL DEFAULT 0,
   size INTEGER NOT NULL,
   PRIMARY KEY (generation_id, path)
 );
@@ -69,6 +71,8 @@ CREATE TABLE IF NOT EXISTS chunk (
   corpus TEXT NOT NULL,
   text TEXT NOT NULL,
   text_hash TEXT NOT NULL,
+  symbol TEXT NOT NULL DEFAULT '',
+  context TEXT,
   line_start INTEGER NOT NULL,
   line_end INTEGER NOT NULL,
   byte_start INTEGER NOT NULL,
@@ -82,9 +86,39 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
   path,
   heading,
   symbol,
+  context,
   body,
   tokenize='unicode61'
 );
+CREATE TABLE IF NOT EXISTS symbol (
+  generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
+  symbol_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  line_start INTEGER NOT NULL,
+  line_end INTEGER NOT NULL,
+  parent_symbol_id TEXT,
+  exported INTEGER NOT NULL DEFAULT 0,
+  chunk_id TEXT,
+  PRIMARY KEY (generation_id, symbol_id)
+);
+CREATE INDEX IF NOT EXISTS idx_symbol_scope_name
+  ON symbol(generation_id, path, name);
+CREATE TABLE IF NOT EXISTS reference (
+  generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
+  ref_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  chunk_id TEXT,
+  target_symbol_id TEXT,
+  PRIMARY KEY (generation_id, ref_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reference_scope
+  ON reference(generation_id, path);
 CREATE TABLE IF NOT EXISTS chunk_vec (
   generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
   chunk_id TEXT NOT NULL,
@@ -98,13 +132,48 @@ CREATE INDEX IF NOT EXISTS idx_chunk_vec_profile
   ON chunk_vec(generation_id, fingerprint);
 "#;
 
+/// Additive migration from schema version 2 (card K3) to version 3 (card K4):
+/// code corpus columns, per-generation symbol and reference tables and the
+/// generation embedding scope. The FTS `context` column cannot be altered in
+/// place, so `Store::open` rebuilds the FTS table when it is missing (the
+/// table serves only the current generation, so no data is lost — context
+/// is backfilled as empty until the next publication).
+const MIGRATION_TABLES_V2_TO_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS symbol (
+  generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
+  symbol_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  line_start INTEGER NOT NULL,
+  line_end INTEGER NOT NULL,
+  parent_symbol_id TEXT,
+  exported INTEGER NOT NULL DEFAULT 0,
+  chunk_id TEXT,
+  PRIMARY KEY (generation_id, symbol_id)
+);
+CREATE INDEX IF NOT EXISTS idx_symbol_scope_name
+  ON symbol(generation_id, path, name);
+CREATE TABLE IF NOT EXISTS reference (
+  generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
+  ref_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  chunk_id TEXT,
+  target_symbol_id TEXT,
+  PRIMARY KEY (generation_id, ref_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reference_scope
+  ON reference(generation_id, path);
+"#;
 /// Additive migration from schema version 1 (card K2) to version 2 (card K3):
 /// adds the per-generation `chunk_vec` vector table and the generation
 /// vector columns. Existing databases are upgraded in place; only
 /// brand-new databases are created with the full schema above.
-const MIGRATION_SQL_V1_TO_V2: &str = r#"
-ALTER TABLE generation ADD COLUMN vectors INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE generation ADD COLUMN vector_profile TEXT;
+const MIGRATION_TABLES_V1_TO_V2: &str = r#"
 CREATE TABLE IF NOT EXISTS chunk_vec (
   generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
   chunk_id TEXT NOT NULL,
@@ -117,6 +186,30 @@ CREATE TABLE IF NOT EXISTS chunk_vec (
 CREATE INDEX IF NOT EXISTS idx_chunk_vec_profile
   ON chunk_vec(generation_id, fingerprint);
 "#;
+/// Adds one column to an existing table unless it already exists (table and
+/// column names are compile-time constants of the migrations).
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(Error::Sqlite)?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(Error::Sqlite)?;
+    let mut has = false;
+    for row in rows {
+        if row.map_err(Error::Sqlite)? == column {
+            has = true;
+            break;
+        }
+    }
+    if !has {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))
+        .map_err(Error::Sqlite)?;
+    }
+    Ok(())
+}
 
 /// Handle to one scope's index database. Cheap; connections open per
 /// operation so readers and publishers can share the scope concurrently.
@@ -162,9 +255,25 @@ impl Store {
             version if version == INDEX_SCHEMA_VERSION.to_string().as_str() => {
                 conn.execute("COMMIT", [])?;
             }
-            "1" => {
-                // Additive card-K3 upgrade: vector table and columns.
-                conn.execute_batch(MIGRATION_SQL_V1_TO_V2)?;
+            "1" | "2" => {
+                // Additive card-K3 upgrade (only for v1 databases).
+                if stored == "1" {
+                    conn.execute_batch(MIGRATION_TABLES_V1_TO_V2)?;
+                    ensure_column(&conn, "generation", "vectors", "INTEGER NOT NULL DEFAULT 0")?;
+                    ensure_column(&conn, "generation", "vector_profile", "TEXT")?;
+                }
+                // Additive card-K4 upgrade.
+                conn.execute_batch(MIGRATION_TABLES_V2_TO_V3)?;
+                ensure_column(
+                    &conn,
+                    "generation",
+                    "embedding_scope",
+                    "TEXT NOT NULL DEFAULT 'docs'",
+                )?;
+                ensure_column(&conn, "file", "parser_errors", "INTEGER NOT NULL DEFAULT 0")?;
+                ensure_column(&conn, "chunk", "symbol", "TEXT NOT NULL DEFAULT ''")?;
+                ensure_column(&conn, "chunk", "context", "TEXT")?;
+                rebuild_chunk_fts_if_needed(&conn)?;
                 conn.execute(
                     "INSERT INTO meta (key, value) VALUES ('schema_version', ?1) \
                      ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -195,6 +304,40 @@ impl Store {
         }
     }
 }
+/// Rebuilds `chunk_fts` when it predates the v3 `context` column, preserving
+/// the current generation's rows (context backfilled as empty; the next
+/// publication rebuilds the table fully).
+fn rebuild_chunk_fts_if_needed(conn: &Connection) -> Result<()> {
+    let has_context: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('chunk_fts') WHERE name = 'context'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Error::Sqlite)?;
+    if has_context > 0 {
+        return Ok(());
+    }
+    conn.execute("ALTER TABLE chunk_fts RENAME TO chunk_fts_v2", [])
+        .map_err(Error::Sqlite)?;
+    conn.execute(
+        "CREATE VIRTUAL TABLE chunk_fts USING fts5(
+           chunk_id UNINDEXED, path, heading, symbol, context, body,
+           tokenize='unicode61')",
+        [],
+    )
+    .map_err(Error::Sqlite)?;
+    conn.execute(
+        "INSERT INTO chunk_fts (chunk_id, path, heading, symbol, context, body)
+         SELECT chunk_id, path, heading, symbol, '', body FROM chunk_fts_v2",
+        [],
+    )
+    .map_err(Error::Sqlite)?;
+    conn.execute("DROP TABLE chunk_fts_v2", [])
+        .map_err(Error::Sqlite)?;
+    Ok(())
+}
+
 /// A file record to publish in a generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileRow {
@@ -214,6 +357,8 @@ pub struct FileRow {
     pub parser_version: Option<String>,
     /// Logical corpus (None for code files until PR 4).
     pub corpus: Option<String>,
+    /// Parser-error range count recorded for the file (code files only).
+    pub parser_errors: u32,
     /// File size in bytes.
     pub size: u64,
 }
@@ -235,12 +380,60 @@ pub struct ChunkRow {
     pub text: String,
     /// SHA-256 of the chunk text.
     pub text_hash: String,
+    /// Primary defined symbol (empty for module/fallback chunks).
+    pub symbol: String,
+    /// Parent/signature context for a labeled split (metadata only).
+    pub context: Option<String>,
     /// 1-based inclusive source line range.
     pub line_start: u32,
     pub line_end: u32,
     /// Inclusive byte range in the snapshot file.
     pub byte_start: u64,
     pub byte_end: u64,
+}
+
+/// A defined symbol record to publish in a generation (per generation,
+/// carried forward unchanged for unchanged files).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolRow {
+    /// Opaque symbol id (stable per scope path/name/position).
+    pub symbol_id: String,
+    /// Repository-relative path (POSIX separators).
+    pub path: String,
+    /// Symbol name.
+    pub name: String,
+    /// Declaration kind (`function`, `method`, `class`, ...).
+    pub kind: String,
+    /// 1-based inclusive source line range.
+    pub line_start: u32,
+    pub line_end: u32,
+    /// Enclosing symbol id, if any.
+    pub parent_symbol_id: Option<String>,
+    /// Module-level export.
+    pub exported: bool,
+    /// Chunk id covering the symbol's declaration.
+    pub chunk_id: Option<String>,
+}
+
+/// A syntactic reference edge record to publish in a generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferenceRow {
+    /// Opaque reference id (stable per scope).
+    pub ref_id: String,
+    /// Repository-relative path of the referencing file.
+    pub path: String,
+    /// Referenced name.
+    pub name: String,
+    /// Edge kind (`import`, `reexport`, `call`, `reference`).
+    pub kind: String,
+    /// Edge confidence (`certain` | `uncertain`).
+    pub confidence: String,
+    /// Line of the reference.
+    pub line: u32,
+    /// Chunk covering the reference.
+    pub chunk_id: Option<String>,
+    /// Resolved target symbol id, if resolution succeeded.
+    pub target_symbol_id: Option<String>,
 }
 
 /// A vector record to publish in a generation (one profile per generation).
@@ -288,6 +481,12 @@ pub struct GenerationInput {
     pub vectors: Vec<ChunkVecRow>,
     /// Full embedding profile fingerprint when vectors are present.
     pub vector_profile: Option<String>,
+    /// Which chunks the enabled profile applies to (card K4).
+    pub embedding_scope: crate::embed::EmbeddingScope,
+    /// Complete symbol record set (carried forward per unchanged file).
+    pub symbols: Vec<SymbolRow>,
+    /// Complete reference edge record set (carried forward per unchanged file).
+    pub references: Vec<ReferenceRow>,
 }
 
 /// Metadata of the current published generation for a scope.
@@ -317,6 +516,8 @@ pub struct GenerationMeta {
     pub vectors: i64,
     /// Full embedding profile fingerprint when vectors are present.
     pub vector_profile: Option<String>,
+    /// Which chunks the enabled profile applies to (card K4).
+    pub embedding_scope: crate::embed::EmbeddingScope,
 }
 
 /// Reads the current published generation metadata for a scope, if any.
@@ -337,26 +538,27 @@ pub fn current_generation(
         .prepare(
             "SELECT id, snapshot_id, snapshot_mode, revision_id, manifest_hash, \
              config_fingerprint, parser_fingerprint, built_at_ms, files, chunks, \
-             vectors, vector_profile \
+             vectors, vector_profile, embedding_scope \
              FROM generation WHERE repo_id = ?1 AND worktree_id = ?2 AND id = ?3",
         )
         .map_err(Error::Sqlite)?;
-    let Some(meta) = row
+    let Some(meta_row) = row
         .query_row(params![repo_id, worktree_id, current], |r| {
-            Ok(GenerationMeta {
-                generation_id: r.get(0)?,
-                snapshot_id: r.get(1)?,
-                snapshot_mode: r.get(2)?,
-                revision_id: r.get(3)?,
-                manifest_hash: r.get(4)?,
-                config_fingerprint: r.get(5)?,
-                parser_fingerprint: r.get(6)?,
-                built_at_ms: r.get(7)?,
-                files: r.get(8)?,
-                chunks: r.get(9)?,
-                vectors: r.get(10)?,
-                vector_profile: r.get(11)?,
-            })
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, i64>(9)?,
+                r.get::<_, i64>(10)?,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, String>(12)?,
+            ))
         })
         .optional()
         .map_err(Error::Sqlite)?
@@ -364,6 +566,37 @@ pub fn current_generation(
         return Err(Error::IndexState(
             "current_generation points at a missing generation".into(),
         ));
+    };
+    let (
+        generation_id,
+        snapshot_id,
+        snapshot_mode,
+        revision_id,
+        manifest_hash,
+        config_fingerprint,
+        parser_fingerprint,
+        built_at_ms,
+        files,
+        chunks,
+        vectors,
+        vector_profile,
+        scope,
+    ) = meta_row;
+    let meta = GenerationMeta {
+        generation_id,
+        snapshot_id,
+        snapshot_mode,
+        revision_id,
+        manifest_hash,
+        config_fingerprint,
+        parser_fingerprint,
+        built_at_ms,
+        files,
+        chunks,
+        vectors,
+        vector_profile,
+        embedding_scope: crate::embed::EmbeddingScope::parse(&scope)
+            .ok_or_else(|| Error::IndexState(format!("unknown stored embedding scope: {scope}")))?,
     };
     Ok(Some(meta))
 }
@@ -378,8 +611,8 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
         conn.execute(
             "INSERT INTO generation (repo_id, worktree_id, snapshot_id, snapshot_mode, \
              revision_id, manifest_hash, config_fingerprint, parser_fingerprint, \
-             built_at_ms, state, files, chunks, vectors, vector_profile) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'building', ?10, ?11, ?12, ?13)",
+             built_at_ms, state, files, chunks, vectors, vector_profile, embedding_scope) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'building', ?10, ?11, ?12, ?13, ?14)",
             params![
                 input.repo_id,
                 input.worktree_id,
@@ -394,6 +627,7 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
                 input.chunks.len() as i64,
                 input.vectors.len() as i64,
                 input.vector_profile.as_deref(),
+                input.embedding_scope.as_str(),
             ],
         )
         .map_err(Error::Sqlite)?;
@@ -401,8 +635,8 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
         for file in &input.files {
             conn.execute(
                 "INSERT INTO file (generation_id, path, content_hash, role, lifecycle, \
-                 classification_source, language, parser_version, corpus, size) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 classification_source, language, parser_version, corpus, parser_errors, size) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     generation_id,
                     file.path,
@@ -413,6 +647,7 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
                     file.language,
                     file.parser_version,
                     file.corpus,
+                    file.parser_errors as i64,
                     file.size as i64,
                 ],
             )
@@ -421,9 +656,9 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
         for chunk in &input.chunks {
             conn.execute(
                 "INSERT INTO chunk (generation_id, chunk_id, parent_chunk_id, path, \
-                 heading_path, corpus, text, text_hash, line_start, line_end, \
-                 byte_start, byte_end) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 heading_path, corpus, text, text_hash, symbol, context, line_start, \
+                 line_end, byte_start, byte_end) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     generation_id,
                     chunk.chunk_id,
@@ -433,6 +668,8 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
                     chunk.corpus,
                     chunk.text,
                     chunk.text_hash,
+                    chunk.symbol,
+                    chunk.context,
                     chunk.line_start as i64,
                     chunk.line_end as i64,
                     chunk.byte_start as i64,
@@ -447,9 +684,108 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
             .map_err(Error::Sqlite)?;
         for chunk in &input.chunks {
             conn.execute(
-                "INSERT INTO chunk_fts (chunk_id, path, heading, symbol, body) \
-                 VALUES (?1, ?2, ?3, '', ?4)",
-                params![chunk.chunk_id, chunk.path, chunk.heading_path, chunk.text],
+                "INSERT INTO chunk_fts (chunk_id, path, heading, symbol, context, body) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    chunk.chunk_id,
+                    chunk.path,
+                    chunk.heading_path,
+                    chunk.symbol,
+                    chunk.context.as_deref().unwrap_or(""),
+                    chunk.text,
+                ],
+            )
+            .map_err(Error::Sqlite)?;
+        }
+        // Symbols and references are per-generation records: validated against
+        // this generation's chunks and each other before insertion so a
+        // failed publish never leaves dangling edges.
+        let chunk_ids: std::collections::HashSet<&str> = input
+            .chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.as_str())
+            .collect();
+        let symbol_ids: std::collections::HashSet<&str> = input
+            .symbols
+            .iter()
+            .map(|symbol| symbol.symbol_id.as_str())
+            .collect();
+        for symbol in &input.symbols {
+            if let Some(parent) = symbol
+                .parent_symbol_id
+                .as_deref()
+                .filter(|parent| !symbol_ids.contains(parent))
+            {
+                return Err(Error::IndexState(format!(
+                    "symbol {} references unknown parent {parent}",
+                    symbol.symbol_id
+                )));
+            }
+            if let Some(chunk_id) = symbol
+                .chunk_id
+                .as_deref()
+                .filter(|chunk_id| !chunk_ids.contains(chunk_id))
+            {
+                return Err(Error::IndexState(format!(
+                    "symbol {} points at unknown chunk {chunk_id}",
+                    symbol.symbol_id
+                )));
+            }
+            conn.execute(
+                "INSERT INTO symbol (generation_id, symbol_id, path, name, kind, \
+                 line_start, line_end, parent_symbol_id, exported, chunk_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    generation_id,
+                    symbol.symbol_id,
+                    symbol.path,
+                    symbol.name,
+                    symbol.kind,
+                    symbol.line_start as i64,
+                    symbol.line_end as i64,
+                    symbol.parent_symbol_id,
+                    symbol.exported as i64,
+                    symbol.chunk_id,
+                ],
+            )
+            .map_err(Error::Sqlite)?;
+        }
+        for reference in &input.references {
+            if let Some(chunk_id) = reference
+                .chunk_id
+                .as_deref()
+                .filter(|chunk_id| !chunk_ids.contains(chunk_id))
+            {
+                return Err(Error::IndexState(format!(
+                    "reference {} points at unknown chunk {chunk_id}",
+                    reference.ref_id
+                )));
+            }
+            if let Some(target) = reference
+                .target_symbol_id
+                .as_deref()
+                .filter(|target| !symbol_ids.contains(target))
+            {
+                return Err(Error::IndexState(format!(
+                    "reference {} resolves to unknown symbol {target}",
+                    reference.ref_id
+                )));
+            }
+            conn.execute(
+                "INSERT INTO reference (generation_id, ref_id, path, name, kind, \
+                 confidence, line, chunk_id, target_symbol_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    generation_id,
+                    reference.ref_id,
+                    reference.path,
+                    reference.name,
+                    reference.kind,
+                    reference.confidence,
+                    reference.line as i64,
+                    reference.chunk_id,
+                    reference.target_symbol_id,
+                ],
             )
             .map_err(Error::Sqlite)?;
         }
@@ -544,6 +880,10 @@ pub struct StoredChunk {
     pub text: String,
     /// SHA-256 of the chunk text.
     pub text_hash: String,
+    /// Primary defined symbol.
+    pub symbol: String,
+    /// Parent/signature context for a labeled split.
+    pub context: Option<String>,
     /// 1-based inclusive source line range.
     pub line_start: u32,
     pub line_end: u32,
@@ -562,6 +902,10 @@ pub struct PreviousGeneration {
     pub files: Vec<FileRow>,
     /// Chunk records of the previous generation.
     pub chunks: Vec<StoredChunk>,
+    /// Symbol records of the previous generation.
+    pub symbols: Vec<SymbolRow>,
+    /// Reference edge records of the previous generation.
+    pub references: Vec<ReferenceRow>,
 }
 
 /// Loads the current published generation's records for a scope, if any.
@@ -578,13 +922,14 @@ pub fn load_generation(
         let mut stmt = conn
             .prepare(
                 "SELECT path, content_hash, role, lifecycle, classification_source, \
-                 language, parser_version, corpus, size \
+                 language, parser_version, corpus, parser_errors, size \
                  FROM file WHERE generation_id = ?1 ORDER BY path",
             )
             .map_err(Error::Sqlite)?;
         let rows = stmt
             .query_map(params![meta.generation_id], |r| {
-                let size: i64 = r.get(8)?;
+                let parser_errors: i64 = r.get(8)?;
+                let size: i64 = r.get(9)?;
                 Ok(FileRow {
                     path: r.get(0)?,
                     content_hash: r.get(1)?,
@@ -594,6 +939,7 @@ pub fn load_generation(
                     language: r.get(5)?,
                     parser_version: r.get(6)?,
                     corpus: r.get(7)?,
+                    parser_errors: parser_errors as u32,
                     size: size as u64,
                 })
             })
@@ -607,16 +953,17 @@ pub fn load_generation(
         let mut stmt = conn
             .prepare(
                 "SELECT chunk_id, parent_chunk_id, path, heading_path, corpus, \
-                 text, text_hash, line_start, line_end, byte_start, byte_end \
+                 text, text_hash, symbol, context, line_start, line_end, \
+                 byte_start, byte_end \
                  FROM chunk WHERE generation_id = ?1 ORDER BY path, line_start, chunk_id",
             )
             .map_err(Error::Sqlite)?;
         let rows = stmt
             .query_map(params![meta.generation_id], |r| {
-                let line_start: i64 = r.get(7)?;
-                let line_end: i64 = r.get(8)?;
-                let byte_start: i64 = r.get(9)?;
-                let byte_end: i64 = r.get(10)?;
+                let line_start: i64 = r.get(9)?;
+                let line_end: i64 = r.get(10)?;
+                let byte_start: i64 = r.get(11)?;
+                let byte_end: i64 = r.get(12)?;
                 Ok(StoredChunk {
                     chunk_id: r.get(0)?,
                     parent_chunk_id: r.get(1)?,
@@ -625,6 +972,8 @@ pub fn load_generation(
                     corpus: r.get(4)?,
                     text: r.get(5)?,
                     text_hash: r.get(6)?,
+                    symbol: r.get(7)?,
+                    context: r.get(8)?,
                     line_start: line_start as u32,
                     line_end: line_end as u32,
                     byte_start: byte_start as u64,
@@ -636,10 +985,71 @@ pub fn load_generation(
             chunks.push(row.map_err(Error::Sqlite)?);
         }
     }
+    let mut symbols = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT symbol_id, path, name, kind, line_start, line_end, \
+                 parent_symbol_id, exported, chunk_id \
+                 FROM symbol WHERE generation_id = ?1 ORDER BY path, line_start, symbol_id",
+            )
+            .map_err(Error::Sqlite)?;
+        let rows = stmt
+            .query_map(params![meta.generation_id], |r| {
+                let line_start: i64 = r.get(4)?;
+                let line_end: i64 = r.get(5)?;
+                let exported: i64 = r.get(7)?;
+                Ok(SymbolRow {
+                    symbol_id: r.get(0)?,
+                    path: r.get(1)?,
+                    name: r.get(2)?,
+                    kind: r.get(3)?,
+                    line_start: line_start as u32,
+                    line_end: line_end as u32,
+                    parent_symbol_id: r.get(6)?,
+                    exported: exported != 0,
+                    chunk_id: r.get(8)?,
+                })
+            })
+            .map_err(Error::Sqlite)?;
+        for row in rows {
+            symbols.push(row.map_err(Error::Sqlite)?);
+        }
+    }
+    let mut references = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT ref_id, path, name, kind, confidence, line, chunk_id, \
+                 target_symbol_id \
+                 FROM reference WHERE generation_id = ?1 ORDER BY path, line, ref_id",
+            )
+            .map_err(Error::Sqlite)?;
+        let rows = stmt
+            .query_map(params![meta.generation_id], |r| {
+                let line: i64 = r.get(5)?;
+                Ok(ReferenceRow {
+                    ref_id: r.get(0)?,
+                    path: r.get(1)?,
+                    name: r.get(2)?,
+                    kind: r.get(3)?,
+                    confidence: r.get(4)?,
+                    line: line as u32,
+                    chunk_id: r.get(6)?,
+                    target_symbol_id: r.get(7)?,
+                })
+            })
+            .map_err(Error::Sqlite)?;
+        for row in rows {
+            references.push(row.map_err(Error::Sqlite)?);
+        }
+    }
     Ok(Some(PreviousGeneration {
         meta,
         files,
         chunks,
+        symbols,
+        references,
     }))
 }
 
@@ -716,6 +1126,20 @@ pub fn vector_coverage(
         None => 0,
     };
     Ok((chunks, vectors))
+}
+
+/// (docs chunk count, code chunk count) for one generation — the honest
+/// basis for embedding-scope coverage (card K4).
+pub fn corpus_chunk_counts(conn: &Connection, generation_id: i64) -> Result<(i64, i64)> {
+    let (docs, code): (i64, i64) = conn
+        .query_row(
+            "SELECT COALESCE(SUM(corpus = 'docs'), 0), COALESCE(SUM(corpus = 'code'), 0) \
+             FROM chunk WHERE generation_id = ?1",
+            params![generation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(Error::Sqlite)?;
+    Ok((docs, code))
 }
 
 /// Distinct paths of chunks without a vector for one generation's profile

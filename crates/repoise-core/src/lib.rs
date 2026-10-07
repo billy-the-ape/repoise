@@ -51,8 +51,10 @@ pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024;
 pub const CONFIG_SCHEMA_FILE: &str = "schemas/repoise.config.v1.schema.json";
 
 /// Version of the persistent index schema (SQLite tables + FTS layout).
-/// Version 2 adds the per-generation `chunk_vec` vector table (card K3).
-pub const INDEX_SCHEMA_VERSION: i64 = 2;
+/// Version 2 adds the per-generation `chunk_vec` vector table (card K3);
+/// version 3 adds code corpus columns, per-generation symbol and reference
+/// tables and the generation embedding scope (card K4).
+pub const INDEX_SCHEMA_VERSION: i64 = 3;
 /// How many complete published generations a scope retains (current + previous).
 pub const GENERATION_RETENTION: i64 = 2;
 /// Environment variable that overrides the resolved cache root (tests/containers).
