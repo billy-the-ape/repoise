@@ -1,12 +1,17 @@
 //! GitHub read-only enrichment transport (the `github-enrichment` feature).
 //!
 //! An independent host adapter: it verifies commit-to-change-request
-//! associations (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`) and fetches
+//! associations (`GET /repos/{owner}/{repo}/commits/{sha}/pulls`, bounded
+//! pages, first page ETag-cached through the session host cache) and fetches
 //! bounded change-request data (`GET /repos/{owner}/{repo}/pulls/{number}`).
 //! The token resolves only from the environment variable named in the
-//! config; a missing token means hints stay unverified (local indexing is
-//! unaffected). Rate limits stop the build's enrichment; permission denial
-//! fails closed (the session invalidates the cached remote content).
+//! config; a missing or empty token disables enrichment entirely (no
+//! unauthenticated requests are ever sent) and local indexing is unaffected.
+//! Rate limits (primary or secondary) stop the build's enrichment;
+//! permission denial fails closed (the session invalidates the cached remote
+//! content). Note: a revoked token on a private repository typically yields
+//! 404, which is classified as a per-item failure (`Other`), not a
+//! permission denial.
 
 use std::time::Duration;
 
@@ -18,6 +23,8 @@ use repoise_core::history::{
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// Hints examined per item (each verification is a host request).
 const MAX_HINTS_PER_ITEM: usize = 3;
+/// Maximum pages walked for one commit's PR list (100 PRs per page).
+const MAX_VERIFICATION_PAGES: u32 = 10;
 
 /// GitHub read-only enrichment provider.
 pub struct GitHubEnrichment {
@@ -30,7 +37,7 @@ pub struct GitHubEnrichment {
 }
 
 /// One entry of the commit's PR list (`.../commits/{sha}/pulls`).
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct CommitPrEntry {
     number: u32,
 }
@@ -53,6 +60,8 @@ struct RawResponse {
     body: String,
     /// `ETag` header, when the host sent one.
     etag: Option<String>,
+    /// `Link` header's `rel="next"` page URL, when the host sent one.
+    link_next: Option<String>,
 }
 
 impl GitHubEnrichment {
@@ -86,7 +95,7 @@ impl GitHubEnrichment {
         }
         let response = match request.call() {
             Ok(response) => response,
-            Err(ureq::Error::StatusCode(code)) => return Err(classify_status(code, None)),
+            Err(ureq::Error::StatusCode(code)) => return Err(classify_status(code, None, None)),
             Err(other) => {
                 return Err(EnrichmentError::Other(format!(
                     "host request failed: {other:?}"
@@ -104,33 +113,83 @@ impl GitHubEnrichment {
             .get("etag")
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
+        let retry_after = headers
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let link_next = headers
+            .get("link")
+            .and_then(|value| value.to_str().ok())
+            .and_then(link_next_url);
         let body = response
             .into_body()
             .read_to_string()
             .map_err(|err| EnrichmentError::Other(format!("unreadable response: {err}")))?;
         if status_code.is_success() || status == 304 {
-            Ok(RawResponse { status, body, etag })
+            Ok(RawResponse {
+                status,
+                body,
+                etag,
+                link_next,
+            })
         } else {
-            Err(classify_status(status, rate_remaining.as_deref()))
+            Err(classify_status(
+                status,
+                rate_remaining.as_deref(),
+                retry_after.as_deref(),
+            ))
         }
     }
 }
 
+/// Extracts the `rel="next"` page URL from a `Link` header, if present.
+fn link_next_url(header: &str) -> Option<String> {
+    for segment in header.split(',') {
+        let Some((raw_url, rest)) = segment.split_once(';') else {
+            continue;
+        };
+        let rel_next = rest.split(';').any(|part| part.trim() == r#"rel="next""#);
+        if rel_next {
+            let url = raw_url.trim().trim_start_matches('<').trim_end_matches('>');
+            if !url.is_empty() {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Classifies a non-success status into an enrichment error. GitHub signals
-/// rate limits with `403` plus `x-ratelimit-remaining: 0` (or `429`).
-pub fn classify_status(code: u16, rate_limit_remaining: Option<&str>) -> EnrichmentError {
+/// primary rate limits with `403` plus `x-ratelimit-remaining: 0` (or
+/// `429`) and secondary rate limits with `403` (or `429`) plus a
+/// `Retry-After` header; both stop the enrichment pass without wiping the
+/// cached host content. A `403` without either signal is a permission
+/// denial (fail closed).
+pub fn classify_status(
+    code: u16,
+    rate_limit_remaining: Option<&str>,
+    retry_after: Option<&str>,
+) -> EnrichmentError {
     match code {
         429 => EnrichmentError::RateLimited,
-        403 if rate_limit_remaining == Some("0") => EnrichmentError::RateLimited,
+        403 if rate_limit_remaining == Some("0") || retry_after.is_some() => {
+            EnrichmentError::RateLimited
+        }
         401 | 403 => EnrichmentError::PermissionDenied,
+        // A revoked token on a private repository typically yields 404 here;
+        // it is a per-item failure, not a revocation signal.
         404 => EnrichmentError::Other("host reported no such record".into()),
         other => EnrichmentError::Other(format!("host returned {other}")),
     }
 }
 
 impl GitHubEnrichment {
-    /// Verifies each hint against the host and fetches bounded
-    /// change-request data for the first verified association.
+    /// Verifies the item's hints against the host and fetches bounded
+    /// change-request data for the first verified association. The commit's
+    /// PR list is fetched once per commit (bounded pages; the first page is
+    /// ETag-cached through the session host cache) and every hint is matched
+    /// against the accumulated list, so no request repeats per hint; the
+    /// change request itself is fetched once, also ETag-cached.
     fn verify_and_fetch(
         &self,
         owner: &str,
@@ -140,27 +199,74 @@ impl GitHubEnrichment {
         cache: &HostCache,
         budget: &mut RequestBudget,
     ) -> Result<EnrichmentOutcome, EnrichmentError> {
-        for &hint in hints.iter().take(MAX_HINTS_PER_ITEM) {
+        let hints: Vec<u32> = hints.iter().take(MAX_HINTS_PER_ITEM).copied().collect();
+        let first_page_key = format!("commit:{owner}:{repo}:{sha}:pulls:1");
+        let mut next_url: Option<String> = Some(format!(
+            "{}/repos/{owner}/{repo}/commits/{sha}/pulls?per_page=100",
+            self.base
+        ));
+        let mut page = 0u32;
+        let mut numbers: Vec<u32> = Vec::new();
+        while let Some(url) = next_url {
+            page += 1;
+            if page > MAX_VERIFICATION_PAGES {
+                break;
+            }
             if !budget.charge() {
                 return Err(EnrichmentError::BudgetExhausted);
             }
-            let url = format!("{}/repos/{owner}/{repo}/commits/{sha}/pulls", self.base);
-            let response = self.get(&url, None)?;
-            let list: Vec<CommitPrEntry> = match serde_json::from_str(&response.body) {
-                Ok(list) => list,
-                Err(err) => {
-                    return Err(EnrichmentError::Other(format!(
-                        "invalid host response: {err}"
-                    )));
+            // Only the first page is cached; pagination rarely repeats.
+            let cached = if page == 1 {
+                cache.get(&first_page_key)
+            } else {
+                None
+            };
+            let response = self.get(
+                &url,
+                cached.as_ref().and_then(|entry| entry.etag.as_deref()),
+            )?;
+            let list: Vec<CommitPrEntry> = if response.status == 304 {
+                match cached.and_then(|entry| serde_json::from_value(entry.payload).ok()) {
+                    Some(list) => list,
+                    None => {
+                        return Err(EnrichmentError::Other(
+                            "cached commit PR list unreadable".into(),
+                        ));
+                    }
+                }
+            } else {
+                match serde_json::from_str(&response.body) {
+                    Ok(list) => list,
+                    Err(err) => {
+                        return Err(EnrichmentError::Other(format!(
+                            "invalid host response: {err}"
+                        )));
+                    }
                 }
             };
-            if !list.iter().any(|entry| entry.number == hint) {
-                continue;
+            if page == 1 {
+                let _ = cache.put(
+                    &first_page_key,
+                    repoise_core::history::HostCacheEntry {
+                        etag: response.etag.clone(),
+                        fetched_at_ms: repoise_core::indexing::now_ms(),
+                        payload: serde_json::to_value(&list).unwrap_or(serde_json::Value::Null),
+                    },
+                );
             }
-            // Verified: fetch bounded change-request data (ETag-cached).
-            return self.fetch_pull_request(owner, repo, hint, cache, budget);
+            numbers.extend(list.iter().map(|entry| entry.number));
+            // Stop paging as soon as one of the hints is verified.
+            next_url = if hints.iter().any(|hint| numbers.contains(hint)) {
+                None
+            } else {
+                response.link_next
+            };
         }
-        Ok(EnrichmentOutcome::NoAssociation)
+        let verified = hints.iter().find(|hint| numbers.contains(hint)).copied();
+        let Some(number) = verified else {
+            return Ok(EnrichmentOutcome::NoAssociation);
+        };
+        self.fetch_pull_request(owner, repo, number, cache, budget)
     }
 
     /// Fetches one change request, revalidating through the session cache.
@@ -349,9 +455,22 @@ mod tests {
 
     #[test]
     fn rate_limit_statuses_classify_as_rate_limited() {
-        assert_eq!(classify_status(429, None), EnrichmentError::RateLimited);
         assert_eq!(
-            classify_status(403, Some("0")),
+            classify_status(429, None, None),
+            EnrichmentError::RateLimited
+        );
+        assert_eq!(
+            classify_status(403, Some("0"), None),
+            EnrichmentError::RateLimited
+        );
+        // Secondary rate limits: a retry-after header (with quota remaining)
+        // is a limit, not a revocation.
+        assert_eq!(
+            classify_status(403, Some("100"), Some("12")),
+            EnrichmentError::RateLimited
+        );
+        assert_eq!(
+            classify_status(429, Some("100"), Some("12")),
             EnrichmentError::RateLimited
         );
     }
@@ -359,16 +478,96 @@ mod tests {
     #[test]
     fn permission_denials_classify_as_denied_not_limited() {
         assert_eq!(
-            classify_status(401, Some("100")),
+            classify_status(401, Some("100"), None),
             EnrichmentError::PermissionDenied
         );
         assert_eq!(
-            classify_status(403, Some("100")),
+            classify_status(403, Some("100"), None),
             EnrichmentError::PermissionDenied
         );
         assert_eq!(
-            classify_status(403, None),
+            classify_status(403, None, None),
             EnrichmentError::PermissionDenied
         );
+    }
+
+    #[test]
+    fn link_header_yields_the_next_page_url() {
+        let link = r#"<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last""#;
+        assert_eq!(
+            link_next_url(link).as_deref(),
+            Some("https://api.github.com/x?page=2")
+        );
+        assert_eq!(
+            link_next_url(r#"<https://api.github.com/x>; rel="last""#),
+            None
+        );
+    }
+
+    fn http_response(status: &str, extra_headers: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Exercises the real HTTP flow (hint matching across pages, budget
+    /// charging and 304 revalidation) against a local loopback fake host.
+    #[test]
+    fn enrichment_walks_pages_charges_budget_and_revalidates_with_304() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let next_page = format!("http://{addr}/repos/o/r/commits/a/pulls?per_page=100&page=2");
+        let page1 = http_response(
+            "200 OK",
+            &format!("ETag: \"L1\"\r\nLink: <{next_page}>; rel=\"next\"\r\n"),
+            r#"[{"number":12}]"#,
+        );
+        let page1_modified = http_response("304 Not Modified", "ETag: \"L1\"\r\n", "");
+        let page2 = http_response("200 OK", "", r#"[{"number":47}]"#);
+        let pull = http_response("200 OK", "", r#"{"title":"T","state":"open"}"#);
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming().take(6) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 16384];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = request.split_whitespace().nth(1).unwrap_or("");
+                let response = if path.starts_with("/repos/o/r/commits/a/pulls?per_page=100&page=2")
+                {
+                    page2.clone()
+                } else if path.starts_with("/repos/o/r/pulls/47") {
+                    pull.clone()
+                } else if request.contains(r#"If-None-Match: "L1""#) {
+                    page1_modified.clone()
+                } else {
+                    page1.clone()
+                };
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("repoise-fake-host-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = HostCache::open(dir.join("host.json"), "github");
+        let provider = GitHubEnrichment::new(&format!("http://{addr}"), Some("tok".into()), 100);
+        // Hint 47 is only on page 2, so the walk must follow the Link header.
+        let mut budget = RequestBudget { remaining: 5 };
+        let outcome = provider
+            .verify_and_fetch("o", "r", "a", &[47], &cache, &mut budget)
+            .unwrap();
+        assert!(matches!(outcome, EnrichmentOutcome::Verified(ref a) if a.number == 47));
+        assert_eq!(budget.remaining, 2, "page1 + page2 + pull");
+        // Second pass: the first page revalidates via 304 (cached payload).
+        let mut budget2 = RequestBudget { remaining: 5 };
+        let outcome2 = provider
+            .verify_and_fetch("o", "r", "a", &[47], &cache, &mut budget2)
+            .unwrap();
+        assert!(matches!(outcome2, EnrichmentOutcome::Verified(ref a) if a.number == 47));
+        assert_eq!(budget2.remaining, 2);
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

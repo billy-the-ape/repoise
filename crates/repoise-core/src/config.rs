@@ -482,10 +482,7 @@ impl EffectiveConfig {
                     }
                 }
                 if let Some(name) = &settings.api_key_env
-                    && !name
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && !is_valid_env_name(name)
                 {
                     problems.push(format!(
                         "embedding.apiKeyEnv must be a valid environment variable name: {name}"
@@ -526,11 +523,7 @@ impl EffectiveConfig {
                     "history.enrichment.host is required when enrichment is configured".into(),
                 );
             }
-            let valid_token_env = enrichment
-                .token_env
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            let valid_token_env = is_valid_env_name(&enrichment.token_env);
             if !valid_token_env {
                 problems.push(format!(
                     "history.enrichment.tokenEnv must be a valid environment variable name: {}",
@@ -616,6 +609,18 @@ impl EffectiveConfig {
         }
         key.push_str(&self.rrf_k.to_string());
         hash::sha256_hex(key)
+    }
+}
+
+/// A valid environment variable name: a letter or underscore followed by
+/// letters, digits or underscores (`[A-Za-z_][A-Za-z0-9_]*`).
+fn is_valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
     }
 }
 

@@ -506,6 +506,15 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
             if history.permission_denied {
                 println!("  note: permission denied; cached remote content invalidated");
             }
+            if history.budget_exhausted {
+                println!("  note: request budget stopped enrichment");
+            }
+            if history.unattempted > 0 {
+                println!(
+                    "  note: {} hint item(s) left unattempted (budget or PR cap)",
+                    history.unattempted
+                );
+            }
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -530,18 +539,21 @@ fn enrichment_session(
     #[cfg(feature = "github-enrichment")]
     {
         let token = match env::var(&settings.token_env) {
-            Ok(token) if !token.trim().is_empty() => Some(token),
+            Ok(token) if !token.trim().is_empty() => token,
             _ => {
+                // No credential means no enrichment at all: never send
+                // unauthenticated requests (they would leak private-repo
+                // owner/name/SHAs and burn the anonymous quota).
                 eprintln!(
-                    "note: token variable {} is not set; enrichment stays unverified",
+                    "note: token variable {} is not set; enrichment is skipped and hints stay unverified",
                     settings.token_env
                 );
-                None
+                return Ok(None);
             }
         };
         let provider = github_enrichment::GitHubEnrichment::new(
             "https://api.github.com",
-            token,
+            Some(token),
             settings.max_body_chars,
         );
         let cache = repoise_core::history::HostCache::open(
@@ -855,9 +867,9 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
                 let author = hit
                     .author
                     .as_deref()
-                    .map(|author| format!(" by {author}"))
+                    .map(|author| format!(" (by {author})"))
                     .unwrap_or_default();
-                println!("{}: {}{}", hit.revision_id, author, hit.message);
+                println!("{}: {}{}", hit.revision_id, hit.message, author);
                 if !hit.affected_paths.is_empty() {
                     println!("  paths: {}", hit.affected_paths.join(", "));
                 }

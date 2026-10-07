@@ -112,19 +112,22 @@ search response carries the same lane coverage; enrichment items skipped by a
 budget or early stop are counted as unattempted rather than left silent.
 
 GitHub PR enrichment is opt-in inside the lane via `history.enrichment`
-(`host: "github"`, `tokenEnv`, `maxPrsPerBuild`, `maxRequestsPerBuild`,
-`maxBodyChars`). Commit-message `#123` references stay unverified hints until the
-host API confirms the commit belongs to that change request; only then is a
+(`host: "github"`, `tokenEnv` (required, a valid environment variable name),
+`maxPrsPerBuild`, `maxRequestsPerBuild`, `maxBodyChars`). Commit-message `#123`
+references stay unverified hints until the host API confirms the commit belongs
+to that change request (the commit's PR list is fetched once per commit,
+bounded and paginated, and matched against the hints); only then is a
 verified association (title, bounded body, state, permalink, fetched time)
 stored. The token is read from the named environment variable at runtime and
-never enters config or caches; a missing token leaves hints unverified without
-affecting local indexing. The transport is built into the CLI behind the default
+never enters config or caches; a missing or empty token disables enrichment
+entirely — no unauthenticated requests are sent — without affecting local
+indexing. The transport is built into the CLI behind the default
 `github-enrichment` feature (`ureq` read-only requests to `api.github.com`);
 `cargo check -p repoise-cli --no-default-features` produces the no-enrichment
 binary. Host responses are ETag-cached in a repository-scoped JSON cache under
-the cache root (removed by `purge`), requests are bounded per build, rate limits
-stop the enrichment pass, and a permission denial fails closed by invalidating
-the cached remote content.
+the cache root (removed by `purge`), requests are bounded per build, rate
+limits (primary and secondary/`Retry-After`) stop the enrichment pass, and a
+permission denial fails closed by invalidating the cached remote content.
 
 ## Installation and artifacts
 

@@ -40,6 +40,9 @@ pub enum GapKind {
     Horizon,
     /// The source scope has no history capability (the lane is empty, not failed).
     Unavailable,
+    /// Commit records could not be mapped cleanly; the affected revisions are
+    /// omitted from the lane (never silent).
+    Format,
 }
 
 /// One explicit history coverage gap (never silent).

@@ -146,11 +146,16 @@ fn hunk_descriptors(
     max_hunks: u32,
 ) -> Result<(Vec<crate::history::HunkDescriptor>, u32), AdapterError> {
     use crate::history::HunkDescriptor;
+    // `git diff-tree` has real root semantics (`--root` diffs against the
+    // empty tree); with an explicit parent it is a plain tree-to-tree diff,
+    // which is also the correct basis for merge commits (first parent).
     let args: Vec<&str> = match first_parent {
         Some(parent) => vec![
             "-c",
             "core.quotepath=false",
-            "diff",
+            "diff-tree",
+            "-p",
+            "-r",
             "--unified=0",
             "--no-prefix",
             parent,
@@ -159,8 +164,10 @@ fn hunk_descriptors(
         None => vec![
             "-c",
             "core.quotepath=false",
-            "diff",
+            "diff-tree",
             "--root",
+            "-p",
+            "-r",
             "--unified=0",
             "--no-prefix",
             commit,
@@ -232,9 +239,11 @@ fn hunk_descriptors(
 }
 
 /// The mainline commit list (first-parent from HEAD, newest first) under the
-/// horizon. `rev-list` output is git-generated (SHAs only), so it needs no
-/// framing — the fragile part (commit fields and repo-controlled paths) is
-/// isolated in the separately parsed NUL-framed log below.
+/// horizon. `rev-list` output is git-generated (hex SHAs separated by
+/// whitespace), so it needs no framing — the fragile part (commit fields and
+/// repo-controlled paths) is isolated in the separately parsed NUL-framed
+/// log below. Whitespace splitting (rather than `-z`) keeps the list robust
+/// across git versions that frame `rev-list -z` differently.
 fn list_mainline(adapter: &GitAdapter, horizon: u32) -> Result<Vec<String>, AdapterError> {
     let out = adapter.run_git(&[
         "rev-list",
@@ -242,14 +251,26 @@ fn list_mainline(adapter: &GitAdapter, horizon: u32) -> Result<Vec<String>, Adap
         "--max-count",
         &horizon.to_string(),
         "HEAD",
-        "-z",
     ])?;
-    Ok(out
-        .split('\0')
-        .map(str::trim)
-        .filter(|sha| !sha.is_empty())
-        .map(str::to_string)
-        .collect())
+    Ok(out.split_whitespace().map(str::to_string).collect())
+}
+
+/// One per-invocation format nonce (hex). Repository content predates the
+/// call, so it cannot contain this nonce: a path that merely looks like a
+/// framing header can never be accepted as one.
+fn format_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let tick = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mixed = nanos
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(tick.wrapping_mul(1_442_695_040_888_963_407))
+        .wrapping_add((std::process::id() as u64).wrapping_mul(69_069));
+    format!("{mixed:x}")
 }
 
 impl SourceAdapter for GitAdapter {
@@ -416,12 +437,15 @@ impl crate::history::HistoryProvider for GitAdapter {
             });
         }
         // NUL-framed log: each token is either a header record (prefixed
-        // with \x01: sha, parents, author, time, message) or a path line.
-        // Records are never concatenated into one giant string, so a
-        // control character in a repo-controlled field (message or path)
-        // cannot shift the field positions of other commits.
+        // with \x01 plus a per-invocation nonce, then sha, parents, author,
+        // time, message) or a path line. Records are never concatenated into
+        // one giant string, so a control character in a repo-controlled
+        // field (message or path) cannot shift the field positions of other
+        // commits, and a path that looks like a framing header cannot be
+        // mistaken for one (the nonce is unguessable from repo content).
         const SOH: char = '\u{1}';
         const US: char = '\u{1f}';
+        let nonce = format_nonce();
         let out = self.run_git(&[
             "-c",
             "core.quotepath=false",
@@ -431,7 +455,7 @@ impl crate::history::HistoryProvider for GitAdapter {
             &horizon,
             "-z",
             "--name-only",
-            &format!("--format={SOH}%H{US}%P{US}%an{US}%at{US}%B"),
+            &format!("--format={SOH}{nonce}%H{US}%P{US}%an{US}%at{US}%B"),
         ])?;
         // `--name-only` interleaves a bare newline with the framing; it can
         // only appear at token edges (a repository path cannot contain a
@@ -453,7 +477,12 @@ impl crate::history::HistoryProvider for GitAdapter {
         }
         let mut entries: Vec<Entry> = Vec::new();
         for token in tokens {
-            let Some(rest) = token.strip_prefix(SOH) else {
+            // Only a header carrying this invocation's nonce is a real
+            // record; everything else is a path of the previous record.
+            let Some(rest) = token
+                .strip_prefix(SOH)
+                .and_then(|rest| rest.strip_prefix(nonce.as_str()))
+            else {
                 match entries.last_mut() {
                     Some(entry) => entry.paths.push(token),
                     None => entries.push(Entry {
@@ -498,6 +527,7 @@ impl crate::history::HistoryProvider for GitAdapter {
             }
         }
         let mut items = Vec::new();
+        let mut unmapped = 0usize;
         for sha in &rev_list {
             let entry = match by_sha.get(sha.as_str()) {
                 Some(candidates) if candidates.len() == 1 => Some(&entries[candidates[0]]),
@@ -508,7 +538,9 @@ impl crate::history::HistoryProvider for GitAdapter {
             else {
                 // The log stream cannot be mapped cleanly for this commit
                 // (e.g. a planted fake header); drop it rather than trust
-                // repository content for field positions.
+                // repository content for field positions, but never silently:
+                // the omission is reported as an explicit gap below.
+                unmapped += 1;
                 continue;
             };
             let raw_paths = entry.map(|entry| entry.paths.clone()).unwrap_or_default();
@@ -553,6 +585,14 @@ impl crate::history::HistoryProvider for GitAdapter {
                 item.hunks_truncated = truncated;
             }
             items.push(item);
+        }
+        if unmapped > 0 {
+            gaps.push(HistoryGap {
+                kind: GapKind::Format,
+                detail: format!(
+                    "{unmapped} mainline revision(s) had no mappable commit record; they are omitted from the lane"
+                ),
+            });
         }
         let head_revision = items.first().map(|item| item.revision_id.clone());
         Ok(HistorySet {

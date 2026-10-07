@@ -166,6 +166,7 @@
           "description": "Optional host change-request enrichment settings (opt-in, disabled by default).",
           "type": "object",
           "additionalProperties": false,
+          "required": ["host", "tokenEnv"],
           "properties": {
             "host": {
               "description": "Host name (github).",
@@ -175,7 +176,7 @@
             "tokenEnv": {
               "description": "Environment variable name holding the host token (never the secret itself).",
               "type": "string",
-              "minLength": 1
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
             },
             "maxPrsPerBuild": {
               "description": "Maximum change requests enriched per build (default 10).",
