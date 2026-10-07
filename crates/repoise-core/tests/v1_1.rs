@@ -239,6 +239,7 @@ fn store_publishes_generations_and_retains_current_plus_previous() {
                 embedding_scope: repoise_core::embed::EmbeddingScope::Docs,
                 symbols: Vec::new(),
                 references: Vec::new(),
+                history: Vec::new(),
             },
         )
         .unwrap();
@@ -305,6 +306,7 @@ fn build(files: &[(&str, &str)], h: &Harness) -> indexing::IndexOutcome {
         &h.store,
         &h.cache,
         &IndexRequest::default(),
+        None,
         None,
     )
     .unwrap()

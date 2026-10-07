@@ -223,6 +223,7 @@ fn build_scope(tag: &str, files: &[(&str, &str)], session: Option<&EmbeddingClie
         &cache,
         &IndexRequest::default(),
         session,
+        None,
     )
     .unwrap();
     assert!(outcome.chunks_total > 0);
@@ -456,6 +457,7 @@ fn gc_reclaims_unreferenced_embeddings_and_keeps_referenced() {
             embedding_scope: repoise_core::embed::EmbeddingScope::Docs,
             symbols: Vec::new(),
             references: Vec::new(),
+            history: Vec::new(),
         },
     )
     .unwrap();

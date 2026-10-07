@@ -810,16 +810,17 @@ Future subsystems gain crates only when real boundaries justify them.
 | K2                              | Complete (v1-1)            | SQLite/FTS5 persistent store with transactional generation publication and bounded retention, structural Markdown/text/config chunking, incremental reconciliation, offline lexical search with cursors, exact reads with hash validation, status freshness and purge complete, with core and CLI acceptance tests. |
 | K3                              | Complete (v1-2)            | Versioned provider adapter (OpenAI-compatible endpoint), content-addressed embedding cache with profile fingerprints, per-generation vector publication, hybrid RRF search with coverage and lexical degradation, bounded budgets and embedding-cache GC complete, with core acceptance tests. The local inference preset remains evaluation-only. |
 | K4                              | Complete (v1-3)              | Pinned tree-sitter TypeScript/TSX and JavaScript/JSX grammars produce code chunks with exact line ranges, enclosing scope/symbol context and labeled oversized splits; other code languages fall back to line windows. Symbols and syntactic reference edges (imports resolved against the generation's file set, calls/references as bounded hints with honest confidence) publish per generation; FTS gains symbol/context columns; embedding scope selects docs or docs+code; schema v3 migration is additive and idempotent. Card-level fixtures for grammar behavior, incremental reparse and search coverage pass. Type resolution and call graphs remain out of scope. |
-| K5                              | Not started                  | Local history and optional verified hosting enrichment remain pending.                                                                                                                                                                                                                   |
+| K5                              | Complete (v1-4)            | Opt-in offline local history lane (first-parent horizon, bounded paths and hunk descriptors, explicit shallow/horizon gaps) publishes in the same generation; history is a separate search lane (`search --lane history`) with FTS5/BM25 ranking and bounded cursors. Verified GitHub PR enrichment is opt-in behind the CLI `github-enrichment` feature: read-only commit-to-PR verification, ETag repository-scoped host cache, per-build request budgets, fail-closed permission denial and rate-limit handling. Unit and CLI acceptance tests cover hint parsing, enrichment outcomes, budgets, cache invalidation, lane separation and permalink validation. |
 | K6                              | Distribution groundwork only | Three-target offline packed-consumer smoke, checksums, release runbooks and public native alpha complete. Linux/macOS npm alphas public; Windows/main wrapper and OIDC validation pending. MCP/watch/overlay/build integration, feature acceptance, benchmarks and pilot remain pending. |
 | ai-gateway consumer integration | Not started                  | Separate pinned consumer PR follows functional offline indexing acceptance.                                                                                                                                                                                                              |
 
-K1, K2, K3 and K4 establish the offline docs+code milestone plus opt-in hybrid search:
-adapter/provenance contracts, configuration, init, discovery, doctor, the persistent
-SQLite/FTS5 index with offline lexical search, exact reads and freshness,
-fingerprinted embeddings with RRF fusion, and structural TypeScript/JavaScript code
-chunks with symbols and syntactic reference edges. History and MCP release
-acceptance remain pending. Initial build evidence is linked in the
+K1, K2, K3, K4 and K5 establish the offline docs+code milestone plus opt-in hybrid
+search and the history lane: adapter/provenance contracts, configuration, init,
+discovery, doctor, the persistent SQLite/FTS5 index with offline lexical search, exact
+reads and freshness, fingerprinted embeddings with RRF fusion, structural
+TypeScript/JavaScript code chunks with symbols and syntactic reference edges, and a
+bounded local history lane with optional verified GitHub enrichment. MCP release
+acceptance remains pending. Initial build evidence is linked in the
 [alpha execution record](../publish/alpha-0-status.md); no agent task/token gains are measured.
 
 Target 6 core PRs in this repository, plus a separate ai-gateway consumer integration PR;

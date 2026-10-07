@@ -82,6 +82,8 @@ pub struct IndexOutcome {
     pub vectors_total: usize,
     /// Embedding session stats, when embedding ran for this build.
     pub embedding: Option<crate::embed::EmbeddingStats>,
+    /// History lane summary (card K5; `None` when the lane is disabled).
+    pub history: Option<crate::history::HistorySummary>,
 }
 
 /// The versioned `state.json` integration manifest (non-canonical; the
@@ -275,9 +277,11 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Builds one index generation and publishes it transactionally. When an
-/// embedding session is provided, chunk vectors are embedded (cache-first,
-/// bounded provider calls) and published with the same generation.
+/// Builds and atomically publishes one index generation (cards K1, K3, K4
+/// and K5). File-level reuse keeps unchanged records stable; embeddings are
+/// optional (lexical-only always publishes); history is collected locally
+/// and optionally enriched against the configured host before publication.
+#[allow(clippy::too_many_arguments)]
 pub fn index(
     adapter: &dyn crate::adapter::SourceAdapter,
     mode: SnapshotMode,
@@ -286,6 +290,7 @@ pub fn index(
     cache: &CachePaths,
     request: &IndexRequest,
     embed_session: Option<&crate::embed::EmbeddingClient>,
+    enrichment: Option<&crate::history::EnrichmentSession>,
 ) -> Result<IndexOutcome> {
     let inventory = discovery::inventory(adapter, mode, eff)?;
     let canonical_root = adapter.canonical_root()?;
@@ -559,6 +564,58 @@ pub fn index(
         }
     }
 
+    // Optional history lane (card K5): opt-in, bounded, offline local
+    // collection; verified host enrichment only when a session is provided.
+    // Enrichment failures never fail the local build (fail closed on denial).
+    let mut history_rows: Vec<store::HistoryRow> = Vec::new();
+    let mut history_summary: Option<crate::history::HistorySummary> = None;
+    if eff.history.enabled {
+        let spec = crate::history::HistorySpec {
+            horizon: eff.history.horizon,
+            max_paths_per_commit: eff.history.max_paths_per_commit,
+            diff_hunks: eff.history.diff_hunks,
+        };
+        let mut set = crate::history::collect_history(adapter, &spec)?;
+        let report = match enrichment {
+            Some(session) => session.run(
+                adapter.remote_identity().ok().flatten().as_deref(),
+                &mut set,
+            ),
+            None => crate::history::EnrichmentReport::default(),
+        };
+        history_rows = set
+            .items
+            .iter()
+            .map(|item| store::HistoryRow {
+                item_id: crate::history::item_id(&scope_key, &item.revision_id),
+                revision_id: item.revision_id.clone(),
+                parents: item.parents.clone(),
+                message: item.message.clone(),
+                author: item.author.clone(),
+                committed_at_ms: item.committed_at_ms,
+                affected_paths: item.affected_paths.clone(),
+                paths_truncated: item.paths_truncated,
+                hunks: item.hunks.clone(),
+                hunks_truncated: item.hunks_truncated,
+                pr_hint: item.pr_hint.clone(),
+                association: item.association.clone(),
+            })
+            .collect();
+        history_summary = Some(crate::history::HistorySummary {
+            count: set.count,
+            enriched: report.enriched,
+            no_association: report.no_association,
+            failed: report.failed,
+            gaps: set
+                .gaps
+                .iter()
+                .map(|gap| format!("{:?}: {}", gap.kind, gap.detail))
+                .collect(),
+            rate_limited: report.rate_limited,
+            permission_denied: report.permission_denied,
+        });
+    }
+
     let snapshot = inventory.snapshot.clone();
     let mode_name = format!("{mode:?}");
     let input = GenerationInput {
@@ -581,6 +638,7 @@ pub fn index(
         embedding_scope,
         symbols: symbol_rows.clone(),
         references: reference_rows.clone(),
+        history: history_rows.clone(),
     };
     let generation_id = match store::publish(&conn, &input) {
         Ok(id) => {
@@ -631,6 +689,7 @@ pub fn index(
         files_skipped: inventory.skips.len(),
         vectors_total: input.vectors.len(),
         embedding: embedding_stats,
+        history: history_summary,
     })
 }
 

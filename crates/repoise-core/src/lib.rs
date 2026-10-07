@@ -22,6 +22,7 @@ pub mod doctor;
 pub mod embed;
 pub mod error;
 pub mod hash;
+pub mod history;
 pub mod ignore;
 pub mod indexing;
 pub mod init;
@@ -53,8 +54,9 @@ pub const CONFIG_SCHEMA_FILE: &str = "schemas/repoise.config.v1.schema.json";
 /// Version of the persistent index schema (SQLite tables + FTS layout).
 /// Version 2 adds the per-generation `chunk_vec` vector table (card K3);
 /// version 3 adds code corpus columns, per-generation symbol and reference
-/// tables and the generation embedding scope (card K4).
-pub const INDEX_SCHEMA_VERSION: i64 = 3;
+/// tables and the generation embedding scope (card K4); version 4 adds the
+/// per-generation `history_item` records and `history_fts` lane (card K5).
+pub const INDEX_SCHEMA_VERSION: i64 = 4;
 /// How many complete published generations a scope retains (current + previous).
 pub const GENERATION_RETENTION: i64 = 2;
 /// Environment variable that overrides the resolved cache root (tests/containers).

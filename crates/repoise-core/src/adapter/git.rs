@@ -131,6 +131,81 @@ impl GitAdapter {
     }
 }
 
+/// Bounded diff hunk descriptors for one commit (card K5): parse
+/// `git show --unified=0` headers only — never patch text.
+fn hunk_descriptors(
+    adapter: &GitAdapter,
+    commit: &str,
+    max_hunks: u32,
+) -> Result<(Vec<crate::history::HunkDescriptor>, u32), AdapterError> {
+    use crate::history::HunkDescriptor;
+    let out = adapter.run_git(&["show", "--format=", "--unified=0", commit])?;
+    let mut hunks: Vec<HunkDescriptor> = Vec::new();
+    let mut truncated: u32 = 0;
+    // (old path, new path); deletions keep the old path.
+    let mut current = (String::new(), String::new());
+    for line in out.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let mut parts = rest.split(" b/");
+            let old = parts
+                .next()
+                .unwrap_or("")
+                .strip_prefix("a/")
+                .unwrap_or("")
+                .to_string();
+            let new = parts.next().unwrap_or("/dev/null").to_string();
+            current = if new == "/dev/null" {
+                (old.clone(), old)
+            } else {
+                (old, new)
+            };
+            continue;
+        }
+        let Some(body) = line.strip_prefix("@@ ") else {
+            continue;
+        };
+        let Some((ranges, context)) = body.split_once(" @@") else {
+            continue;
+        };
+        let mut range_parts = ranges.split_whitespace();
+        let Some(old_range) = range_parts.next() else {
+            continue;
+        };
+        let Some(new_range) = range_parts.next() else {
+            continue;
+        };
+        let parse_range = |range: &str| -> (u32, u32) {
+            let body = range.trim_start_matches('-').trim_start_matches('+');
+            let mut parts = body.splitn(2, ',');
+            let start = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let lines = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            (start, lines)
+        };
+        let (old_start, old_lines) = parse_range(old_range);
+        let (new_start, new_lines) = parse_range(new_range);
+        if hunks.len() >= max_hunks as usize {
+            truncated += 1;
+            continue;
+        }
+        let context: String = context.trim().chars().take(80).collect();
+        hunks.push(HunkDescriptor {
+            path: current.1.clone(),
+            old_start,
+            old_lines,
+            new_start,
+            new_lines,
+            context,
+        });
+    }
+    Ok((hunks, truncated))
+}
+
 impl SourceAdapter for GitAdapter {
     fn kind(&self) -> SourceKind {
         SourceKind::Git
@@ -146,6 +221,10 @@ impl SourceAdapter for GitAdapter {
 
     fn canonical_root(&self) -> Result<PathBuf, AdapterError> {
         Ok(self.canonical_root.clone())
+    }
+
+    fn history_provider(&self) -> Option<&dyn crate::history::HistoryProvider> {
+        Some(self)
     }
 
     fn resolve(
@@ -239,5 +318,139 @@ pub fn git_exclude_lines(root: &Path) -> Vec<String> {
     match fs::read_to_string(root.join(".git").join("info").join("exclude")) {
         Ok(text) => text.lines().map(str::to_string).collect(),
         Err(_) => Vec::new(),
+    }
+}
+
+/// Bounded local mainline history collection (card K5) for the Git adapter.
+///
+/// Mainline means first-parent order from HEAD. Output is bounded per the
+/// spec: a horizon of commits, a bound on changed paths per commit, and
+/// optional bounded diff hunk descriptors (never patch text). Coverage gaps
+/// (shallow clone, horizon) are recorded explicitly, never silently.
+impl crate::history::HistoryProvider for GitAdapter {
+    fn collect_history(
+        &self,
+        spec: &crate::history::HistorySpec,
+    ) -> crate::Result<crate::history::HistorySet> {
+        use crate::history::{GapKind, HistoryGap, HistoryItem, HistorySet};
+        const MAX_HUNKS_PER_COMMIT: u32 = 20;
+        let shallow = self
+            .run_git(&["rev-parse", "--is-shallow-repository"])
+            .map(|out| out.trim() == "true")
+            .unwrap_or(false);
+        // An empty repository (no HEAD) has an empty history lane, not an error.
+        let Ok(total_text) = self.run_git(&["rev-list", "--first-parent", "--count", "HEAD"])
+        else {
+            return Ok(HistorySet::default());
+        };
+        let total = total_text.trim().parse::<i64>().unwrap_or(0);
+        let mut gaps = Vec::new();
+        if shallow {
+            gaps.push(HistoryGap {
+                kind: GapKind::ShallowClone,
+                detail: "shallow clone: history below the shallow boundary is unavailable"
+                    .to_string(),
+            });
+        }
+        if total > spec.horizon as i64 {
+            gaps.push(HistoryGap {
+                kind: GapKind::Horizon,
+                detail: format!(
+                    "only the newest {} mainline commits are recorded; the mainline has {total}",
+                    spec.horizon
+                ),
+            });
+        }
+        let horizon = spec.horizon.to_string();
+        const US: char = '\u{1f}';
+        const RS: char = '\u{1e}';
+        let log = self.run_git(&[
+            "log",
+            "--first-parent",
+            "--max-count",
+            &horizon,
+            &format!("--format=%H{US}%P{US}%an{US}%at{US}%B{RS}"),
+        ])?;
+        let names = self.run_git(&[
+            "log",
+            "--first-parent",
+            "--max-count",
+            &horizon,
+            "--name-only",
+            "--format=%H",
+        ])?;
+        let mut path_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut current: Option<String> = None;
+        for line in names.lines() {
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            if line.len() == 40 && line.chars().all(|c| c.is_ascii_hexdigit()) {
+                current = Some(line.to_string());
+            } else if let Some(sha) = current.clone() {
+                path_map.entry(sha).or_default().push(line.to_string());
+            }
+        }
+        let mut items = Vec::new();
+        for record in log.split(RS) {
+            // Git prints a newline between formatted commits; the first field
+            // is always the sha, so leading whitespace never belongs to it.
+            let record = record.trim_start();
+            if record.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = record.splitn(5, US).collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let (sha, parents, author, ts, message) =
+                (parts[0].trim(), parts[1], parts[2], parts[3], parts[4]);
+            let raw_paths = path_map.get(sha).cloned().unwrap_or_default();
+            let max_paths = spec.max_paths_per_commit as usize;
+            let paths_truncated = raw_paths.len().saturating_sub(max_paths);
+            let affected_paths: Vec<String> = raw_paths.into_iter().take(max_paths).collect();
+            let message = message.trim_end().to_string();
+            let redacted = crate::ignore::redact_secret_content(&message);
+            let pr_hint = crate::history::pr_hint_from_message(&redacted);
+            let mut item = HistoryItem {
+                revision_id: format!("git:{sha}"),
+                parents: parents
+                    .split_whitespace()
+                    .map(|parent| format!("git:{parent}"))
+                    .collect(),
+                message: redacted,
+                author: if author.is_empty() {
+                    None
+                } else {
+                    Some(author.to_string())
+                },
+                committed_at_ms: ts.trim().parse::<i64>().ok().map(|seconds| seconds * 1000),
+                affected_paths,
+                paths_truncated: paths_truncated as u32,
+                hunks: Vec::new(),
+                hunks_truncated: 0,
+                pr_hint: if pr_hint.is_empty() {
+                    None
+                } else {
+                    Some(pr_hint)
+                },
+                association: None,
+            };
+            if spec.diff_hunks {
+                let (hunks, truncated) = hunk_descriptors(self, sha, MAX_HUNKS_PER_COMMIT)?;
+                item.hunks = hunks;
+                item.hunks_truncated = truncated;
+            }
+            items.push(item);
+        }
+        let head_revision = items.first().map(|item| item.revision_id.clone());
+        Ok(HistorySet {
+            head_revision,
+            count: items.len(),
+            gaps,
+            items,
+        })
     }
 }

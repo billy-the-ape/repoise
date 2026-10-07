@@ -95,6 +95,34 @@ feature; `cargo check -p repoise-cli --no-default-features` produces the lexical
 binary. `doctor` additionally warns (without failing) when `endpoint` resolves to a
 non-TLS `http://` remote host: source text and the API key would travel in cleartext.
 
+## Optional history lane
+
+`index` records a bounded local history lane only when the effective config sets
+`history.enabled` (default false). The lane covers first-parent (mainline) commits
+within `history.horizon` (default 500), with bounded changed-path summaries
+(`history.maxPathsPerCommit`, default 20) and optional bounded diff hunk
+descriptors (`history.diffHunks`, default false). Shallow clones and horizon cuts
+are reported as explicit gaps, never silently omitted. History publishes in the
+same generation as the docs/code index but is a separate search lane:
+`search --lane history` ranks history items (message, revision, affected paths,
+host metadata) with FTS5/BM25; the default lane never returns history items, and
+`read` does not accept history items.
+
+GitHub PR enrichment is opt-in inside the lane via `history.enrichment`
+(`host: "github"`, `tokenEnv`, `maxPrsPerBuild`, `maxRequestsPerBuild`,
+`maxBodyChars`). Commit-message `#123` references stay unverified hints until the
+host API confirms the commit belongs to that change request; only then is a
+verified association (title, bounded body, state, permalink, fetched time)
+stored. The token is read from the named environment variable at runtime and
+never enters config or caches; a missing token leaves hints unverified without
+affecting local indexing. The transport is built into the CLI behind the default
+`github-enrichment` feature (`ureq` read-only requests to `api.github.com`);
+`cargo check -p repoise-cli --no-default-features` produces the no-enrichment
+binary. Host responses are ETag-cached in a repository-scoped JSON cache under
+the cache root (removed by `purge`), requests are bounded per build, rate limits
+stop the enrichment pass, and a permission denial fails closed by invalidating
+the cached remote content.
+
 ## Installation and artifacts
 
 `bash scripts/install.sh` (PowerShell: `./scripts/install.ps1`) uses `cargo install --path`
