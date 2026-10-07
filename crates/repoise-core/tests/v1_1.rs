@@ -202,6 +202,7 @@ fn store_publishes_generations_and_retains_current_plus_previous() {
             language: "markdown".to_string(),
             parser_version: Some("markdown/1".to_string()),
             corpus: Some("docs".to_string()),
+            parser_errors: 0,
             size: 10,
         };
         let chunk = repoise_core::store::ChunkRow {
@@ -212,6 +213,8 @@ fn store_publishes_generations_and_retains_current_plus_previous() {
             corpus: "docs".to_string(),
             text: format!("body {generation}"),
             text_hash: format!("th{generation}"),
+            symbol: String::new(),
+            context: None,
             line_start: 1,
             line_end: 1,
             byte_start: 0,
@@ -233,6 +236,9 @@ fn store_publishes_generations_and_retains_current_plus_previous() {
                 chunks: vec![chunk],
                 vectors: Vec::new(),
                 vector_profile: None,
+                embedding_scope: repoise_core::embed::EmbeddingScope::Docs,
+                symbols: Vec::new(),
+                references: Vec::new(),
             },
         )
         .unwrap();

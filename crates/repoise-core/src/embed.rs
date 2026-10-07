@@ -70,6 +70,45 @@ impl EmbeddingProfile {
     }
 }
 
+/// Which chunks an enabled embedding profile applies to.
+///
+/// `docs` keeps K3 behavior exactly (code stays lexical-only); `all` also
+/// embeds code chunks (card K4). The scope is stored per generation so
+/// vector coverage and pending counts stay honest when it changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EmbeddingScope {
+    /// Docs corpus only (default).
+    #[default]
+    Docs,
+    /// Docs and code corpora.
+    All,
+}
+
+impl EmbeddingScope {
+    /// Whether code chunks are embedded under this scope.
+    pub fn includes_code(self) -> bool {
+        matches!(self, Self::All)
+    }
+
+    /// Stable stored form of the scope.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Docs => "docs",
+            Self::All => "all",
+        }
+    }
+
+    /// Parses the stored form (rejects unknown values).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "docs" => Some(Self::Docs),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
 /// Cooperative cancellation for embedding work. Checked between batches and
 /// during backoff sleeps; an in-flight batch's result is discarded.
 #[derive(Clone, Debug, Default)]

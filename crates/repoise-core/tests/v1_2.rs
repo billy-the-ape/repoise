@@ -438,6 +438,8 @@ fn gc_reclaims_unreferenced_embeddings_and_keeps_referenced() {
                 corpus: "docs".into(),
                 text: "alpha".into(),
                 text_hash: alpha_hash.clone(),
+                symbol: String::new(),
+                context: None,
                 line_start: 1,
                 line_end: 1,
                 byte_start: 0,
@@ -451,6 +453,9 @@ fn gc_reclaims_unreferenced_embeddings_and_keeps_referenced() {
                 vector: vector_for("alpha", 8),
             }],
             vector_profile: Some(fp.clone()),
+            embedding_scope: repoise_core::embed::EmbeddingScope::Docs,
+            symbols: Vec::new(),
+            references: Vec::new(),
         },
     )
     .unwrap();

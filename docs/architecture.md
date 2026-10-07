@@ -1,10 +1,10 @@
 # Code structure
 
 Repoise is a Rust 2024 workspace with resolver 3 and one shared application lockfile.
-The core crate's only external dependencies are serde (configuration/JSON) and
-`rusqlite` with the bundled SQLite build (persistent index); there are no parser,
-provider, or network dependencies. The Git adapter shells out to `git` with argument
-arrays when operating on a Git repository.
+The core crate's external dependencies are serde (configuration/JSON), `rusqlite` with
+the bundled SQLite build (persistent index) and the offline tree-sitter TypeScript and
+JavaScript grammars (code chunking); there are no provider or network dependencies. The
+Git adapter shells out to `git` with argument arrays when operating on a Git repository.
 
 | Path | Responsibility |
 | --- | --- |
@@ -18,8 +18,8 @@ arrays when operating on a Git repository.
 | `crates/repoise-core/src/init.rs` and `doctor.rs` | Idempotent overlay init (config, overlay manifest, optional managed block) and effective-settings reporting |
 | `crates/repoise-core/src/hash.rs` | Lowercase SHA-256 helpers used across manifests and fingerprints |
 | `crates/repoise-core/src/store.rs` | SQLite (WAL) + FTS5 persistent store: transactional generation publication, retention, current/previous generation access |
-| `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references |
-| `crates/repoise-core/src/indexing.rs` | Incremental index build: reuse/reparse/tombstone reconciliation, secret redaction, optional cache-first embedding with atomic vector publication, embedding-cache GC, `state.json` publication |
+| `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references, plus the pinned tree-sitter TypeScript/TSX and JavaScript/JSX code grammars and a line-window fallback for other code languages |
+| `crates/repoise-core/src/indexing.rs` | Incremental index build: reuse/reparse/tombstone reconciliation, secret redaction, code symbol and reference-edge resolution, optional cache-first embedding with atomic vector publication, embedding-cache GC, `state.json` publication |
 | `crates/repoise-core/src/embed.rs` | Versioned embedding provider interface, profile fingerprinting, vector dimension/finiteness validation, bounded embedding client (batching, timeout, retry, cancellation, budgets), content-addressed SQLite embedding cache and reference-counted GC |
 | `crates/repoise-core/src/search.rs` | Lexical search (BM25 + explainable boosts, per-file cap, bound cursors, fallback suggestions) plus hybrid RRF fusion over stored vectors with retrieval-mode/coverage reporting and lexical degradation; scope resolution and GitHub permalink validation |
 | `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; `Stale` diagnostics |

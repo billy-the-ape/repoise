@@ -10,9 +10,11 @@
 //! configured). Oversized units split into labeled child chunks that repeat
 //! the heading/context, keep exact ranges and reference their parent.
 
+pub mod code;
 pub mod config_fmt;
 pub mod markdown;
 pub mod text;
+pub mod ts;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,8 +28,17 @@ pub const TARGET_CHUNK_TOKENS: u64 = 700;
 pub const PARSER_VERSION_MARKDOWN: &str = "markdown/1";
 pub const PARSER_VERSION_TEXT: &str = "text/1";
 pub const PARSER_VERSION_CONFIG: &str = "config/1";
+/// TypeScript/TSX structural parser (pinned `tree-sitter-typescript`
+/// grammar version + chunker rule version).
+pub const PARSER_VERSION_TS: &str = "ts/tree-sitter-0.23.2/1";
+/// JavaScript/JSX structural parser (pinned `tree-sitter-javascript`
+/// grammar version + chunker rule version).
+pub const PARSER_VERSION_JS: &str = "js/tree-sitter-0.25.0/1";
+/// Line-window fallback for code without a shipped grammar (and for
+/// parser-error ranges of grammar files).
+pub const PARSER_VERSION_CODE_LINE: &str = "code-line/1";
 
-/// Logical corpus a chunk belongs to (docs/config in this PR; code in PR 4).
+/// Logical corpus a chunk belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Corpus {
@@ -35,6 +46,8 @@ pub enum Corpus {
     Docs,
     /// Readable configuration.
     Config,
+    /// Source code (structural grammar chunks or line-window fallback).
+    Code,
 }
 
 /// Kind of a structural unit that composes chunks.

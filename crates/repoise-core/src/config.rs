@@ -60,6 +60,9 @@ pub struct EmbeddingConfig {
     /// Provider name chosen by the operator.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Which chunks are embedded: `docs` (default) or `docs+code`.
+    #[serde(default)]
+    pub scope: Option<String>,
     /// Endpoint URL reference; must be an `env:` reference when present.
     #[serde(default)]
     pub endpoint: Option<String>,
@@ -197,6 +200,8 @@ pub struct EffectiveConfig {
     pub cache_dir: String,
     /// Optional embedding settings.
     pub embedding: Option<EmbeddingConfig>,
+    /// Which chunks the enabled embedding profile applies to (default docs).
+    pub embedding_scope: crate::embed::EmbeddingScope,
     /// Resolved reciprocal-rank-fusion `k` (default 60).
     pub rrf_k: u32,
 }
@@ -309,6 +314,15 @@ impl EffectiveConfig {
             }
         }
 
+        let embedding_scope = match embedding
+            .as_ref()
+            .and_then(|settings| settings.scope.as_deref())
+        {
+            Some(name) => crate::embed::EmbeddingScope::parse(name)
+                .ok_or_else(|| Error::Config(format!("unknown embedding scope: {name}")))?,
+            None => crate::embed::EmbeddingScope::Docs,
+        };
+
         Ok(EffectiveConfig {
             preset,
             preset_origin,
@@ -319,6 +333,7 @@ impl EffectiveConfig {
             document_roles,
             cache_dir,
             embedding,
+            embedding_scope,
             rrf_k,
         })
     }
@@ -423,6 +438,11 @@ impl EffectiveConfig {
         key.push_str(&self.max_file_bytes.to_string());
         key.push('\n');
         key.push_str(&self.cache_dir);
+        key.push('\n');
+        key.push_str(&format!(
+            "embeddingScope|{}\n",
+            self.embedding_scope.as_str()
+        ));
         if let Some(settings) = &self.embedding {
             key.push('\n');
             key.push_str(&format!(
