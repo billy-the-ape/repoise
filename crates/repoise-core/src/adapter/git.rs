@@ -131,34 +131,57 @@ impl GitAdapter {
     }
 }
 
-/// Bounded diff hunk descriptors for one commit (card K5): parse
-/// `git show --unified=0` headers only — never patch text.
+/// Bounded diff hunk descriptors for one commit (card K5): parse diff
+/// headers only — never patch text.
+///
+/// Hunk bases are computed with `git diff <first-parent> <commit>` (or
+/// `git diff --root` for the root commit): `git show` renders *combined*
+/// diffs for merge commits, which contain no per-file hunks at all, and
+/// `--first-parent` does not change that. The parent-base tree diff is
+/// exactly what `--name-only --first-parent` uses for its path lists.
 fn hunk_descriptors(
     adapter: &GitAdapter,
     commit: &str,
+    first_parent: Option<&str>,
     max_hunks: u32,
 ) -> Result<(Vec<crate::history::HunkDescriptor>, u32), AdapterError> {
     use crate::history::HunkDescriptor;
-    let out = adapter.run_git(&["show", "--format=", "--unified=0", commit])?;
+    let args: Vec<&str> = match first_parent {
+        Some(parent) => vec![
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--unified=0",
+            "--no-prefix",
+            parent,
+            commit,
+        ],
+        None => vec![
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--root",
+            "--unified=0",
+            "--no-prefix",
+            commit,
+        ],
+    };
+    let out = adapter.run_git(&args)?;
     let mut hunks: Vec<HunkDescriptor> = Vec::new();
     let mut truncated: u32 = 0;
-    // (old path, new path); deletions keep the old path.
-    let mut current = (String::new(), String::new());
+    let mut current_path = String::new();
     for line in out.lines() {
-        if let Some(rest) = line.strip_prefix("diff --git ") {
-            let mut parts = rest.split(" b/");
-            let old = parts
-                .next()
-                .unwrap_or("")
-                .strip_prefix("a/")
-                .unwrap_or("")
-                .to_string();
-            let new = parts.next().unwrap_or("/dev/null").to_string();
-            current = if new == "/dev/null" {
-                (old.clone(), old)
-            } else {
-                (old, new)
-            };
+        if let Some(old) = line.strip_prefix("--- ") {
+            // Deletions: the hunk keeps the old path.
+            if old != "/dev/null" {
+                current_path = old.to_string();
+            }
+            continue;
+        }
+        if let Some(new) = line.strip_prefix("+++ ") {
+            if new != "/dev/null" {
+                current_path = new.to_string();
+            }
             continue;
         }
         let Some(body) = line.strip_prefix("@@ ") else {
@@ -194,16 +217,39 @@ fn hunk_descriptors(
             continue;
         }
         let context: String = context.trim().chars().take(80).collect();
-        hunks.push(HunkDescriptor {
-            path: current.1.clone(),
-            old_start,
-            old_lines,
-            new_start,
-            new_lines,
-            context,
-        });
+        if !current_path.is_empty() {
+            hunks.push(HunkDescriptor {
+                path: current_path.clone(),
+                old_start,
+                old_lines,
+                new_start,
+                new_lines,
+                context,
+            });
+        }
     }
     Ok((hunks, truncated))
+}
+
+/// The mainline commit list (first-parent from HEAD, newest first) under the
+/// horizon. `rev-list` output is git-generated (SHAs only), so it needs no
+/// framing — the fragile part (commit fields and repo-controlled paths) is
+/// isolated in the separately parsed NUL-framed log below.
+fn list_mainline(adapter: &GitAdapter, horizon: u32) -> Result<Vec<String>, AdapterError> {
+    let out = adapter.run_git(&[
+        "rev-list",
+        "--first-parent",
+        "--max-count",
+        &horizon.to_string(),
+        "HEAD",
+        "-z",
+    ])?;
+    Ok(out
+        .split('\0')
+        .map(str::trim)
+        .filter(|sha| !sha.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 impl SourceAdapter for GitAdapter {
@@ -362,71 +408,132 @@ impl crate::history::HistoryProvider for GitAdapter {
             });
         }
         let horizon = spec.horizon.to_string();
+        let rev_list = list_mainline(self, spec.horizon)?;
+        if rev_list.is_empty() {
+            return Ok(HistorySet {
+                gaps,
+                ..Default::default()
+            });
+        }
+        // NUL-framed log: each token is either a header record (prefixed
+        // with \x01: sha, parents, author, time, message) or a path line.
+        // Records are never concatenated into one giant string, so a
+        // control character in a repo-controlled field (message or path)
+        // cannot shift the field positions of other commits.
+        const SOH: char = '\u{1}';
         const US: char = '\u{1f}';
-        const RS: char = '\u{1e}';
-        let log = self.run_git(&[
+        let out = self.run_git(&[
+            "-c",
+            "core.quotepath=false",
             "log",
             "--first-parent",
             "--max-count",
             &horizon,
-            &format!("--format=%H{US}%P{US}%an{US}%at{US}%B{RS}"),
-        ])?;
-        let names = self.run_git(&[
-            "log",
-            "--first-parent",
-            "--max-count",
-            &horizon,
+            "-z",
             "--name-only",
-            "--format=%H",
+            &format!("--format={SOH}%H{US}%P{US}%an{US}%at{US}%B"),
         ])?;
-        let mut path_map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        let mut current: Option<String> = None;
-        for line in names.lines() {
-            let line = line.trim_end();
-            if line.is_empty() {
+        // `--name-only` interleaves a bare newline with the framing; it can
+        // only appear at token edges (a repository path cannot contain a
+        // literal newline unquoted), so trimming newline edges is safe.
+        let tokens: Vec<String> = out
+            .split('\0')
+            .map(|token| token.trim_matches(['\n']))
+            .filter(|token| !token.is_empty())
+            .map(str::to_string)
+            .collect();
+
+        /// One parsed commit record: header fields (when well-formed) and
+        /// the path lines that follow it in the stream.
+        struct Entry {
+            /// (sha, parents, author, time, message) when the header is valid.
+            fields: Option<(String, String, String, String, String)>,
+            /// Recorded paths for this commit (bounded later).
+            paths: Vec<String>,
+        }
+        let mut entries: Vec<Entry> = Vec::new();
+        for token in tokens {
+            let Some(rest) = token.strip_prefix(SOH) else {
+                match entries.last_mut() {
+                    Some(entry) => entry.paths.push(token),
+                    None => entries.push(Entry {
+                        fields: None,
+                        paths: vec![token],
+                    }),
+                }
                 continue;
+            };
+            let parts: Vec<&str> = rest.splitn(5, US).collect();
+            if parts.len() == 5 {
+                entries.push(Entry {
+                    fields: Some((
+                        parts[0].to_string(),
+                        parts[1].to_string(),
+                        parts[2].to_string(),
+                        parts[3].to_string(),
+                        parts[4].to_string(),
+                    )),
+                    paths: Vec::new(),
+                });
+            } else {
+                // A header-shaped token that is not a valid header (a
+                // repository file named after the framing bytes): treat it
+                // as a path line of the previous record.
+                match entries.last_mut() {
+                    Some(entry) => entry.paths.push(token),
+                    None => entries.push(Entry {
+                        fields: None,
+                        paths: vec![token],
+                    }),
+                }
             }
-            if line.len() == 40 && line.chars().all(|c| c.is_ascii_hexdigit()) {
-                current = Some(line.to_string());
-            } else if let Some(sha) = current.clone() {
-                path_map.entry(sha).or_default().push(line.to_string());
+        }
+        // Map records to the trusted rev-list: a sha claimed by more than
+        // one record (a planted fake header) is never trusted.
+        let mut by_sha: std::collections::HashMap<&str, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some((sha, _, _, _, _)) = &entry.fields {
+                by_sha.entry(sha.as_str()).or_default().push(index);
             }
         }
         let mut items = Vec::new();
-        for record in log.split(RS) {
-            // Git prints a newline between formatted commits; the first field
-            // is always the sha, so leading whitespace never belongs to it.
-            let record = record.trim_start();
-            if record.is_empty() {
+        for sha in &rev_list {
+            let entry = match by_sha.get(sha.as_str()) {
+                Some(candidates) if candidates.len() == 1 => Some(&entries[candidates[0]]),
+                _ => None,
+            };
+            let Some((_, parents_raw, author_raw, ts_raw, message_raw)) =
+                entry.and_then(|entry| entry.fields.as_ref())
+            else {
+                // The log stream cannot be mapped cleanly for this commit
+                // (e.g. a planted fake header); drop it rather than trust
+                // repository content for field positions.
                 continue;
-            }
-            let parts: Vec<&str> = record.splitn(5, US).collect();
-            if parts.len() < 5 {
-                continue;
-            }
-            let (sha, parents, author, ts, message) =
-                (parts[0].trim(), parts[1], parts[2], parts[3], parts[4]);
-            let raw_paths = path_map.get(sha).cloned().unwrap_or_default();
+            };
+            let raw_paths = entry.map(|entry| entry.paths.clone()).unwrap_or_default();
             let max_paths = spec.max_paths_per_commit as usize;
             let paths_truncated = raw_paths.len().saturating_sub(max_paths);
             let affected_paths: Vec<String> = raw_paths.into_iter().take(max_paths).collect();
-            let message = message.trim_end().to_string();
-            let redacted = crate::ignore::redact_secret_content(&message);
+            let redacted = crate::ignore::redact_secret_content(message_raw);
             let pr_hint = crate::history::pr_hint_from_message(&redacted);
             let mut item = HistoryItem {
                 revision_id: format!("git:{sha}"),
-                parents: parents
+                parents: parents_raw
                     .split_whitespace()
                     .map(|parent| format!("git:{parent}"))
                     .collect(),
                 message: redacted,
-                author: if author.is_empty() {
+                author: if author_raw.is_empty() {
                     None
                 } else {
-                    Some(author.to_string())
+                    Some(author_raw.to_string())
                 },
-                committed_at_ms: ts.trim().parse::<i64>().ok().map(|seconds| seconds * 1000),
+                committed_at_ms: ts_raw
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+                    .map(|seconds| seconds * 1000),
                 affected_paths,
                 paths_truncated: paths_truncated as u32,
                 hunks: Vec::new(),
@@ -439,7 +546,9 @@ impl crate::history::HistoryProvider for GitAdapter {
                 association: None,
             };
             if spec.diff_hunks {
-                let (hunks, truncated) = hunk_descriptors(self, sha, MAX_HUNKS_PER_COMMIT)?;
+                let first_parent = parents_raw.split_whitespace().next();
+                let (hunks, truncated) =
+                    hunk_descriptors(self, sha, first_parent, MAX_HUNKS_PER_COMMIT)?;
                 item.hunks = hunks;
                 item.hunks_truncated = truncated;
             }

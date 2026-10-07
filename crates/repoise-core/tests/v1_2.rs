@@ -458,6 +458,7 @@ fn gc_reclaims_unreferenced_embeddings_and_keeps_referenced() {
             symbols: Vec::new(),
             references: Vec::new(),
             history: Vec::new(),
+            history_meta: String::new(),
         },
     )
     .unwrap();

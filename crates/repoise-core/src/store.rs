@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS generation (
   vectors INTEGER NOT NULL DEFAULT 0,
   vector_profile TEXT,
   embedding_scope TEXT NOT NULL DEFAULT 'docs',
-  history INTEGER NOT NULL DEFAULT 0
+  history INTEGER NOT NULL DEFAULT 0,
+  history_meta TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_generation_scope
   ON generation(repo_id, worktree_id, id);
@@ -314,7 +315,7 @@ impl Store {
             version if version == INDEX_SCHEMA_VERSION.to_string().as_str() => {
                 conn.execute("COMMIT", [])?;
             }
-            "1" | "2" | "3" => {
+            "1" | "2" | "3" | "4" => {
                 // Additive card-K3 upgrade (only for v1 databases).
                 if stored == "1" {
                     conn.execute_batch(MIGRATION_TABLES_V1_TO_V2)?;
@@ -335,6 +336,14 @@ impl Store {
                 // Additive card-K5 upgrade (history lane).
                 conn.execute_batch(MIGRATION_TABLES_V3_TO_V4)?;
                 ensure_column(&conn, "generation", "history", "INTEGER NOT NULL DEFAULT 0")?;
+                // Additive card-K5 upgrade: persisted history lane coverage
+                // summary (gaps and enrichment outcome) for status/search.
+                ensure_column(
+                    &conn,
+                    "generation",
+                    "history_meta",
+                    "TEXT NOT NULL DEFAULT ''",
+                )?;
                 rebuild_chunk_fts_if_needed(&conn)?;
                 conn.execute(
                     "INSERT INTO meta (key, value) VALUES ('schema_version', ?1) \
@@ -582,6 +591,9 @@ pub struct GenerationInput {
     /// Complete bounded history-lane record set (empty when the lane is off
     /// or unavailable for this scope).
     pub history: Vec<HistoryRow>,
+    /// Persisted history-lane coverage/enrichment summary (JSON; empty when
+    /// the lane is off), surfaced by `status` and history search.
+    pub history_meta: String,
 }
 
 /// Metadata of the current published generation for a scope.
@@ -615,6 +627,9 @@ pub struct GenerationMeta {
     pub embedding_scope: crate::embed::EmbeddingScope,
     /// History-lane item count (0 when the lane is off or unavailable).
     pub history_items: i64,
+    /// Persisted history-lane coverage/enrichment summary (JSON; empty when
+    /// the lane is off or the generation predates the column).
+    pub history_meta: String,
 }
 
 /// Reads the current published generation metadata for a scope, if any.
@@ -635,7 +650,7 @@ pub fn current_generation(
         .prepare(
             "SELECT id, snapshot_id, snapshot_mode, revision_id, manifest_hash, \
              config_fingerprint, parser_fingerprint, built_at_ms, files, chunks, \
-             vectors, vector_profile, embedding_scope, history \
+             vectors, vector_profile, embedding_scope, history, history_meta \
              FROM generation WHERE repo_id = ?1 AND worktree_id = ?2 AND id = ?3",
         )
         .map_err(Error::Sqlite)?;
@@ -656,6 +671,7 @@ pub fn current_generation(
                 r.get::<_, Option<String>>(11)?,
                 r.get::<_, String>(12)?,
                 r.get::<_, i64>(13)?,
+                r.get::<_, String>(14)?,
             ))
         })
         .optional()
@@ -680,6 +696,7 @@ pub fn current_generation(
         vector_profile,
         scope,
         history_items,
+        history_meta,
     ) = meta_row;
     let meta = GenerationMeta {
         generation_id,
@@ -697,6 +714,7 @@ pub fn current_generation(
         embedding_scope: crate::embed::EmbeddingScope::parse(&scope)
             .ok_or_else(|| Error::IndexState(format!("unknown stored embedding scope: {scope}")))?,
         history_items,
+        history_meta,
     };
     Ok(Some(meta))
 }
@@ -711,8 +729,8 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
         conn.execute(
             "INSERT INTO generation (repo_id, worktree_id, snapshot_id, snapshot_mode, \
              revision_id, manifest_hash, config_fingerprint, parser_fingerprint, \
-             built_at_ms, state, files, chunks, vectors, vector_profile, embedding_scope, history) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'building', ?10, ?11, ?12, ?13, ?14, ?15)",
+             built_at_ms, state, files, chunks, vectors, vector_profile, embedding_scope, history, history_meta) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'building', ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 input.repo_id,
                 input.worktree_id,
@@ -729,6 +747,7 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
                 input.vector_profile.as_deref(),
                 input.embedding_scope.as_str(),
                 input.history.len() as i64,
+                &input.history_meta,
             ],
         )
         .map_err(Error::Sqlite)?;
@@ -942,12 +961,10 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
                     item.revision_id,
                     item.message,
                     item.affected_paths.join(" "),
-                    item.association
-                        .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()
-                        .map_err(|err| Error::Json(format!("history serialization failed: {err}")))?
-                        .unwrap_or_default(),
+                    // Index only the readable host text (title/body/state),
+                    // never the raw association JSON (its keys would become
+                    // searchable terms).
+                    crate::history::association_fts_text(item.association.as_ref()),
                 ],
             )
             .map_err(Error::Sqlite)?;

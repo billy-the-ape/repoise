@@ -42,6 +42,7 @@ struct PullRequest {
     body: Option<String>,
     state: Option<String>,
     html_url: Option<String>,
+    updated_at: Option<String>,
 }
 
 /// One host response read fully (status plus headers we need plus body).
@@ -228,6 +229,7 @@ pub fn association_from_payload(
         .body
         .as_ref()
         .map(|body| bound_body(body, max_body_chars));
+    let updated_at_ms = pull.updated_at.as_deref().and_then(parse_host_timestamp_ms);
     Ok(PrAssociation {
         host: "github".to_string(),
         number,
@@ -235,10 +237,37 @@ pub fn association_from_payload(
         body,
         state: pull.state,
         url: pull.html_url,
+        updated_at_ms,
         fetched_at_ms,
         verified: true,
-        discussion: Vec::new(),
     })
+}
+
+/// Parses an RFC-3339 host timestamp (for example `2026-10-07T12:00:00Z`)
+/// into milliseconds since the Unix epoch.
+fn parse_host_timestamp_ms(stamp: &str) -> Option<i64> {
+    let (date, time) = stamp.split_once('T')?;
+    let date_parts: Vec<Option<i64>> = date.split('-').map(|part| part.parse().ok()).collect();
+    let time_parts: Vec<Option<i64>> = time
+        .trim_end_matches('Z')
+        .split(':')
+        .take(3)
+        .map(|part| part.parse().ok())
+        .collect();
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return None;
+    }
+    let (year, month, day) = (date_parts[0]?, date_parts[1]?, date_parts[2]?);
+    let (hours, minutes, seconds) = (time_parts[0]?, time_parts[1]?, time_parts[2]?);
+    // Days from the civil calendar (Howard Hinnant's algorithm).
+    let y = year - if month <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let m_adj = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * m_adj + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86_400_000 + hours * 3_600_000 + minutes * 60_000 + seconds * 1_000)
 }
 
 /// Truncates a fetched body to the configured bound (with a marker).
@@ -254,6 +283,10 @@ pub fn bound_body(body: &str, max_chars: u32) -> String {
 impl EnrichmentProvider for GitHubEnrichment {
     fn host(&self) -> &'static str {
         "github"
+    }
+
+    fn remote_host(&self) -> &'static str {
+        "github.com"
     }
 
     fn enrich(

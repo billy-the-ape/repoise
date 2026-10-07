@@ -240,6 +240,7 @@ fn store_publishes_generations_and_retains_current_plus_previous() {
                 symbols: Vec::new(),
                 references: Vec::new(),
                 history: Vec::new(),
+                history_meta: String::new(),
             },
         )
         .unwrap();

@@ -624,6 +624,38 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
             }
             None => println!("index: (none)"),
         }
+        match &view.history_lane {
+            Some(lane) if lane.enabled => {
+                println!(
+                    "history lane: on ({} items, head {})",
+                    lane.items,
+                    lane.head_revision.as_deref().unwrap_or("(none)")
+                );
+                for gap in &lane.gaps {
+                    println!("  gap: {gap}");
+                }
+                if let Some(summary) = &lane.enrichment {
+                    println!(
+                        "  enrichment: {} enriched, {} no-association, {} failed, {} unattempted",
+                        summary.enriched,
+                        summary.no_association,
+                        summary.failed,
+                        summary.unattempted
+                    );
+                    if summary.rate_limited {
+                        println!("  rate_limited: true");
+                    }
+                    if summary.permission_denied {
+                        println!("  permission_denied: true");
+                    }
+                    if summary.budget_exhausted {
+                        println!("  budget_exhausted: true");
+                    }
+                }
+            }
+            Some(_) => println!("history lane: off"),
+            None => {}
+        }
         println!("freshness: {}", view.freshness.status);
         for reason in &view.freshness.reasons {
             println!("  - {reason}");
@@ -846,6 +878,38 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
                     "truncated; next: --cursor {}",
                     response.next_cursor.as_deref().unwrap_or("(no cursor)")
                 );
+            }
+            // Lane coverage: agents must see gaps (horizon, shallow) and
+            // enrichment stops even when the page is empty.
+            if !response.lane.enabled {
+                println!("lane: history off for this index");
+            } else {
+                println!(
+                    "lane: history on ({} items, head {})",
+                    response.lane.items,
+                    response.lane.head_revision.as_deref().unwrap_or("(none)")
+                );
+                for gap in &response.lane.gaps {
+                    println!("  gap: {gap}");
+                }
+                if let Some(summary) = &response.lane.enrichment {
+                    println!(
+                        "  enrichment: {} enriched, {} no-association, {} failed, {} unattempted",
+                        summary.enriched,
+                        summary.no_association,
+                        summary.failed,
+                        summary.unattempted
+                    );
+                    if summary.rate_limited {
+                        println!("  rate_limited: true");
+                    }
+                    if summary.permission_denied {
+                        println!("  permission_denied: true");
+                    }
+                    if summary.budget_exhausted {
+                        println!("  budget_exhausted: true");
+                    }
+                }
             }
         }
         return Ok(ExitCode::SUCCESS);

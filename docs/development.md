@@ -106,7 +106,10 @@ are reported as explicit gaps, never silently omitted. History publishes in the
 same generation as the docs/code index but is a separate search lane:
 `search --lane history` ranks history items (message, revision, affected paths,
 host metadata) with FTS5/BM25; the default lane never returns history items, and
-`read` does not accept history items.
+`read` does not accept history items. `status` reports the published lane state
+(on/off, item count, head revision, gaps, enrichment stops), and each history
+search response carries the same lane coverage; enrichment items skipped by a
+budget or early stop are counted as unattempted rather than left silent.
 
 GitHub PR enrichment is opt-in inside the lane via `history.enrichment`
 (`host: "github"`, `tokenEnv`, `maxPrsPerBuild`, `maxRequestsPerBuild`,

@@ -38,6 +38,8 @@ pub enum GapKind {
     ShallowClone,
     /// The horizon cut the mainline short: older commits exist but are not recorded.
     Horizon,
+    /// The source scope has no history capability (the lane is empty, not failed).
+    Unavailable,
 }
 
 /// One explicit history coverage gap (never silent).
@@ -66,16 +68,6 @@ pub struct HunkDescriptor {
     pub context: String,
 }
 
-/// One review-discussion entry fetched from a host, under strict limits.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrDiscussionEntry {
-    /// Author login as reported by the host.
-    pub author: String,
-    /// Host state (for example `commented`, `edited`, `deleted`).
-    pub state: String,
-    /// Bounded discussion body.
-    pub body: String,
-}
 /// A verified change-request association from a host.
 ///
 /// Present only when the host confirmed the commit belongs to this change
@@ -87,20 +79,20 @@ pub struct PrAssociation {
     pub host: String,
     /// Change request number on the host.
     pub number: u32,
-    /// Change request title, when the host provided one.
+    /// Change request title, when the host provided one (redacted).
     pub title: Option<String>,
-    /// Bounded change-request body (historical intent only).
+    /// Bounded change-request body (historical intent only; redacted).
     pub body: Option<String>,
     /// Host state (`open`, `closed`, `merged`, ...), when provided.
     pub state: Option<String>,
     /// Validated permalink, when safe to construct.
     pub url: Option<String>,
+    /// Host-reported last-updated time, milliseconds since the Unix epoch.
+    pub updated_at_ms: Option<i64>,
     /// Fetched time, milliseconds since the Unix epoch.
     pub fetched_at_ms: i64,
     /// Always true when stored: the association was verified against the host.
     pub verified: bool,
-    /// Bounded review-discussion entries.
-    pub discussion: Vec<PrDiscussionEntry>,
 }
 
 /// One bounded local history item (master plan section 6).
@@ -216,13 +208,13 @@ pub fn pr_hint_from_message(message: &str) -> Vec<u32> {
             if boundary
                 && let Ok(number) = digits.parse::<u32>()
                 && number > 0
+                && !out.contains(&number)
             {
                 out.push(number);
             }
         }
         i = j.max(i + 1);
     }
-    out.dedup();
     out
 }
 
@@ -382,6 +374,10 @@ pub trait EnrichmentProvider {
     /// Host name (for example `github`).
     fn host(&self) -> &'static str;
 
+    /// The exact remote host component this provider serves (for example
+    /// `github.com`); the session gates on it so foreign hosts are skipped.
+    fn remote_host(&self) -> &'static str;
+
     /// Verifies the commit-to-change-request association and fetches bounded
     /// change-request data for one item carrying unverified hints.
     /// `remote` is the sanitized remote identity (`host/owner/repo`).
@@ -441,6 +437,9 @@ pub struct EnrichmentReport {
     pub permission_denied: bool,
     /// The request budget stopped the pass.
     pub budget_exhausted: bool,
+    /// Hint-carrying items that were never attempted (budget, PR cap, or an
+    /// early stop) — enrichment never covers them silently.
+    pub unattempted: usize,
 }
 
 impl EnrichmentSession {
@@ -475,30 +474,53 @@ impl EnrichmentSession {
         let Some(remote) = remote else {
             return report;
         };
-        // Only enrich when the remote host matches this provider's host.
-        if !remote.starts_with(&format!("{}.", self.provider.host())) {
+        // Gate on the exact remote host component the provider serves, so
+        // lookalike hosts (`github.acme.corp`) are never sent to the provider.
+        if remote.split('/').next() != Some(self.provider.remote_host()) {
             return report;
         }
+        let hint_items: Vec<usize> = set
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                item.pr_hint
+                    .as_deref()
+                    .is_some_and(|hints| !hints.is_empty())
+            })
+            .map(|(index, _)| index)
+            .collect();
         let mut budget = RequestBudget {
             remaining: self.budgets.max_requests_per_build,
         };
-        for item in set.items.iter_mut() {
-            let Some(hints) = item.pr_hint.as_deref().filter(|hints| !hints.is_empty()) else {
-                continue;
-            };
+        for (position, index) in hint_items.iter().enumerate() {
+            let item = &mut set.items[*index];
             if report.attempted >= self.budgets.max_prs_per_build as usize {
+                report.unattempted = hint_items.len() - position;
                 break;
             }
             if budget.remaining == 0 {
                 report.budget_exhausted = true;
+                report.unattempted = hint_items.len() - position;
                 break;
             }
             report.attempted += 1;
+            let hints = item.pr_hint.clone().unwrap_or_default();
             match self
                 .provider
-                .enrich(remote, &item.revision_id, hints, &self.cache, &mut budget)
+                .enrich(remote, &item.revision_id, &hints, &self.cache, &mut budget)
             {
-                Ok(EnrichmentOutcome::Verified(association)) => {
+                Ok(EnrichmentOutcome::Verified(mut association)) => {
+                    // Host text is untrusted content: redact before storage
+                    // (PR bodies are a classic place for pasted tokens).
+                    association.title = association
+                        .title
+                        .as_ref()
+                        .map(|title| crate::ignore::redact_secret_content(title));
+                    association.body = association
+                        .body
+                        .as_ref()
+                        .map(|body| crate::ignore::redact_secret_content(body));
                     item.association = Some(association);
                     report.enriched += 1;
                 }
@@ -508,10 +530,12 @@ impl EnrichmentSession {
                 }
                 Err(EnrichmentError::RateLimited) => {
                     report.rate_limited = true;
+                    report.unattempted = hint_items.len() - position - 1;
                     break;
                 }
                 Err(EnrichmentError::PermissionDenied) => {
                     report.permission_denied = true;
+                    report.unattempted = hint_items.len() - position - 1;
                     // Fail closed: never serve refreshed (or previously
                     // cached) remote content after a revocation.
                     let _ = self.cache.invalidate();
@@ -519,6 +543,7 @@ impl EnrichmentSession {
                 }
                 Err(EnrichmentError::BudgetExhausted) => {
                     report.budget_exhausted = true;
+                    report.unattempted = hint_items.len() - position - 1;
                     break;
                 }
                 Err(EnrichmentError::Other(_)) => {
@@ -531,7 +556,7 @@ impl EnrichmentSession {
 }
 
 /// Summary of one build's history lane (surfaced by `index` and `status`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistorySummary {
     /// Recorded items in the published generation.
     pub count: usize,
@@ -547,6 +572,84 @@ pub struct HistorySummary {
     pub rate_limited: bool,
     /// A permission denial stopped enrichment and invalidated the cache.
     pub permission_denied: bool,
+    /// The request budget stopped enrichment this build.
+    pub budget_exhausted: bool,
+    /// Hint-carrying items never attempted (visible, never silent).
+    pub unattempted: usize,
+}
+
+/// Persisted history-lane coverage state for a published generation
+/// (stored as JSON in `generation.history_meta`; empty when the lane is off).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryLaneMeta {
+    /// The history lane was enabled for this generation.
+    pub enabled: bool,
+    /// Build-time coverage/enrichment summary.
+    pub summary: Option<HistorySummary>,
+}
+
+/// Read view of the history lane state for one published generation: lets
+/// `search --lane history` and `status` tell an agent whether the lane is
+/// on, how far it reaches, and which gaps or enrichment stops apply.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct HistoryLaneStatus {
+    /// The history lane was enabled for the current generation.
+    pub enabled: bool,
+    /// Recorded history items in the current generation.
+    pub items: i64,
+    /// The newest recorded revision (adapter-qualified), if any.
+    pub head_revision: Option<String>,
+    /// Explicit coverage gaps (shallow clone, horizon, unavailable).
+    pub gaps: Vec<String>,
+    /// Enrichment outcome for the current generation, if the lane is on.
+    pub enrichment: Option<HistorySummary>,
+}
+
+/// Derives the FTS-indexed host text for one association: only the readable
+/// title/body/state, never the raw JSON (whose keys would become searchable
+/// terms). Empty when there is no association.
+pub fn association_fts_text(association: Option<&PrAssociation>) -> String {
+    let Some(association) = association else {
+        return String::new();
+    };
+    let mut text = String::new();
+    if let Some(title) = &association.title {
+        text.push_str(title);
+        text.push('\n');
+    }
+    if let Some(body) = &association.body {
+        text.push_str(body);
+        text.push('\n');
+    }
+    if let Some(state) = &association.state {
+        text.push_str(state);
+    }
+    text
+}
+
+/// Reads the history lane status for the current generation (lane metadata
+/// from the generation row, item count and head from the history tables).
+pub fn lane_status(
+    conn: &rusqlite::Connection,
+    meta: &crate::store::GenerationMeta,
+) -> Result<HistoryLaneStatus> {
+    let lane_meta: HistoryLaneMeta = if meta.history_meta.trim().is_empty() {
+        HistoryLaneMeta::default()
+    } else {
+        serde_json::from_str(&meta.history_meta).unwrap_or_default()
+    };
+    let head_revision = crate::store::history_head_revision(conn, meta.generation_id)?;
+    Ok(HistoryLaneStatus {
+        enabled: lane_meta.enabled,
+        items: meta.history_items,
+        head_revision,
+        gaps: lane_meta
+            .summary
+            .as_ref()
+            .map(|summary| summary.gaps.clone())
+            .unwrap_or_default(),
+        enrichment: lane_meta.summary,
+    })
 }
 
 /// Builds one item's stable opaque id for a scope.
@@ -570,6 +673,16 @@ pub struct HistoryHit {
     pub committed_at_ms: Option<i64>,
     /// Bounded affected-path list.
     pub affected_paths: Vec<String>,
+    /// Number of affected paths omitted by the bound.
+    pub paths_truncated: u32,
+    /// Optional bounded diff hunk descriptors.
+    pub hunks: Vec<HunkDescriptor>,
+    /// Number of hunks omitted by the bound.
+    pub hunks_truncated: u32,
+    /// Unverified change-request hints parsed from the message.
+    pub pr_hint: Option<Vec<u32>>,
+    /// Optional parent revision ids (adapter-qualified).
+    pub parents: Vec<String>,
     /// Optional verified host/change-request association.
     pub association: Option<PrAssociation>,
     /// Validated permalink (GitHub remotes with full revisions only).
@@ -591,6 +704,8 @@ pub struct HistorySearchResponse {
     pub truncated: bool,
     /// Opaque cursor for the next page, if truncated.
     pub next_cursor: Option<String>,
+    /// Lane coverage state for the served generation (gaps, enrichment).
+    pub lane: HistoryLaneStatus,
     /// Ranked results.
     pub results: Vec<HistoryHit>,
 }
@@ -600,7 +715,8 @@ pub struct HistorySearchResponse {
 pub struct HistorySearchRequest {
     /// Natural-language query.
     pub query: String,
-    /// Substring filter on the recorded affected paths.
+    /// GLOB pattern filter on the recorded affected paths (each recorded
+    /// path is matched individually, like the chunk lane).
     pub path_filter: Option<String>,
     /// Page size (default 5, capped at 20).
     pub max_results: Option<u32>,
@@ -642,6 +758,16 @@ struct HistoryRow {
     paths_json: String,
     /// JSON host metadata (verified association), if any.
     host_json: String,
+    /// JSON parent revision list.
+    parents_json: String,
+    /// Number of affected paths omitted by the bound.
+    paths_truncated: i64,
+    /// JSON hunk descriptor list.
+    hunks_json: String,
+    /// Number of hunks omitted by the bound.
+    hunks_truncated: i64,
+    /// JSON pr-hint list, if any.
+    pr_hint_json: String,
 }
 
 /// Reads one history candidate row.
@@ -655,6 +781,11 @@ fn read_history_row(row: &rusqlite::Row) -> rusqlite::Result<HistoryRow> {
         committed_at_ms: row.get(5)?,
         paths_json: row.get(6)?,
         host_json: row.get(7)?,
+        parents_json: row.get(8)?,
+        paths_truncated: row.get(9)?,
+        hunks_json: row.get(10)?,
+        hunks_truncated: row.get(11)?,
+        pr_hint_json: row.get(12)?,
     })
 }
 
@@ -668,8 +799,11 @@ pub fn history_fts_match_expression(query: &str) -> Option<String> {
             continue;
         }
         let quoted = format!("\"{}\"", term.replace('"', "\"\""));
+        // Parenthesize each per-term OR group: without them the top-level
+        // AND binds only the last group's first field (e.g. a two-term
+        // query silently became `... OR paths:"t2"` and dropped `t1`).
         parts.push(format!(
-            "message :{quoted} OR revision_id :{quoted} OR paths :{quoted} OR host :{quoted}"
+            "(message :{quoted} OR revision_id :{quoted} OR paths :{quoted} OR host :{quoted})"
         ));
     }
     if parts.is_empty() {
@@ -696,6 +830,9 @@ pub fn search_history(
         ));
     };
     let now = crate::indexing::now_ms();
+    // Lane coverage state: an agent must see gaps (horizon, shallow) and
+    // enrichment stops even when a query returns zero hits.
+    let lane = lane_status(&conn, &meta)?;
     let max_results = request
         .max_results
         .unwrap_or(DEFAULT_MAX_RESULTS)
@@ -720,24 +857,34 @@ pub fn search_history(
             &worktree_id,
             mode,
             &meta,
-            remote_identity,
+            lane,
         ));
     };
-    let path_param = request
+    // Path filter: per-path GLOB semantics (matching the chunk lane),
+    // evaluated over each recorded path — not a LIKE over the whole JSON
+    // blob, where a `_` in the filter would also match slashes and a `%`
+    // in one path could bleed into others.
+    let path_filter = request
         .path_filter
         .as_deref()
-        .map(|path| format!("%{}%", path.replace('%', "\\%").replace('_', "\\_")));
+        .filter(|path| !path.is_empty());
     let mut sql = String::from(
-        "SELECT history_fts.item_id, bm25(history_fts), h.revision_id, h.message, h.author, h.committed_at_ms, h.affected_paths, h.host_metadata FROM history_fts JOIN history_item h ON h.item_id = history_fts.item_id WHERE h.generation_id = ?1 AND history_fts MATCH ?2",
+        "SELECT history_fts.item_id, bm25(history_fts), h.revision_id, h.message, h.author, \
+         h.committed_at_ms, h.affected_paths, h.host_metadata, h.parents, h.paths_truncated, \
+         h.hunks, h.hunks_truncated, h.pr_hint \
+         FROM history_fts JOIN history_item h ON h.item_id = history_fts.item_id \
+         WHERE h.generation_id = ?1 AND history_fts MATCH ?2",
     );
-    if path_param.is_some() {
-        sql.push_str(" AND h.affected_paths LIKE ?3");
+    if path_filter.is_some() {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM json_each(h.affected_paths) je WHERE je.value GLOB ?3)",
+        );
     }
     sql.push_str(" ORDER BY bm25(history_fts) ASC, h.item_id LIMIT ");
     sql.push_str(&crate::search::CANDIDATE_CAP.to_string());
     let mut stmt = conn.prepare(&sql).map_err(Error::Sqlite)?;
     use rusqlite::params;
-    let rows = match &path_param {
+    let rows = match path_filter {
         Some(path) => stmt
             .query_map(
                 params![meta.generation_id, match_expr, path],
@@ -759,13 +906,29 @@ pub fn search_history(
             committed_at_ms,
             paths_json,
             host_json,
+            parents_json,
+            paths_truncated,
+            hunks_json,
+            hunks_truncated,
+            pr_hint_json,
         } = row.map_err(Error::Sqlite)?;
         let affected_paths: Vec<String> = serde_json::from_str(&paths_json).unwrap_or_default();
-        let association: Option<PrAssociation> = if host_json.trim().is_empty() {
+        let parents: Vec<String> = serde_json::from_str(&parents_json).unwrap_or_default();
+        let hunks: Vec<HunkDescriptor> = serde_json::from_str(&hunks_json).unwrap_or_default();
+        let pr_hint: Option<Vec<u32>> = if pr_hint_json.trim().is_empty() {
+            None
+        } else {
+            serde_json::from_str(&pr_hint_json).ok()
+        };
+        let mut association: Option<PrAssociation> = if host_json.trim().is_empty() {
             None
         } else {
             serde_json::from_str(&host_json).ok()
         };
+        if let Some(association) = &mut association {
+            // Serve the body under the same excerpt bound as commit messages.
+            association.body = association.body.take().map(|body| bounded_excerpt(&body));
+        }
         hits.push(HistoryHit {
             source_id: item_id,
             revision_id: revision_id.clone(),
@@ -773,6 +936,11 @@ pub fn search_history(
             author,
             committed_at_ms,
             affected_paths,
+            paths_truncated: paths_truncated as u32,
+            hunks,
+            hunks_truncated: hunks_truncated as u32,
+            pr_hint,
+            parents,
             association,
             url: github_commit_url(&remote_identity, &revision_id),
         });
@@ -789,7 +957,7 @@ pub fn search_history(
         revision: meta.revision_id.clone(),
     };
     Ok(HistorySearchResponse {
-        schema_version: 1,
+        schema_version: 2,
         scope,
         generation_id: meta.generation_id,
         retrieval_mode: "history".to_string(),
@@ -805,6 +973,7 @@ pub fn search_history(
         } else {
             None
         },
+        lane,
         results: page,
     })
 }
@@ -815,11 +984,10 @@ fn empty_history_response(
     worktree_id: &str,
     mode: crate::adapter::SnapshotMode,
     meta: &crate::store::GenerationMeta,
-    remote_identity: Option<String>,
+    lane: HistoryLaneStatus,
 ) -> HistorySearchResponse {
-    let _ = remote_identity;
     HistorySearchResponse {
-        schema_version: 1,
+        schema_version: 2,
         scope: crate::search::ScopeView {
             repo_id: repo_id.to_string(),
             worktree_id: worktree_id.to_string(),
@@ -831,6 +999,7 @@ fn empty_history_response(
         retrieval_mode: "history".to_string(),
         truncated: false,
         next_cursor: None,
+        lane,
         results: Vec::new(),
     }
 }
@@ -860,6 +1029,10 @@ mod tests {
             "github"
         }
 
+        fn remote_host(&self) -> &'static str {
+            "github.com"
+        }
+
         fn enrich(
             &self,
             _remote: &str,
@@ -873,13 +1046,13 @@ mod tests {
                 FakeBehavior::Verified => Ok(EnrichmentOutcome::Verified(PrAssociation {
                     host: "github".to_string(),
                     number: 42,
-                    title: Some("Title".to_string()),
+                    title: Some("ghp_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6".to_string()),
                     body: None,
                     state: Some("merged".to_string()),
                     url: None,
+                    updated_at_ms: None,
                     fetched_at_ms: 1,
                     verified: true,
-                    discussion: Vec::new(),
                 })),
                 FakeBehavior::NoAssoc => Ok(EnrichmentOutcome::NoAssociation),
                 FakeBehavior::RateLimited => Err(EnrichmentError::RateLimited),
@@ -1211,5 +1384,92 @@ mod tests {
         let report = session.run(Some("gitlab.com/owner/repo"), &mut set);
         assert_eq!(report.attempted, 0, "foreign host remotes are not enriched");
         let _ = fs::remove_file(&path);
+    }
+    #[test]
+    fn multi_term_fts_expression_parenthesizes_each_group() {
+        let expr = history_fts_match_expression("alpha beta").unwrap();
+        // Every per-term group must be parenthesized or the top-level AND
+        // would bind only the last group's first field and drop earlier terms.
+        assert_eq!(
+            expr,
+            "(message :\"alpha\" OR revision_id :\"alpha\" OR paths :\"alpha\" OR host :\"alpha\") AND (message :\"beta\" OR revision_id :\"beta\" OR paths :\"beta\" OR host :\"beta\")"
+        );
+    }
+
+    #[test]
+    fn pr_hint_dedupes_non_adjacent_repeats() {
+        assert_eq!(
+            pr_hint_from_message("see #1 then #2 and later #1 again"),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn enrichment_redacts_secret_shapes_in_host_text() {
+        let provider = Box::new(FakeProvider {
+            behavior: FakeBehavior::Verified,
+            calls: std::cell::Cell::new(0),
+        });
+        let mut set = HistorySet {
+            items: vec![item(1, Some(1))],
+            ..Default::default()
+        };
+        let session = EnrichmentSession::new(
+            provider,
+            HostCache::open(cache_path("redact"), "github"),
+            budgets(),
+        );
+        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        assert_eq!(report.enriched, 1);
+        let title = set.items[0]
+            .association
+            .as_ref()
+            .unwrap()
+            .title
+            .as_deref()
+            .unwrap();
+        assert!(!title.contains("ghp_"));
+        assert!(title.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn enrichment_skips_lookalike_remote_hosts() {
+        let provider = Box::new(FakeProvider {
+            behavior: FakeBehavior::Verified,
+            calls: std::cell::Cell::new(0),
+        });
+        let mut set = HistorySet {
+            items: vec![item(1, Some(1))],
+            ..Default::default()
+        };
+        let session = EnrichmentSession::new(
+            provider,
+            HostCache::open(cache_path("lookalike"), "github"),
+            budgets(),
+        );
+        // A prefix-matching host must never reach the provider.
+        let report = session.run(Some("github.acme.corp/owner/repo"), &mut set);
+        assert_eq!(report.attempted, 0);
+        assert!(set.items[0].association.is_none());
+    }
+
+    #[test]
+    fn association_fts_text_is_readable_text_only() {
+        let association = PrAssociation {
+            host: "github".to_string(),
+            number: 7,
+            title: Some("Add feature".to_string()),
+            body: Some("Explain".to_string()),
+            state: Some("merged".to_string()),
+            url: None,
+            updated_at_ms: None,
+            fetched_at_ms: 1,
+            verified: true,
+        };
+        assert_eq!(
+            association_fts_text(Some(&association)),
+            "Add feature\nExplain\nmerged"
+        );
+        assert_eq!(association_fts_text(None), "");
     }
 }

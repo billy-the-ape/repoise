@@ -575,7 +575,21 @@ pub fn index(
             max_paths_per_commit: eff.history.max_paths_per_commit,
             diff_hunks: eff.history.diff_hunks,
         };
-        let mut set = crate::history::collect_history(adapter, &spec)?;
+        // History collection is adapter-backed: scopes without the capability
+        // record an explicit Unavailable gap (the lane is empty, not failed).
+        let mut set = match adapter.history_provider() {
+            Some(_) => crate::history::collect_history(adapter, &spec)?,
+            None => {
+                let mut set = crate::history::HistorySet::default();
+                set.gaps.push(crate::history::HistoryGap {
+                    kind: crate::history::GapKind::Unavailable,
+                    detail: "history collection is unavailable for this source scope; \
+                            the history lane is empty"
+                        .to_string(),
+                });
+                set
+            }
+        };
         let report = match enrichment {
             Some(session) => session.run(
                 adapter.remote_identity().ok().flatten().as_deref(),
@@ -613,11 +627,24 @@ pub fn index(
                 .collect(),
             rate_limited: report.rate_limited,
             permission_denied: report.permission_denied,
+            budget_exhausted: report.budget_exhausted,
+            unattempted: report.unattempted,
         });
     }
 
     let snapshot = inventory.snapshot.clone();
     let mode_name = format!("{mode:?}");
+    // Persisted lane coverage: lets `status` and history search report gaps
+    // and enrichment stops for the published generation.
+    let history_meta = if eff.history.enabled {
+        serde_json::to_string(&crate::history::HistoryLaneMeta {
+            enabled: true,
+            summary: history_summary.as_ref().cloned(),
+        })
+        .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let input = GenerationInput {
         repo_id: repo_id.clone(),
         worktree_id: worktree_id.clone(),
@@ -639,6 +666,7 @@ pub fn index(
         symbols: symbol_rows.clone(),
         references: reference_rows.clone(),
         history: history_rows.clone(),
+        history_meta,
     };
     let generation_id = match store::publish(&conn, &input) {
         Ok(id) => {
