@@ -102,7 +102,11 @@ non-TLS `http://` remote host: source text and the API key would travel in clear
 within `history.horizon` (default 500), with bounded changed-path summaries
 (`history.maxPathsPerCommit`, default 20) and optional bounded diff hunk
 descriptors (`history.diffHunks`, default false). Shallow clones and horizon cuts
-are reported as explicit gaps, never silently omitted. History publishes in the
+are reported as explicit gaps, never silently omitted. Git is required for the
+history lane (tested against Git 2.43+); the adapter deliberately avoids
+output framing that changed between Git versions (whitespace-split `rev-list`
+instead of `-z`, NUL framing only where Git guarantees it), so older packaged
+Gits cannot silently empty the lane. History publishes in the
 same generation as the docs/code index but is a separate search lane:
 `search --lane history` ranks history items (message, revision, affected paths,
 host metadata) with FTS5/BM25; the default lane never returns history items, and
@@ -125,7 +129,7 @@ indexing. The transport is built into the CLI behind the default
 `github-enrichment` feature (`ureq` read-only requests to `api.github.com`);
 `cargo check -p repoise-cli --no-default-features` produces the no-enrichment
 binary. Host responses are ETag-cached in a repository-scoped JSON cache under
-the cache root (removed by `purge`), requests are bounded per build, rate
+the cache root (removed by `purge --all`), requests are bounded per build, rate
 limits (primary and secondary/`Retry-After`) stop the enrichment pass, and a
 permission denial fails closed by invalidating the cached remote content.
 

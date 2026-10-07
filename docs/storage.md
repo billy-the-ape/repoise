@@ -14,7 +14,7 @@ Layout under the cache root:
 | `repos/<repoId>/worktrees/<worktreeId>/index.sqlite` | All index tables for one scope |
 | `repos/<repoId>/worktrees/<worktreeId>/state.json` | Versioned integration manifest; the database remains canonical |
 | `repos/<repoId>/embedding-cache/` | Shared content-addressed embedding cache (`embeddings.sqlite`): input-hash plus profile-fingerprint keyed vectors, reference-counted against retained generations |
-| `repos/<repoId>/host-cache/<host>.json` | Verified remote host records for history enrichment (ETag plus bounded payload per key); invalidated on remote permission denial and purged with the repository scope |
+| `repos/<repoId>/host-cache/<host>.json` | Verified remote host records for history enrichment (ETag plus bounded payload per key); invalidated on remote permission denial; removed when the repository scope is purged (`purge --all`), not by a worktree-scoped purge |
 
 `repoId` and `worktreeId` are opaque hash-derived scope ids from
 `scope_for_search` (root/access scope plus worktree/dirty state); purge validates them
