@@ -414,9 +414,15 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
         Ok(existing) => {
             let parsed: OverlayManifest = serde_json::from_str(&existing)
                 .map_err(|err| Error::Init(format!("unparsable overlay manifest: {err}")))?;
+            // Never upgrade while any managed file conflicts: the owner has not
+            // accepted the current options, so preset/provider/baselines must
+            // not move.
+            let other_conflict = files
+                .iter()
+                .any(|file| matches!(file.action, FileAction::Conflict));
             let action = if parsed == manifest {
                 FileAction::Unchanged
-            } else if manifest_upgradable(&parsed, &manifest) {
+            } else if !other_conflict && manifest_upgradable(&parsed, &manifest) {
                 FileAction::Upgrade
             } else {
                 FileAction::Conflict
@@ -427,28 +433,57 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
         Err(err) => return Err(Error::Io(err)),
     };
     let manifest_content = match (&manifest_action, &parsed_existing) {
-        // An upgrade re-pins versions/roles but keeps the recorded baselines
-        // (falling back to live bytes for pre-v2 entries) so `overlay update`
-        // can still 3-way merge afterwards.
+        // An upgrade re-pins versions/roles and keeps recorded baselines.
+        // Entries that lost their baseline are re-baselined to the current
+        // render only when init owns the on-disk bytes for that file
+        // (unchanged or re-created); otherwise the baseline stays unset and
+        // the entry remains a reported conflict in uninstall/update.
         (FileAction::Upgrade, Some(parsed)) => {
             let old_by_path: std::collections::HashMap<&str, &OverlayFileEntry> = parsed
                 .files
                 .iter()
                 .map(|old| (old.path.as_str(), old))
                 .collect();
+            let rendered_for = |path: &str| -> Option<String> {
+                if path == CONFIG_FILENAME {
+                    Some(config_content.clone())
+                } else {
+                    block_entries
+                        .iter()
+                        .find(|(entry_path, _, _)| entry_path == path)
+                        .map(|(_, block, _)| block.clone())
+                }
+            };
             let mut upgraded = manifest.clone();
             upgraded.files = manifest
                 .files
                 .iter()
                 .map(|fresh| {
-                    let old = old_by_path.get(fresh.path.as_str()).copied();
+                    let recorded = old_by_path
+                        .get(fresh.path.as_str())
+                        .and_then(|old| old.installed.clone());
+                    let installed = match recorded {
+                        Some(recorded) => Some(recorded),
+                        None => {
+                            let init_owns = matches!(
+                                files
+                                    .iter()
+                                    .find(|file| file.relative.as_path() == fresh.path.as_str())
+                                    .map(|file| &file.action),
+                                Some(FileAction::Unchanged) | Some(FileAction::Create)
+                            );
+                            if init_owns {
+                                rendered_for(&fresh.path)
+                            } else {
+                                None
+                            }
+                        }
+                    };
                     OverlayFileEntry {
                         path: fresh.path.clone(),
                         kind: fresh.kind,
                         role: fresh.role,
-                        installed: old
-                            .and_then(|old| old.installed.clone())
-                            .or_else(|| live_managed_bytes(&root, fresh.kind, &fresh.path)),
+                        installed,
                     }
                 })
                 .collect();
@@ -490,22 +525,6 @@ fn manifest_upgradable(parsed: &OverlayManifest, planned: &OverlayManifest) -> b
         shape
     };
     shape(parsed) == shape(planned)
-}
-
-/// Live bytes to use as an upgrade baseline: the whole file for `File`
-/// entries, the managed block region for `Block` entries; `None` when the
-/// file is unreadable or the block region is missing.
-fn live_managed_bytes(root: &Path, kind: OverlayFileKind, relative: &str) -> Option<String> {
-    let current = fs::read_to_string(root.join(relative)).ok()?;
-    match kind {
-        OverlayFileKind::File => Some(current),
-        OverlayFileKind::Block => {
-            let start = current.find("<!-- repoise:managed begin")?;
-            let end_marker = "<!-- repoise:managed end -->";
-            let end = start + current[start..].find(end_marker)? + end_marker.len();
-            Some(current[start..end].to_string())
-        }
-    }
 }
 
 /// Plans a managed block inside one owner-selected file (dry-run safe):

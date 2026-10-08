@@ -990,3 +990,115 @@ fn overlay_refuses_symlink_escape_from_manifest() {
     assert!(format!("{err}").contains("repository root"), "{err}");
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), content);
 }
+#[test]
+fn init_upgrade_refuses_when_owner_modified_file_conflicts() {
+    let repo = DirRepo::new(
+        "owner-conflict-upgrade",
+        &[("README.md", "# Repo\n\nHello.\n")],
+    );
+    init_overlay(&repo, false);
+    // The owner hand-edited the committed config.
+    let config_path = repo.root.join(repoise_core::CONFIG_FILENAME);
+    let owner_config = format!(
+        "{}\n// owner notes",
+        std::fs::read_to_string(&config_path).unwrap()
+    );
+    std::fs::write(&config_path, &owner_config).unwrap();
+    // A stale manifest (same files, old versions, no roles/baselines).
+    let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
+    let stale = serde_json::json!({
+        "tool_version": "0.0.1",
+        "template_version": "0.9.0",
+        "files": [
+            {"path": repoise_core::CONFIG_FILENAME, "kind": "file"},
+            {"path": "README.md", "kind": "block"}
+        ]
+    });
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&stale).unwrap() + "\n",
+    )
+    .unwrap();
+
+    let options = repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::DocsOnly,
+        dry_run: false,
+        yes: true,
+        provider: None,
+        adopt_managed_block: Some(PathBuf::from("README.md")),
+        agents_snippet: false,
+    };
+    let plan = repoise_core::init::plan(&repo.root, &options).unwrap();
+    let manifest_file = plan
+        .files
+        .iter()
+        .find(|file| file.relative.as_path() == repoise_core::OVERLAY_FILENAME)
+        .unwrap();
+    // The config conflicts, so the manifest must not be upgraded.
+    assert_eq!(
+        manifest_file.action,
+        repoise_core::init::FileAction::Conflict
+    );
+    let outcome = repoise_core::init::apply(&plan).unwrap();
+    assert!(outcome.upgraded.is_empty());
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), owner_config);
+    // The on-disk manifest is untouched.
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert!(manifest.get("preset").is_none());
+    assert_eq!(manifest["template_version"], "0.9.0");
+
+    // Uninstall refuses to delete the owner config; update refuses to
+    // overwrite it.
+    let removed = repoise_core::overlay::uninstall(&repo.root, false).unwrap();
+    assert!(!removed.manifest_removed);
+    assert!(
+        removed
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.path == repoise_core::CONFIG_FILENAME)
+    );
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), owner_config);
+    let done = repoise_core::overlay::update(&repo.root, false).unwrap();
+    assert!(!done.manifest_updated);
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), owner_config);
+}
+
+#[test]
+fn init_upgrade_refuses_preset_change_when_config_conflicts() {
+    let repo = DirRepo::new("preset-change-upgrade", &[("README.md", "hello\n")]);
+    init_overlay(&repo, false); // docs-only
+    let config_path = repo.root.join(repoise_core::CONFIG_FILENAME);
+    let original_config = std::fs::read_to_string(&config_path).unwrap();
+    // Re-running with the hybrid preset changes the rendered config.
+    let options = repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::Hybrid,
+        dry_run: false,
+        yes: true,
+        provider: Some("test".to_string()),
+        adopt_managed_block: Some(PathBuf::from("README.md")),
+        agents_snippet: false,
+    };
+    let plan = repoise_core::init::plan(&repo.root, &options).unwrap();
+    let manifest_file = plan
+        .files
+        .iter()
+        .find(|file| file.relative.as_path() == repoise_core::OVERLAY_FILENAME)
+        .unwrap();
+    assert_eq!(
+        manifest_file.action,
+        repoise_core::init::FileAction::Conflict
+    );
+    repoise_core::init::apply(&plan).unwrap();
+    // The manifest keeps the old preset and the config is untouched, so a
+    // later overlay update cannot silently rewrite the config to hybrid.
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.root.join(repoise_core::OVERLAY_FILENAME)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(manifest["preset"], "docs-only");
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        original_config
+    );
+}
