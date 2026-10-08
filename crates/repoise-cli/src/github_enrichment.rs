@@ -120,7 +120,7 @@ impl GitHubEnrichment {
         let link_next = headers
             .get("link")
             .and_then(|value| value.to_str().ok())
-            .and_then(link_next_url);
+            .and_then(|value| link_next_url(value, &self.base));
         let body = response
             .into_body()
             .read_to_string()
@@ -143,7 +143,9 @@ impl GitHubEnrichment {
 }
 
 /// Extracts the `rel="next"` page URL from a `Link` header, if present.
-fn link_next_url(header: &str) -> Option<String> {
+/// The URL is host-supplied and would be requested with the bearer token
+/// attached, so only a same-origin continuation is followed.
+fn link_next_url(header: &str, base: &str) -> Option<String> {
     for segment in header.split(',') {
         let Some((raw_url, rest)) = segment.split_once(';') else {
             continue;
@@ -151,12 +153,25 @@ fn link_next_url(header: &str) -> Option<String> {
         let rel_next = rest.split(';').any(|part| part.trim() == r#"rel="next""#);
         if rel_next {
             let url = raw_url.trim().trim_start_matches('<').trim_end_matches('>');
-            if !url.is_empty() {
+            if !url.is_empty() && same_origin(url, base) {
                 return Some(url.to_string());
             }
         }
     }
     None
+}
+
+/// `scheme://host[:port]` of a URL (no path, query or fragment).
+fn origin_of(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://{}", rest.split('/').next().unwrap_or("")),
+        None => url.to_string(),
+    }
+}
+
+/// True when both URLs share scheme, host and port.
+fn same_origin(a: &str, b: &str) -> bool {
+    origin_of(a) == origin_of(b)
 }
 
 /// Classifies a non-success status into an enrichment error. GitHub signals
@@ -225,6 +240,14 @@ impl GitHubEnrichment {
                 &url,
                 cached.as_ref().and_then(|entry| entry.etag.as_deref()),
             )?;
+            // Snapshot the cached revalidation fields before the 304 arm
+            // consumes `cached`.
+            let cached_etag = cached.as_ref().and_then(|entry| entry.etag.clone());
+            let next_page = if response.status == 304 {
+                cached.as_ref().and_then(|entry| entry.next_page.clone())
+            } else {
+                response.link_next.clone()
+            };
             let list: Vec<CommitPrEntry> = if response.status == 304 {
                 match cached.and_then(|entry| serde_json::from_value(entry.payload).ok()) {
                     Some(list) => list,
@@ -244,13 +267,22 @@ impl GitHubEnrichment {
                     }
                 }
             };
+            // The first page's continuation is persisted with it: a `304`
+            // revalidation need not repeat the `Link` header, but the
+            // walk must still know where page 2 was.
             if page == 1 {
+                let etag = if response.status == 304 {
+                    cached_etag.or(response.etag.clone())
+                } else {
+                    response.etag.clone()
+                };
                 let _ = cache.put(
                     &first_page_key,
                     repoise_core::history::HostCacheEntry {
-                        etag: response.etag.clone(),
+                        etag,
                         fetched_at_ms: repoise_core::indexing::now_ms(),
                         payload: serde_json::to_value(&list).unwrap_or(serde_json::Value::Null),
+                        next_page: next_page.clone(),
                     },
                 );
             }
@@ -259,7 +291,7 @@ impl GitHubEnrichment {
             next_url = if hints.iter().any(|hint| numbers.contains(hint)) {
                 None
             } else {
-                response.link_next
+                next_page
             };
         }
         let verified = hints.iter().find(|hint| numbers.contains(hint)).copied();
@@ -314,6 +346,7 @@ impl GitHubEnrichment {
                 etag: response.etag,
                 fetched_at_ms,
                 payload: payload.clone(),
+                next_page: None,
             },
         );
         association_from_payload(&payload, number, fetched_at_ms, self.max_body_chars)
@@ -495,13 +528,20 @@ mod tests {
     fn link_header_yields_the_next_page_url() {
         let link = r#"<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last""#;
         assert_eq!(
-            link_next_url(link).as_deref(),
+            link_next_url(link, "https://api.github.com").as_deref(),
             Some("https://api.github.com/x?page=2")
         );
         assert_eq!(
-            link_next_url(r#"<https://api.github.com/x>; rel="last""#),
+            link_next_url(
+                r#"<https://api.github.com/x>; rel="last""#,
+                "https://api.github.com"
+            ),
             None
         );
+        // A cross-origin next page is never followed (the bearer token
+        // would be attached to the request).
+        let cross = r#"<http://evil.example/x?page=2>; rel="next""#;
+        assert_eq!(link_next_url(cross, "https://api.github.com"), None);
     }
 
     fn http_response(status: &str, extra_headers: &str, body: &str) -> String {
@@ -516,6 +556,7 @@ mod tests {
     #[test]
     fn enrichment_walks_pages_charges_budget_and_revalidates_with_304() {
         use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let next_page = format!("http://{addr}/repos/o/r/commits/a/pulls?per_page=100&page=2");
@@ -527,19 +568,24 @@ mod tests {
         let page1_modified = http_response("304 Not Modified", "ETag: \"L1\"\r\n", "");
         let page2 = http_response("200 OK", "", r#"[{"number":47}]"#);
         let pull = http_response("200 OK", "", r#"{"title":"T","state":"open"}"#);
+        let not_modified = std::sync::Arc::new(AtomicUsize::new(0));
+        let server_counter = not_modified.clone();
         let server = std::thread::spawn(move || {
             for stream in listener.incoming().take(6) {
                 let Ok(mut stream) = stream else { continue };
                 let mut buf = [0u8; 16384];
                 let n = stream.read(&mut buf).unwrap_or(0);
                 let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                // ureq sends header names lowercase.
+                let request_lc = request.to_ascii_lowercase();
                 let path = request.split_whitespace().nth(1).unwrap_or("");
                 let response = if path.starts_with("/repos/o/r/commits/a/pulls?per_page=100&page=2")
                 {
                     page2.clone()
                 } else if path.starts_with("/repos/o/r/pulls/47") {
                     pull.clone()
-                } else if request.contains(r#"If-None-Match: "L1""#) {
+                } else if request_lc.contains(r#"if-none-match: "l1""#) {
+                    server_counter.fetch_add(1, Ordering::SeqCst);
                     page1_modified.clone()
                 } else {
                     page1.clone()
@@ -567,6 +613,15 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome2, EnrichmentOutcome::Verified(ref a) if a.number == 47));
         assert_eq!(budget2.remaining, 2);
+        // The 304 branch must actually have run (the cached first page was
+        // revalidated, not re-fetched), and the persisted next-page URL
+        // must have let the walk reach page 2 despite the 304 omitting
+        // the Link header.
+        assert_eq!(
+            not_modified.load(Ordering::SeqCst),
+            1,
+            "the cached first page must revalidate via 304"
+        );
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);
     }

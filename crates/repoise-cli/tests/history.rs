@@ -26,6 +26,33 @@ fn git(args: &[&str], dir: &Path) {
     );
 }
 
+/// Runs git with piped stdin and returns trimmed stdout (fixtures that
+/// must feed content to a git plumbing command such as `hash-object`).
+fn git_stdin(args: &[&str], dir: &Path, stdin: &str) -> String {
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("git should start");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin pipe")
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("git should finish");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
 /// Runs git and returns its trimmed stdout (test fixtures need revisions).
 fn git_capture(args: &[&str], dir: &Path) -> String {
     let out = git_capture_unchecked(args, dir);
@@ -309,9 +336,20 @@ fn crafted_header_like_path_cannot_hide_a_commit() {
     // Plant a file whose name starts with the framing byte and then looks
     // like a header for the target commit. Only the per-invocation nonce
     // distinguishes real headers; this path must stay a path.
-    let evil = dir.join(format!("\u{1}{target_sha}\u{1f}\u{1f}\u{1f}\u{1f}"));
-    std::fs::write(&evil, "planted\n").unwrap();
-    git(&["add", "-A"], &dir);
+    // Stage the path through git plumbing (argv bytes, not filesystem
+    // paths) so the fixture also runs on platforms where control bytes
+    // cannot appear in file names (Windows).
+    let evil_name = format!("\u{1}{target_sha}\u{1f}\u{1f}\u{1f}\u{1f}");
+    let blob = git_stdin(&["hash-object", "-w", "--stdin"], &dir, "planted\n");
+    git(
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{blob},{evil_name}"),
+        ],
+        &dir,
+    );
     git(&["commit", "-q", "-m", "Plant fake header path"], &dir);
     let root = dir.to_str().unwrap();
 

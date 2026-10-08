@@ -242,6 +242,12 @@ pub struct HostCacheEntry {
     pub fetched_at_ms: i64,
     /// Host-qualified payload (the provider owns its shape).
     pub payload: serde_json::Value,
+    /// Paged-list continuation (`Link: rel="next"` URL) persisted with a
+    /// first page, so a `304` revalidation (which need not repeat the
+    /// `Link` header) can keep walking. Additive; older cache files
+    /// deserialize as `None`.
+    #[serde(default)]
+    pub next_page: Option<String>,
 }
 
 /// Repository-scoped, host-qualified cache for verified remote records.
@@ -1152,6 +1158,7 @@ mod tests {
                     etag: Some("e1".to_string()),
                     fetched_at_ms: 5,
                     payload: serde_json::json!({ "n": 1 }),
+                    next_page: None,
                 },
             )
             .unwrap();
@@ -1227,6 +1234,7 @@ mod tests {
                     etag: Some("e".to_string()),
                     fetched_at_ms: 1,
                     payload: serde_json::json!({}),
+                    next_page: None,
                 },
             )
             .unwrap();

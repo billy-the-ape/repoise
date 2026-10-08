@@ -145,7 +145,6 @@ fn hunk_descriptors(
     first_parent: Option<&str>,
     max_hunks: u32,
 ) -> Result<(Vec<crate::history::HunkDescriptor>, u32), AdapterError> {
-    use crate::history::HunkDescriptor;
     // `git diff-tree` has real root semantics (`--root` diffs against the
     // empty tree); with an explicit parent it is a plain tree-to-tree diff,
     // which is also the correct basis for merge commits (first parent).
@@ -174,10 +173,72 @@ fn hunk_descriptors(
         ],
     };
     let out = adapter.run_git(&args)?;
+    Ok(parse_hunk_stream(&out, max_hunks))
+}
+
+/// Parses a `git diff-tree -p --unified=0` stream into bounded hunk
+/// descriptors. Hunk bodies are consumed exactly per the `@@ -a,b +c,d @@`
+/// counts, so a removed line such as `-- comment` (rendered `--- comment`)
+/// can never be mistaken for a file header; `---`/`+++` are accepted only
+/// while the current file has not reached its first `@@`. An omitted range
+/// count means one line (`@@ -3 +3 @@` is `-3,1 +3,1`).
+fn parse_hunk_stream(out: &str, max_hunks: u32) -> (Vec<crate::history::HunkDescriptor>, u32) {
+    use crate::history::HunkDescriptor;
     let mut hunks: Vec<HunkDescriptor> = Vec::new();
     let mut truncated: u32 = 0;
     let mut current_path = String::new();
+    // Remaining counted content lines of the current hunk body; content
+    // lines carry a `+`/`-`/space prefix, `\ No newline` markers do not
+    // count.
+    let mut body_lines: i64 = 0;
     for line in out.lines() {
+        if body_lines > 0 {
+            if line.starts_with(['+', '-', ' ']) {
+                body_lines -= 1;
+            }
+            continue;
+        }
+        if let Some(ranges) = line.strip_prefix("@@ ") {
+            let Some((range_text, context)) = ranges.split_once(" @@") else {
+                continue;
+            };
+            let mut range_parts = range_text.split_whitespace();
+            let Some(old_range) = range_parts.next() else {
+                continue;
+            };
+            let Some(new_range) = range_parts.next() else {
+                continue;
+            };
+            let parse_range = |range: &str| -> (u32, u32) {
+                let body = range.trim_start_matches('-').trim_start_matches('+');
+                let mut parts = body.splitn(2, ',');
+                let start = parts
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0);
+                let lines = parts
+                    .next()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(1);
+                (start, lines)
+            };
+            let (old_start, old_lines) = parse_range(old_range);
+            let (new_start, new_lines) = parse_range(new_range);
+            if hunks.len() >= max_hunks as usize {
+                truncated += 1;
+            } else if !current_path.is_empty() {
+                hunks.push(HunkDescriptor {
+                    path: current_path.clone(),
+                    old_start,
+                    old_lines,
+                    new_start,
+                    new_lines,
+                    context: context.trim().chars().take(80).collect(),
+                });
+            }
+            body_lines = old_lines as i64 + new_lines as i64;
+            continue;
+        }
         if let Some(old) = line.strip_prefix("--- ") {
             // Deletions: the hunk keeps the old path.
             if old != "/dev/null" {
@@ -191,51 +252,10 @@ fn hunk_descriptors(
             }
             continue;
         }
-        let Some(body) = line.strip_prefix("@@ ") else {
-            continue;
-        };
-        let Some((ranges, context)) = body.split_once(" @@") else {
-            continue;
-        };
-        let mut range_parts = ranges.split_whitespace();
-        let Some(old_range) = range_parts.next() else {
-            continue;
-        };
-        let Some(new_range) = range_parts.next() else {
-            continue;
-        };
-        let parse_range = |range: &str| -> (u32, u32) {
-            let body = range.trim_start_matches('-').trim_start_matches('+');
-            let mut parts = body.splitn(2, ',');
-            let start = parts
-                .next()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            let lines = parts
-                .next()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0);
-            (start, lines)
-        };
-        let (old_start, old_lines) = parse_range(old_range);
-        let (new_start, new_lines) = parse_range(new_range);
-        if hunks.len() >= max_hunks as usize {
-            truncated += 1;
-            continue;
-        }
-        let context: String = context.trim().chars().take(80).collect();
-        if !current_path.is_empty() {
-            hunks.push(HunkDescriptor {
-                path: current_path.clone(),
-                old_start,
-                old_lines,
-                new_start,
-                new_lines,
-                context,
-            });
-        }
+        // File headers (`diff --git`, mode/index/rename lines) carry no
+        // path state; paths come from the `---`/`+++` pair above.
     }
-    Ok((hunks, truncated))
+    (hunks, truncated)
 }
 
 /// The mainline commit list (first-parent from HEAD, newest first) under the
@@ -601,5 +621,86 @@ impl crate::history::HistoryProvider for GitAdapter {
             gaps,
             items,
         })
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::parse_hunk_stream;
+    use crate::history::HunkDescriptor;
+
+    fn fields(hunks: &[HunkDescriptor]) -> Vec<(&str, u32, u32, u32, u32)> {
+        hunks
+            .iter()
+            .map(|hunk| {
+                (
+                    hunk.path.as_str(),
+                    hunk.old_start,
+                    hunk.old_lines,
+                    hunk.new_start,
+                    hunk.new_lines,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn removed_comment_line_in_body_is_not_a_file_header() {
+        // The first hunk body is a removed line whose text starts with `--`
+        // (rendered `--- ...`); the second hunk must keep the same path.
+        let stream = "diff --git a/q.sql b/q.sql\n\
+                      --- q.sql\n\
+                      +++ q.sql\n\
+                      @@ -1 +0,0 @@\n\
+                      --- old comment\n\
+                      @@ -33 +32 @@\n\
+                      -removed line\n\
+                      +replacement line\n";
+        let (hunks, truncated) = parse_hunk_stream(stream, 10);
+        assert_eq!(truncated, 0);
+        assert_eq!(
+            fields(&hunks),
+            vec![("q.sql", 1, 1, 0, 0), ("q.sql", 33, 1, 32, 1),]
+        );
+    }
+
+    #[test]
+    fn omitted_range_counts_default_to_one_line() {
+        let stream = "diff --git a/a b/a\n\
+                      --- a\n\
+                      +++ a\n\
+                      @@ -3 +3 @@\n\
+                      -old\n\
+                      +new\n\
+                      @@ -7,2 +7,0 @@\n\
+                      -x\n\
+                      -y\n";
+        let (hunks, _) = parse_hunk_stream(stream, 10);
+        assert_eq!(fields(&hunks), vec![("a", 3, 1, 3, 1), ("a", 7, 2, 7, 0),]);
+    }
+
+    #[test]
+    fn deleted_file_keeps_the_old_path_and_deletion_counts() {
+        let stream = "diff --git a/d b/d\n\
+                      --- d\n\
+                      +++ /dev/null\n\
+                      @@ -1 +0,0 @@\n\
+                      -gone\n";
+        let (hunks, _) = parse_hunk_stream(stream, 10);
+        assert_eq!(fields(&hunks), vec![("d", 1, 1, 0, 0)]);
+    }
+
+    #[test]
+    fn body_lines_are_consumed_exactly_by_the_counts() {
+        // A body line that merely looks like a range header must be
+        // consumed as body content, never parsed.
+        let stream = "diff --git a/n b/n\n\
+                      --- n\n\
+                      +++ n\n\
+                      @@ -2,2 +2,1 @@\n\
+                      -@@ not a header @@\n\
+                      -keep\n\
+                      +kept\n";
+        let (hunks, _) = parse_hunk_stream(stream, 10);
+        assert_eq!(fields(&hunks), vec![("n", 2, 2, 2, 1)]);
     }
 }
