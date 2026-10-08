@@ -647,3 +647,48 @@ fn overlay_update_rejects_pre_v2_manifest_without_baseline() {
             .contains("re-run `repoise init`")
     );
 }
+#[test]
+fn overlay_update_advances_baselines_despite_sibling_conflicts() {
+    let repo = DirRepo::new(
+        "overlay-partial",
+        &[("README.md", "# Repo\n\nHello world.\n")],
+    );
+    init_overlay(&repo, false);
+    simulate_template_upgrade(&repo);
+    // The owner edited the managed block in place: it will conflict, while
+    // the config entry stays clean (live bytes == old baseline).
+    let readme = std::fs::read_to_string(repo.root.join("README.md")).unwrap();
+    let edited = readme.replace("run `repoise doctor`", "run `repoise doctor --strict`");
+    std::fs::write(repo.root.join("README.md"), &edited).unwrap();
+
+    // Partial update: config advances and its baseline is re-pinned even
+    // though the sibling entry conflicts.
+    let done = repoise_core::overlay::update(&repo.root, false).unwrap();
+    assert_eq!(
+        done.updated,
+        vec![repoise_core::CONFIG_FILENAME.to_string()]
+    );
+    assert_eq!(done.conflicts.len(), 1);
+    assert_eq!(done.conflicts[0].path, "README.md");
+    assert!(done.manifest_updated);
+
+    // Settled for the clean entry: the second update is a no-op for it and
+    // does not re-pin the manifest.
+    let again = repoise_core::overlay::update(&repo.root, false).unwrap();
+    assert!(again.updated.is_empty());
+    assert!(
+        again
+            .unchanged
+            .contains(&repoise_core::CONFIG_FILENAME.to_string())
+    );
+    assert_eq!(again.conflicts.len(), 1);
+    assert!(!again.manifest_updated);
+
+    // Uninstall: only the genuine owner edit conflicts; the advanced config
+    // is removed without a false "modified since init" conflict.
+    let removed = repoise_core::overlay::uninstall(&repo.root, false).unwrap();
+    assert_eq!(removed.conflicts.len(), 1);
+    assert_eq!(removed.conflicts[0].path, "README.md");
+    assert!(!removed.manifest_removed);
+    assert!(!repo.root.join(repoise_core::CONFIG_FILENAME).exists());
+}

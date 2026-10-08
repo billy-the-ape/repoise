@@ -265,22 +265,38 @@ pub fn update(root: &Path, dry_run: bool) -> Result<UpdateOutcome, Error> {
         }
     }
 
-    // Rewrite the manifest with the advanced entries' new baseline only when
-    // nothing conflicted and at least one entry advanced.
-    if !outcome.updated.is_empty() && outcome.conflicts.is_empty() && !dry_run {
+    // Advance the installed baseline per entry for every entry whose live
+    // bytes now match the fresh template (`updated` and `unchanged`),
+    // independently of other entries' conflicts, so a partial update never
+    // leaves a stale baseline that later reads as an owner modification.
+    // Rewrite the manifest only when at least one baseline actually changed.
+    if !dry_run {
         let mut new_manifest = manifest.clone();
+        let mut baselines_changed = false;
         for entry in &mut new_manifest.files {
-            if outcome.updated.iter().any(|path| path == &entry.path)
-                && let Some(fresh) = fresh_content(entry, &manifest)
-            {
+            let advanced = outcome
+                .updated
+                .iter()
+                .chain(outcome.unchanged.iter())
+                .any(|path| path == &entry.path);
+            if !advanced {
+                continue;
+            }
+            let Some(fresh) = fresh_content(entry, &manifest) else {
+                continue;
+            };
+            if entry.installed.as_deref() != Some(fresh.as_str()) {
                 entry.installed = Some(fresh);
+                baselines_changed = true;
             }
         }
-        fs::write(
-            root.join(OVERLAY_FILENAME),
-            serde_json::to_string_pretty(&new_manifest)? + "\n",
-        )?;
-        outcome.manifest_updated = true;
+        if baselines_changed {
+            fs::write(
+                root.join(OVERLAY_FILENAME),
+                serde_json::to_string_pretty(&new_manifest)? + "\n",
+            )?;
+            outcome.manifest_updated = true;
+        }
     }
     Ok(outcome)
 }
