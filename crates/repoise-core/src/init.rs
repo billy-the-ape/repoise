@@ -289,6 +289,43 @@ pub fn render_config(opts: &InitOptions) -> Result<String, Error> {
     let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
     Ok(format!("{pretty}\n"))
 }
+/// Validates a path that a managed overlay entry or the
+/// `--adopt-managed-block` option may use: it must be relative, contain no
+/// `..`, root or prefix components, and — when it exists — must resolve
+/// (through symlinks) inside `root`, which must be canonical. Manifests and
+/// option values are repository content and therefore untrusted.
+pub fn validate_repo_relative_path(root: &Path, path: &Path) -> Result<(), Error> {
+    if path.is_absolute() {
+        return Err(Error::Init(format!(
+            "path must be relative to the repository root: {}",
+            path.display()
+        )));
+    }
+    if path.components().any(|component| {
+        matches!(
+            component,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    }) {
+        return Err(Error::Init(format!(
+            "path must stay inside the repository root: {}",
+            path.display()
+        )));
+    }
+    let target = root.join(path);
+    if target.exists() {
+        let resolved = target.canonicalize().map_err(Error::Io)?;
+        if !resolved.starts_with(root) {
+            return Err(Error::Init(format!(
+                "path resolves outside the repository root: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
 /// Builds the init plan without touching the filesystem (dry-run safe).
 pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
     let root = root.canonicalize()?;
@@ -326,12 +363,7 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
     }
     let mut block_entries: Vec<(String, String, OverlayRole)> = Vec::new();
     if let Some(target) = &opts.adopt_managed_block {
-        if !target.is_relative() {
-            return Err(Error::Init(format!(
-                "--adopt-managed-block must be a relative path: {}",
-                target.display()
-            )));
-        }
+        validate_repo_relative_path(&root, target)?;
         let block = managed_block();
         files.extend(plan_block_file(&root, target, &block)?);
         block_entries.push((

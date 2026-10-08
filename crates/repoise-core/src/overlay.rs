@@ -68,8 +68,11 @@ pub struct UpdateOutcome {
     pub dry_run: bool,
 }
 
-/// Loads and validates the overlay manifest at `root`.
+/// Loads and validates the overlay manifest at `root`. Entry paths come from
+/// repository content and are untrusted: each must stay inside `root`
+/// (relative, no `..`/root/prefix components, no symlink escape).
 pub fn load_manifest(root: &Path) -> Result<OverlayManifest, Error> {
+    let root = root.canonicalize().map_err(Error::Io)?;
     let raw = fs::read_to_string(root.join(OVERLAY_FILENAME)).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             Error::Init(format!(
@@ -80,8 +83,12 @@ pub fn load_manifest(root: &Path) -> Result<OverlayManifest, Error> {
             Error::Io(err)
         }
     })?;
-    serde_json::from_str(&raw)
-        .map_err(|err| Error::Init(format!("unparsable overlay manifest: {err}")))
+    let manifest: OverlayManifest = serde_json::from_str(&raw)
+        .map_err(|err| Error::Init(format!("unparsable overlay manifest: {err}")))?;
+    for entry in &manifest.files {
+        crate::init::validate_repo_relative_path(&root, Path::new(&entry.path))?;
+    }
+    Ok(manifest)
 }
 
 /// Finds the managed block region in a file: (start, end) byte offsets.

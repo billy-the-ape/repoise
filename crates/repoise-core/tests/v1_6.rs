@@ -896,3 +896,97 @@ fn init_upgrades_stale_manifest_and_update_can_migrate() {
     assert!(done.updated.contains(&"README.md".to_string()));
     assert!(done.conflicts.is_empty());
 }
+#[test]
+fn overlay_refuses_manifest_entries_outside_root() {
+    let repo = DirRepo::new("overlay-traversal", &[("README.md", "# Repo\n\nHello.\n")]);
+    init_overlay(&repo, false);
+    // A file outside the repo whose bytes match the crafted entry exactly.
+    let outside = repo
+        .root
+        .parent()
+        .expect("repo root has a parent")
+        .join("traversal-outside.txt");
+    let content = "DO NOT TOUCH\n";
+    std::fs::write(&outside, content).unwrap();
+    let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "path": "../traversal-outside.txt",
+            "kind": "file",
+            "role": "managed-block",
+            "installed": content
+        }));
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    // Both operations refuse the manifest before touching anything.
+    let err = repoise_core::overlay::uninstall(&repo.root, false).unwrap_err();
+    assert!(format!("{err}").contains("repository root"), "{err}");
+    let err = repoise_core::overlay::update(&repo.root, false).unwrap_err();
+    assert!(format!("{err}").contains("repository root"), "{err}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), content);
+    assert!(repo.root.join(repoise_core::CONFIG_FILENAME).exists());
+}
+
+#[test]
+fn init_rejects_adopt_target_outside_root() {
+    let repo = DirRepo::new("adopt-outside", &[("README.md", "hello\n")]);
+    for target in ["../outside.md", "../../etc/passwd", "/etc/passwd"] {
+        let options = repoise_core::init::InitOptions {
+            preset: repoise_core::config::Preset::DocsOnly,
+            dry_run: true,
+            yes: true,
+            provider: None,
+            adopt_managed_block: Some(PathBuf::from(target)),
+            agents_snippet: false,
+        };
+        let err = repoise_core::init::plan(&repo.root, &options).unwrap_err();
+        assert!(
+            format!("{err}").contains("repository root"),
+            "{target}: {err}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn overlay_refuses_symlink_escape_from_manifest() {
+    let repo = DirRepo::new("overlay-symlink", &[("README.md", "hello\n")]);
+    init_overlay(&repo, false);
+    let outside = repo
+        .root
+        .parent()
+        .expect("repo root has a parent")
+        .join("symlink-outside.txt");
+    let content = "SECRET\n";
+    std::fs::write(&outside, content).unwrap();
+    std::os::unix::fs::symlink(&outside, repo.root.join("link.md")).unwrap();
+    let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "path": "link.md",
+            "kind": "file",
+            "role": "managed-block",
+            "installed": content
+        }));
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let err = repoise_core::overlay::uninstall(&repo.root, false).unwrap_err();
+    assert!(format!("{err}").contains("repository root"), "{err}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), content);
+}
