@@ -14,6 +14,7 @@ Layout under the cache root:
 | `repos/<repoId>/worktrees/<worktreeId>/index.sqlite` | All index tables for one scope |
 | `repos/<repoId>/worktrees/<worktreeId>/state.json` | Versioned integration manifest; the database remains canonical |
 | `repos/<repoId>/embedding-cache/` | Shared content-addressed embedding cache (`embeddings.sqlite`): input-hash plus profile-fingerprint keyed vectors, reference-counted against retained generations |
+| `repos/<repoId>/host-cache/<host>.json` | Verified remote host records for history enrichment (ETag plus bounded payload per key, with an optional paged-list continuation); invalidated on remote permission denial; removed when the repository scope is purged (`purge --all`), not by a worktree-scoped purge |
 
 `repoId` and `worktreeId` are opaque hash-derived scope ids from
 `scope_for_search` (root/access scope plus worktree/dirty state); purge validates them
@@ -23,26 +24,32 @@ Tables:
 
 | Table | Role |
 | --- | --- |
-| `generation` | One row per build: snapshot id/mode, revision, manifest/config/parser fingerprints, build time, optional single-profile vector fingerprint, embedding scope (`docs` or `docs+code`); `state` is `building` until commit |
+| `generation` | One row per build: snapshot id/mode, revision, manifest/config/parser fingerprints, build time, optional single-profile vector fingerprint, embedding scope (`docs` or `docs+code`), history-lane item count and the persisted history-lane coverage summary (`history_meta` JSON: enabled flag plus gaps/enrichment outcome for `status` and history search); `state` is `building` until commit |
 | `file` | Per-generation file records (content hash, role, lifecycle, corpus, parser version, parser-error range count, size) |
 | `chunk` | Per-generation chunk records: opaque id, parent id, path, heading ancestry, corpus, redacted text, text hash, primary symbol, split context, exact 1-based line and byte ranges |
 | `chunk_fts` | FTS5 content index over chunk path/heading/symbol/context/body for lexical search |
 | `chunk_vec` | Per-generation stored vectors: chunk id, input hash, profile fingerprint, dimension, encoded float32 bytes (absent for lexical-only generations) |
 | `symbol` | Per-generation code symbol records: opaque id, path, name, kind, line range, parent symbol, export flag, covering chunk id |
 | `reference` | Per-generation code reference edges: opaque id, path, name, kind, confidence, line, covering chunk id, optional target symbol id |
+| `history_item` | Per-generation bounded history items (opt-in lane): revision/parents, redacted message, author, commit time, bounded affected paths and hunk descriptors, unverified PR hints, optional verified host association JSON |
+| `history_fts` | FTS5 content index over history message/revision/paths/host metadata for the separate history search lane |
 | `kv` | Key/value side data (currently the scope's current generation id) |
 
 Invariants:
 
 - A generation is published atomically: one `BEGIN IMMEDIATE` transaction inserts the
   `generation` row, all `file`/`chunk`/`chunk_fts`/`chunk_vec` rows, the code
-  `symbol`/`reference` rows and flips the `kv` current-id, then commits. Readers and
+  `symbol`/`reference` rows, the optional history `history_item`/`history_fts`
+  rows and flips the `kv` current-id, then commits. Readers and
   search always resolve the current generation first, so a failed build never exposes a
   truncated index. Symbol parents and reference targets must exist in the same
   generation; publication rejects dangling edges rather than storing them.
 - The v3 schema upgrade is additive and idempotent: missing columns are added when
   absent, and the FTS table is rebuilt in place only when it predates the `context`
-  column (it serves the current generation, so no data is lost).
+  column (it serves the current generation, so no data is lost). The v4 upgrade adds
+  the `history_item`/`history_fts` tables and the `generation.history` item count for
+  the opt-in history lane; the v5 upgrade adds the `generation.history_meta`
+  persisted lane-coverage summary column.
 - Shared embedding-cache entries are reference-counted against the retained worktree
   generations of the repository scope after each publication; unreferenced entries are
   reclaimed, so a failed or superseded embedding job never serves a vector.

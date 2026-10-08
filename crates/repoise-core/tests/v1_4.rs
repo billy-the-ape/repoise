@@ -96,6 +96,7 @@ fn build(files: &[(&str, &str)], h: &Harness) -> indexing::IndexOutcome {
         &h.cache,
         &IndexRequest::default(),
         None,
+        None,
     )
     .unwrap()
 }

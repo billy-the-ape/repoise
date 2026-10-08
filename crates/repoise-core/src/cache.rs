@@ -133,6 +133,15 @@ impl CachePaths {
     pub fn embedding_cache_path(&self, repo_id: &str) -> PathBuf {
         self.embedding_cache_dir(repo_id).join("embeddings.sqlite")
     }
+
+    /// Repository-scoped host cache file for one host (card K5):
+    /// `repos/<repoId>/host-cache/<host>.json`. Purged with the repository
+    /// scope; a remote permission denial invalidates the whole file.
+    pub fn host_cache_path(&self, repo_id: &str, host: &str) -> PathBuf {
+        self.repo_dir(repo_id)
+            .join("host-cache")
+            .join(format!("{host}.json"))
+    }
 }
 
 /// Derives a stable worktree scope id from the canonical root and snapshot

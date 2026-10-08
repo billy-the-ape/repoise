@@ -11,7 +11,9 @@ embedding provider) and `read` (exact read-back with hash validation), plus `pur
 generated cache data. Code indexing covers TypeScript/TSX and JavaScript/JSX structural
 chunks with symbols and syntactic reference edges, and a line-window fallback for other
 code languages; embeddings apply to code only when the embedding scope includes it.
-History and MCP are not implemented yet. Native `0.1.0-alpha.0`
+MCP is not implemented yet. An opt-in local history lane (bounded mainline commits
+with separate `search --lane history` retrieval and optional verified GitHub PR
+enrichment) is available. Native `0.1.0-alpha.0`
 archives are published, along with Linux/macOS npm binary packages. The main npm
 launcher and Windows npm package are pending a registry name review; `npx repoise`
 is not yet a usable installation path.

@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS generation (
   chunks INTEGER NOT NULL,
   vectors INTEGER NOT NULL DEFAULT 0,
   vector_profile TEXT,
-  embedding_scope TEXT NOT NULL DEFAULT 'docs'
+  embedding_scope TEXT NOT NULL DEFAULT 'docs',
+  history INTEGER NOT NULL DEFAULT 0,
+  history_meta TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_generation_scope
   ON generation(repo_id, worktree_id, id);
@@ -130,6 +132,32 @@ CREATE TABLE IF NOT EXISTS chunk_vec (
 );
 CREATE INDEX IF NOT EXISTS idx_chunk_vec_profile
   ON chunk_vec(generation_id, fingerprint);
+CREATE TABLE IF NOT EXISTS history_item (
+  generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  revision_id TEXT NOT NULL,
+  parents TEXT NOT NULL DEFAULT '[]',
+  message TEXT NOT NULL,
+  author TEXT,
+  committed_at_ms INTEGER,
+  affected_paths TEXT NOT NULL DEFAULT '[]',
+  paths_truncated INTEGER NOT NULL DEFAULT 0,
+  hunks TEXT NOT NULL DEFAULT '[]',
+  hunks_truncated INTEGER NOT NULL DEFAULT 0,
+  pr_hint TEXT,
+  host_metadata TEXT,
+  PRIMARY KEY (generation_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_history_scope
+  ON history_item(generation_id, revision_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5(
+  item_id UNINDEXED,
+  revision_id,
+  message,
+  paths,
+  host,
+  tokenize='unicode61'
+);
 "#;
 
 /// Additive migration from schema version 2 (card K3) to version 3 (card K4):
@@ -185,6 +213,38 @@ CREATE TABLE IF NOT EXISTS chunk_vec (
 );
 CREATE INDEX IF NOT EXISTS idx_chunk_vec_profile
   ON chunk_vec(generation_id, fingerprint);
+"#;
+/// Additive migration from schema version 3 (card K4) to version 4 (card K5):
+/// the per-generation `history_item` records and the separate `history_fts`
+/// lane. Existing databases are upgraded in place; the lane is empty until
+/// the next history-enabled publication.
+const MIGRATION_TABLES_V3_TO_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS history_item (
+  generation_id INTEGER NOT NULL REFERENCES generation(id) ON DELETE CASCADE,
+  item_id TEXT NOT NULL,
+  revision_id TEXT NOT NULL,
+  parents TEXT NOT NULL DEFAULT '[]',
+  message TEXT NOT NULL,
+  author TEXT,
+  committed_at_ms INTEGER,
+  affected_paths TEXT NOT NULL DEFAULT '[]',
+  paths_truncated INTEGER NOT NULL DEFAULT 0,
+  hunks TEXT NOT NULL DEFAULT '[]',
+  hunks_truncated INTEGER NOT NULL DEFAULT 0,
+  pr_hint TEXT,
+  host_metadata TEXT,
+  PRIMARY KEY (generation_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_history_scope
+  ON history_item(generation_id, revision_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5(
+  item_id UNINDEXED,
+  revision_id,
+  message,
+  paths,
+  host,
+  tokenize='unicode61'
+);
 "#;
 /// Adds one column to an existing table unless it already exists (table and
 /// column names are compile-time constants of the migrations).
@@ -255,7 +315,7 @@ impl Store {
             version if version == INDEX_SCHEMA_VERSION.to_string().as_str() => {
                 conn.execute("COMMIT", [])?;
             }
-            "1" | "2" => {
+            "1" | "2" | "3" | "4" => {
                 // Additive card-K3 upgrade (only for v1 databases).
                 if stored == "1" {
                     conn.execute_batch(MIGRATION_TABLES_V1_TO_V2)?;
@@ -273,6 +333,17 @@ impl Store {
                 ensure_column(&conn, "file", "parser_errors", "INTEGER NOT NULL DEFAULT 0")?;
                 ensure_column(&conn, "chunk", "symbol", "TEXT NOT NULL DEFAULT ''")?;
                 ensure_column(&conn, "chunk", "context", "TEXT")?;
+                // Additive card-K5 upgrade (history lane).
+                conn.execute_batch(MIGRATION_TABLES_V3_TO_V4)?;
+                ensure_column(&conn, "generation", "history", "INTEGER NOT NULL DEFAULT 0")?;
+                // Additive card-K5 upgrade: persisted history lane coverage
+                // summary (gaps and enrichment outcome) for status/search.
+                ensure_column(
+                    &conn,
+                    "generation",
+                    "history_meta",
+                    "TEXT NOT NULL DEFAULT ''",
+                )?;
                 rebuild_chunk_fts_if_needed(&conn)?;
                 conn.execute(
                     "INSERT INTO meta (key, value) VALUES ('schema_version', ?1) \
@@ -436,6 +507,36 @@ pub struct ReferenceRow {
     pub target_symbol_id: Option<String>,
 }
 
+/// A bounded history-lane record to publish in a generation (card K5).
+/// JSON-encoded collections mirror the column layout of `history_item`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryRow {
+    /// Opaque history item id (stable per scope and revision).
+    pub item_id: String,
+    /// Adapter-qualified opaque revision id.
+    pub revision_id: String,
+    /// Optional parent revision ids (adapter-qualified).
+    pub parents: Vec<String>,
+    /// Commit message (secret shapes redacted).
+    pub message: String,
+    /// Author name, when recorded.
+    pub author: Option<String>,
+    /// Commit time, milliseconds since the Unix epoch.
+    pub committed_at_ms: Option<i64>,
+    /// Bounded affected-path list (POSIX separators).
+    pub affected_paths: Vec<String>,
+    /// Number of affected paths omitted by the bound.
+    pub paths_truncated: u32,
+    /// Optional bounded diff hunk descriptors.
+    pub hunks: Vec<crate::history::HunkDescriptor>,
+    /// Number of hunks omitted by the bound.
+    pub hunks_truncated: u32,
+    /// Unverified change-request hints parsed from the message.
+    pub pr_hint: Option<Vec<u32>>,
+    /// Optional verified host/change-request association (host metadata).
+    pub association: Option<crate::history::PrAssociation>,
+}
+
 /// A vector record to publish in a generation (one profile per generation).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChunkVecRow {
@@ -487,6 +588,12 @@ pub struct GenerationInput {
     pub symbols: Vec<SymbolRow>,
     /// Complete reference edge record set (carried forward per unchanged file).
     pub references: Vec<ReferenceRow>,
+    /// Complete bounded history-lane record set (empty when the lane is off
+    /// or unavailable for this scope).
+    pub history: Vec<HistoryRow>,
+    /// Persisted history-lane coverage/enrichment summary (JSON; empty when
+    /// the lane is off), surfaced by `status` and history search.
+    pub history_meta: String,
 }
 
 /// Metadata of the current published generation for a scope.
@@ -518,6 +625,11 @@ pub struct GenerationMeta {
     pub vector_profile: Option<String>,
     /// Which chunks the enabled profile applies to (card K4).
     pub embedding_scope: crate::embed::EmbeddingScope,
+    /// History-lane item count (0 when the lane is off or unavailable).
+    pub history_items: i64,
+    /// Persisted history-lane coverage/enrichment summary (JSON; empty when
+    /// the lane is off or the generation predates the column).
+    pub history_meta: String,
 }
 
 /// Reads the current published generation metadata for a scope, if any.
@@ -538,7 +650,7 @@ pub fn current_generation(
         .prepare(
             "SELECT id, snapshot_id, snapshot_mode, revision_id, manifest_hash, \
              config_fingerprint, parser_fingerprint, built_at_ms, files, chunks, \
-             vectors, vector_profile, embedding_scope \
+             vectors, vector_profile, embedding_scope, history, history_meta \
              FROM generation WHERE repo_id = ?1 AND worktree_id = ?2 AND id = ?3",
         )
         .map_err(Error::Sqlite)?;
@@ -558,6 +670,8 @@ pub fn current_generation(
                 r.get::<_, i64>(10)?,
                 r.get::<_, Option<String>>(11)?,
                 r.get::<_, String>(12)?,
+                r.get::<_, i64>(13)?,
+                r.get::<_, String>(14)?,
             ))
         })
         .optional()
@@ -581,6 +695,8 @@ pub fn current_generation(
         vectors,
         vector_profile,
         scope,
+        history_items,
+        history_meta,
     ) = meta_row;
     let meta = GenerationMeta {
         generation_id,
@@ -597,6 +713,8 @@ pub fn current_generation(
         vector_profile,
         embedding_scope: crate::embed::EmbeddingScope::parse(&scope)
             .ok_or_else(|| Error::IndexState(format!("unknown stored embedding scope: {scope}")))?,
+        history_items,
+        history_meta,
     };
     Ok(Some(meta))
 }
@@ -611,8 +729,8 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
         conn.execute(
             "INSERT INTO generation (repo_id, worktree_id, snapshot_id, snapshot_mode, \
              revision_id, manifest_hash, config_fingerprint, parser_fingerprint, \
-             built_at_ms, state, files, chunks, vectors, vector_profile, embedding_scope) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'building', ?10, ?11, ?12, ?13, ?14)",
+             built_at_ms, state, files, chunks, vectors, vector_profile, embedding_scope, history, history_meta) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'building', ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 input.repo_id,
                 input.worktree_id,
@@ -628,6 +746,8 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
                 input.vectors.len() as i64,
                 input.vector_profile.as_deref(),
                 input.embedding_scope.as_str(),
+                input.history.len() as i64,
+                &input.history_meta,
             ],
         )
         .map_err(Error::Sqlite)?;
@@ -789,6 +909,66 @@ pub fn publish(conn: &Connection, input: &GenerationInput) -> Result<i64> {
             )
             .map_err(Error::Sqlite)?;
         }
+        // The history lane publishes in the same transaction: bounded local
+        // records (card K5) plus its own FTS table rebuilt for exactly this
+        // generation, so history search never mixes generations.
+        conn.execute("DELETE FROM history_fts", [])
+            .map_err(Error::Sqlite)?;
+        for item in &input.history {
+            conn.execute(
+                "INSERT INTO history_item (generation_id, item_id, revision_id, \
+                  parents, message, author, committed_at_ms, affected_paths, \
+                  paths_truncated, hunks, hunks_truncated, pr_hint, host_metadata) \
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    generation_id,
+                    item.item_id,
+                    item.revision_id,
+                    serde_json::to_string(&item.parents).map_err(|err| Error::Json(format!(
+                        "history serialization failed: {err}"
+                    )))?,
+                    item.message,
+                    item.author,
+                    item.committed_at_ms,
+                    serde_json::to_string(&item.affected_paths).map_err(|err| Error::Json(
+                        format!("history serialization failed: {err}")
+                    ))?,
+                    item.paths_truncated as i64,
+                    serde_json::to_string(&item.hunks).map_err(|err| Error::Json(format!(
+                        "history serialization failed: {err}"
+                    )))?,
+                    item.hunks_truncated as i64,
+                    item.pr_hint
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|err| Error::Json(format!("history serialization failed: {err}")))?
+                        .unwrap_or_default(),
+                    item.association
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|err| Error::Json(format!("history serialization failed: {err}")))?
+                        .unwrap_or_default(),
+                ],
+            )
+            .map_err(Error::Sqlite)?;
+            conn.execute(
+                "INSERT INTO history_fts (item_id, revision_id, message, paths, host) \
+                  VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    item.item_id,
+                    item.revision_id,
+                    item.message,
+                    item.affected_paths.join(" "),
+                    // Index only the readable host text (title/body/state),
+                    // never the raw association JSON (its keys would become
+                    // searchable terms).
+                    crate::history::association_fts_text(item.association.as_ref()),
+                ],
+            )
+            .map_err(Error::Sqlite)?;
+        }
         // Vectors publish in the same transaction: they are per-generation
         // and keyed by this generation's chunk ids, so they can never mix
         // generations or serve replaced text.
@@ -906,6 +1086,8 @@ pub struct PreviousGeneration {
     pub symbols: Vec<SymbolRow>,
     /// Reference edge records of the previous generation.
     pub references: Vec<ReferenceRow>,
+    /// History-lane records of the previous generation.
+    pub history: Vec<HistoryRow>,
 }
 
 /// Loads the current published generation's records for a scope, if any.
@@ -1044,12 +1226,58 @@ pub fn load_generation(
             references.push(row.map_err(Error::Sqlite)?);
         }
     }
+    let mut history = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT item_id, revision_id, parents, message, author, \
+                  committed_at_ms, affected_paths, paths_truncated, hunks, \
+                  hunks_truncated, pr_hint, host_metadata \
+                  FROM history_item WHERE generation_id = ?1 \
+                  ORDER BY committed_at_ms DESC, item_id",
+            )
+            .map_err(Error::Sqlite)?;
+        let rows = stmt
+            .query_map(params![meta.generation_id], |r| {
+                let parents: String = r.get(2)?;
+                let committed_at_ms: Option<i64> = r.get(5)?;
+                let affected_paths: String = r.get(6)?;
+                let paths_truncated: i64 = r.get(7)?;
+                let hunks: String = r.get(8)?;
+                let hunks_truncated: i64 = r.get(9)?;
+                let pr_hint: String = r.get(10)?;
+                let host_metadata: String = r.get(11)?;
+                Ok(HistoryRow {
+                    item_id: r.get(0)?,
+                    revision_id: r.get(1)?,
+                    parents: serde_json::from_str(&parents).unwrap_or_default(),
+                    message: r.get(3)?,
+                    author: r.get(4)?,
+                    committed_at_ms,
+                    affected_paths: serde_json::from_str(&affected_paths).unwrap_or_default(),
+                    paths_truncated: paths_truncated as u32,
+                    hunks: serde_json::from_str(&hunks).unwrap_or_default(),
+                    hunks_truncated: hunks_truncated as u32,
+                    pr_hint: serde_json::from_str(&pr_hint).unwrap_or_default(),
+                    association: if host_metadata.trim().is_empty() {
+                        None
+                    } else {
+                        serde_json::from_str(&host_metadata).unwrap_or_default()
+                    },
+                })
+            })
+            .map_err(Error::Sqlite)?;
+        for row in rows {
+            history.push(row.map_err(Error::Sqlite)?);
+        }
+    }
     Ok(Some(PreviousGeneration {
         meta,
         files,
         chunks,
         symbols,
         references,
+        history,
     }))
 }
 
@@ -1140,6 +1368,33 @@ pub fn corpus_chunk_counts(conn: &Connection, generation_id: i64) -> Result<(i64
         )
         .map_err(Error::Sqlite)?;
     Ok((docs, code))
+}
+
+/// (history item count, enriched item count) for one generation's history
+/// lane (0/0 when the lane is off or unavailable).
+pub fn history_lane_counts(conn: &Connection, generation_id: i64) -> Result<(i64, i64)> {
+    let (items, enriched): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), \
+             COALESCE(SUM(host_metadata IS NOT NULL AND host_metadata <> ''), 0) \
+             FROM history_item WHERE generation_id = ?1",
+            params![generation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(Error::Sqlite)?;
+    Ok((items, enriched))
+}
+
+/// The newest revision recorded in one generation's history lane.
+pub fn history_head_revision(conn: &Connection, generation_id: i64) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT revision_id FROM history_item WHERE generation_id = ?1 \
+         ORDER BY committed_at_ms DESC, item_id LIMIT 1",
+        params![generation_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Error::Sqlite)
 }
 
 /// Distinct paths of chunks without a vector for one generation's profile

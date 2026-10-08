@@ -29,6 +29,9 @@ use output::{json, print_doctor, print_explain, print_init};
 #[cfg(feature = "remote-embedding")]
 mod provider;
 
+#[cfg(feature = "github-enrichment")]
+mod github_enrichment;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     Greet,
@@ -67,6 +70,7 @@ struct CliOptions {
     source_id: Option<String>,
     search_mode: Option<String>,
     rrf_k: Option<u32>,
+    lane: Option<String>,
     purge_all: bool,
     repo_id: Option<String>,
     worktree_id: Option<String>,
@@ -106,6 +110,7 @@ SEARCH OPTIONS:
     --cursor <TOKEN>            Opaque pagination token from a previous page
     --mode <MODE>               Retrieval mode: lexical (default), hybrid, vectors-only
     --rrf-k <N>                 Reciprocal-rank-fusion k for hybrid mode (default from config)
+    --lane <LANE>               Search lane: search (default, current docs/code) or history
 
 READ OPTIONS:
     --source-id <ID>            Opaque source id from a search result
@@ -146,6 +151,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         source_id: None,
         search_mode: None,
         rrf_k: None,
+        lane: None,
         purge_all: false,
         repo_id: None,
         worktree_id: None,
@@ -252,6 +258,10 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                         .parse::<u32>()
                         .map_err(|_| format!("--rrf-k must be a positive integer: {value}"))?,
                 );
+            }
+            "--lane" => {
+                i += 1;
+                opts.lane = Some(require_value(args, i, "--lane")?);
             }
             "--all" => opts.purge_all = true,
             "--repo-id" => {
@@ -420,6 +430,8 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     let request = repoise_core::indexing::IndexRequest::default();
     let client = embedding_client(&ctx.effective)?;
     let session = client.as_ref();
+    let enrichment = enrichment_session(&ctx)?;
+    let enrichment_session = enrichment.as_ref();
     let outcome = repoise_core::indexing::index(
         ctx.adapter.as_ref(),
         ctx.mode,
@@ -428,6 +440,7 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
         &ctx.cache,
         &request,
         session,
+        enrichment_session,
     )
     .map_err(|err| err.to_string())?;
     if opts.json {
@@ -479,8 +492,90 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
         } else {
             println!("vectors: 0 (lexical-only build)");
         }
+        if let Some(history) = &outcome.history {
+            println!(
+                "history: {} items ({} verified, {} no-association, {} failed)",
+                history.count, history.enriched, history.no_association, history.failed
+            );
+            for gap in &history.gaps {
+                println!("  gap: {gap}");
+            }
+            if history.rate_limited {
+                println!("  note: host rate limit stopped enrichment");
+            }
+            if history.permission_denied {
+                println!("  note: permission denied; cached remote content invalidated");
+            }
+            if history.budget_exhausted {
+                println!("  note: request budget stopped enrichment");
+            }
+            if history.unattempted > 0 {
+                println!(
+                    "  note: {} hint item(s) left unattempted (budget or PR cap)",
+                    history.unattempted
+                );
+            }
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Builds the optional history enrichment session from the effective config.
+/// A missing credential or a missing host transport keeps the build
+/// local-only (hints stay unverified); local indexing never fails for it.
+fn enrichment_session(
+    ctx: &Context,
+) -> Result<Option<repoise_core::history::EnrichmentSession>, String> {
+    let Some(settings) = &ctx.effective.history.enrichment else {
+        return Ok(None);
+    };
+    if settings.host != "github" {
+        eprintln!(
+            "note: no built-in enrichment transport for host '{}'; hints stay unverified",
+            settings.host
+        );
+        return Ok(None);
+    }
+    #[cfg(feature = "github-enrichment")]
+    {
+        let token = match env::var(&settings.token_env) {
+            Ok(token) if !token.trim().is_empty() => token,
+            _ => {
+                // No credential means no enrichment at all: never send
+                // unauthenticated requests (they would leak private-repo
+                // owner/name/SHAs and burn the anonymous quota).
+                eprintln!(
+                    "note: token variable {} is not set; enrichment is skipped and hints stay unverified",
+                    settings.token_env
+                );
+                return Ok(None);
+            }
+        };
+        let provider = github_enrichment::GitHubEnrichment::new(
+            "https://api.github.com",
+            Some(token),
+            settings.max_body_chars,
+        );
+        let cache = repoise_core::history::HostCache::open(
+            ctx.cache.host_cache_path(&ctx.repo_id, "github"),
+            "github",
+        );
+        let budgets = repoise_core::history::EnrichmentBudgets {
+            max_prs_per_build: settings.max_prs_per_build,
+            max_requests_per_build: settings.max_requests_per_build,
+            max_body_chars: settings.max_body_chars,
+        };
+        Ok(Some(repoise_core::history::EnrichmentSession::new(
+            Box::new(provider),
+            cache,
+            budgets,
+        )))
+    }
+    #[cfg(not(feature = "github-enrichment"))]
+    {
+        eprintln!("note: this binary has no GitHub enrichment transport; hints stay unverified");
+        Ok(None)
+    }
 }
 
 fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
@@ -540,6 +635,38 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
                 );
             }
             None => println!("index: (none)"),
+        }
+        match &view.history_lane {
+            Some(lane) if lane.enabled => {
+                println!(
+                    "history lane: on ({} items, head {})",
+                    lane.items,
+                    lane.head_revision.as_deref().unwrap_or("(none)")
+                );
+                for gap in &lane.gaps {
+                    println!("  gap: {gap}");
+                }
+                if let Some(summary) = &lane.enrichment {
+                    println!(
+                        "  enrichment: {} enriched, {} no-association, {} failed, {} unattempted",
+                        summary.enriched,
+                        summary.no_association,
+                        summary.failed,
+                        summary.unattempted
+                    );
+                    if summary.rate_limited {
+                        println!("  rate_limited: true");
+                    }
+                    if summary.permission_denied {
+                        println!("  permission_denied: true");
+                    }
+                    if summary.budget_exhausted {
+                        println!("  budget_exhausted: true");
+                    }
+                }
+            }
+            Some(_) => println!("history lane: off"),
+            None => {}
         }
         println!("freshness: {}", view.freshness.status);
         for reason in &view.freshness.reasons {
@@ -708,6 +835,102 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
     };
     let ctx = build_context(opts)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
+    if opts.lane.as_deref() == Some("history") {
+        let request = repoise_core::history::HistorySearchRequest {
+            query,
+            path_filter: opts.path_filter.clone(),
+            max_results: opts.max_results,
+            cursor: opts.cursor.clone(),
+        };
+        let response = match repoise_core::history::search_history(
+            ctx.adapter.as_ref(),
+            ctx.mode,
+            &store,
+            &request,
+        ) {
+            Ok(response) => response,
+            Err(Error::IndexState(message)) if message.starts_with("no published index") => {
+                return Ok(ExitCode::from(3));
+            }
+            Err(err) => return Err(err.to_string()),
+        };
+        if opts.json {
+            println!("{}", json(&response)?);
+        } else {
+            println!(
+                "{} result(s), generation {} ({})",
+                response.results.len(),
+                response.generation_id,
+                response.retrieval_mode
+            );
+            for hit in &response.results {
+                let author = hit
+                    .author
+                    .as_deref()
+                    .map(|author| format!(" (by {author})"))
+                    .unwrap_or_default();
+                println!("{}: {}{}", hit.revision_id, hit.message, author);
+                if !hit.affected_paths.is_empty() {
+                    println!("  paths: {}", hit.affected_paths.join(", "));
+                }
+                if let Some(association) = &hit.association {
+                    println!(
+                        "  pr #{} (verified, {}): {}",
+                        association.number,
+                        association.state.as_deref().unwrap_or("state unknown"),
+                        association.title.as_deref().unwrap_or("(no title)")
+                    );
+                }
+                if let Some(url) = &hit.url {
+                    println!("  url: {url}");
+                }
+            }
+            if response.truncated {
+                println!(
+                    "truncated; next: --cursor {}",
+                    response.next_cursor.as_deref().unwrap_or("(no cursor)")
+                );
+            }
+            // Lane coverage: agents must see gaps (horizon, shallow) and
+            // enrichment stops even when the page is empty.
+            if !response.lane.enabled {
+                println!("lane: history off for this index");
+            } else {
+                println!(
+                    "lane: history on ({} items, head {})",
+                    response.lane.items,
+                    response.lane.head_revision.as_deref().unwrap_or("(none)")
+                );
+                for gap in &response.lane.gaps {
+                    println!("  gap: {gap}");
+                }
+                if let Some(summary) = &response.lane.enrichment {
+                    println!(
+                        "  enrichment: {} enriched, {} no-association, {} failed, {} unattempted",
+                        summary.enriched,
+                        summary.no_association,
+                        summary.failed,
+                        summary.unattempted
+                    );
+                    if summary.rate_limited {
+                        println!("  rate_limited: true");
+                    }
+                    if summary.permission_denied {
+                        println!("  permission_denied: true");
+                    }
+                    if summary.budget_exhausted {
+                        println!("  budget_exhausted: true");
+                    }
+                }
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(other) = &opts.lane {
+        return Err(format!(
+            "unknown search lane: {other} (expected search or history)"
+        ));
+    }
     let mode = match opts.search_mode.as_deref() {
         None | Some("lexical") => SearchMode::Lexical,
         Some("hybrid") => SearchMode::Hybrid,
@@ -783,6 +1006,11 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
 }
 
 fn run_read(opts: &CliOptions) -> Result<ExitCode, String> {
+    if opts.lane.as_deref() == Some("history") {
+        return Err(
+            "read targets current chunks only; history items have no exact-read lane".into(),
+        );
+    }
     let source_id = opts
         .source_id
         .as_deref()

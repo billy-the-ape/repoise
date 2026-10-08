@@ -75,6 +75,11 @@
           "type": "string",
           "minLength": 1
         },
+        "scope": {
+          "description": "Which chunks are embedded: docs (default) or all (docs and code).",
+          "type": "string",
+          "enum": ["docs", "all"]
+        },
         "endpoint": {
           "description": "Endpoint reference; must be an environment reference like env:VAR_NAME, never a literal secret-bearing URL.",
           "type": "string",
@@ -84,6 +89,111 @@
           "description": "Model identifier.",
           "type": "string",
           "minLength": 1
+        },
+        "dimensions": {
+          "description": "Vector dimension the model produces.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "apiKeyEnv": {
+          "description": "Environment variable name holding the API key (never the secret itself).",
+          "type": "string",
+          "minLength": 1
+        },
+        "batchSize": {
+          "description": "Maximum inputs per provider batch (default 32).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutMs": {
+          "description": "Per-batch request timeout in milliseconds (default 30000).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxRetries": {
+          "description": "Retries after the first attempt for a failed batch (default 2).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxRequestsPerBuild": {
+          "description": "Maximum provider batches per build (default 500).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxInputCharsPerBuild": {
+          "description": "Maximum input characters accepted per build (default 1000000).",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "search": {
+      "description": "Optional hybrid retrieval settings.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rrfK": {
+          "description": "Reciprocal-rank-fusion k (default 60).",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "history": {
+      "description": "Optional local history lane (off until enabled). Local collection is offline; hosting enrichment is opt-in.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enable the local history lane for builds (default false).",
+          "type": "boolean"
+        },
+        "horizon": {
+          "description": "Maximum mainline commits recorded per build (default 500).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxPathsPerCommit": {
+          "description": "Maximum changed paths kept per commit (default 20).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "diffHunks": {
+          "description": "Collect bounded diff hunk descriptors (default false).",
+          "type": "boolean"
+        },
+        "enrichment": {
+          "description": "Optional host change-request enrichment settings (opt-in, disabled by default).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["host", "tokenEnv"],
+          "properties": {
+            "host": {
+              "description": "Host name (github).",
+              "type": "string",
+              "enum": ["github"]
+            },
+            "tokenEnv": {
+              "description": "Environment variable name holding the host token (never the secret itself).",
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "maxPrsPerBuild": {
+              "description": "Maximum change requests enriched per build (default 10).",
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxRequestsPerBuild": {
+              "description": "Maximum host requests per build (default 50).",
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxBodyChars": {
+              "description": "Maximum fetched body characters kept per record (default 20000).",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         }
       }
     }

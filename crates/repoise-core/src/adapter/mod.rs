@@ -319,4 +319,11 @@ pub trait SourceAdapter {
     fn remote_identity(&self) -> Result<Option<String>, AdapterError> {
         Ok(None)
     }
+
+    /// Optional access to this adapter's history capability (card K5).
+    /// Adapters without the `History` capability return `None`, and history
+    /// collection is rejected before any provider call.
+    fn history_provider(&self) -> Option<&dyn crate::history::HistoryProvider> {
+        None
+    }
 }

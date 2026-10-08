@@ -132,6 +132,9 @@ pub struct StatusView {
     pub snapshot: StatusSnapshot,
     /// Published index, if any.
     pub index: Option<StatusIndex>,
+    /// History lane state for the published generation, if any (enabled,
+    /// item count, head revision, gaps, enrichment outcome).
+    pub history_lane: Option<crate::history::HistoryLaneStatus>,
     /// Freshness judgment.
     pub freshness: StatusFreshness,
     /// Cache location and sizes.
@@ -206,6 +209,12 @@ pub fn status(
         None => None,
     };
     let last_error = store::last_error(&conn)?;
+    // History lane state for the published generation (card K5): agents see
+    // gaps and enrichment stops without running a history search.
+    let history_lane = current
+        .as_ref()
+        .map(|meta| crate::history::lane_status(&conn, meta))
+        .transpose()?;
 
     let (freshness_status, reasons) = match &current {
         None => (
@@ -257,6 +266,7 @@ pub fn status(
         },
         snapshot,
         index,
+        history_lane,
         freshness: StatusFreshness {
             status: freshness_status,
             reasons,

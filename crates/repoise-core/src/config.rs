@@ -51,6 +51,82 @@ pub struct Config {
     /// Optional search settings (hybrid fusion parameters).
     #[serde(default)]
     pub search: Option<SearchConfig>,
+    /// Optional history lane settings (card K5).
+    #[serde(default)]
+    pub history: Option<HistoryConfig>,
+}
+
+/// Optional history-lane settings (card K5). The lane is off until this block
+/// is configured; local collection is offline, enrichment is opt-in.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HistoryConfig {
+    /// Enable the local history lane for builds (default false).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Maximum mainline commits recorded per build (default 500).
+    #[serde(default)]
+    pub horizon: Option<u32>,
+    /// Maximum changed paths kept per commit (default 20).
+    #[serde(default)]
+    pub max_paths_per_commit: Option<u32>,
+    /// Collect bounded diff hunk descriptors (off by default).
+    #[serde(default)]
+    pub diff_hunks: Option<bool>,
+    /// Optional change-request enrichment settings.
+    #[serde(default)]
+    pub enrichment: Option<HistoryEnrichmentConfig>,
+}
+
+/// Optional host enrichment settings for the history lane (opt-in).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HistoryEnrichmentConfig {
+    /// Host name (`github`).
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Environment variable name holding the host token (never the secret).
+    #[serde(default)]
+    pub token_env: Option<String>,
+    /// Maximum change requests enriched per build (default 10).
+    #[serde(default)]
+    pub max_prs_per_build: Option<u32>,
+    /// Maximum host requests per build (default 50).
+    #[serde(default)]
+    pub max_requests_per_build: Option<u32>,
+    /// Maximum fetched body characters kept per record (default 20000).
+    #[serde(default)]
+    pub max_body_chars: Option<u32>,
+}
+
+/// Resolved history-lane settings (defaults filled).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct HistorySettings {
+    /// Whether the lane is enabled for builds.
+    pub enabled: bool,
+    /// Maximum mainline commits recorded per build.
+    pub horizon: u32,
+    /// Maximum changed paths kept per commit.
+    pub max_paths_per_commit: u32,
+    /// Whether bounded diff hunk descriptors are collected.
+    pub diff_hunks: bool,
+    /// Resolved enrichment settings, if configured.
+    pub enrichment: Option<HistoryEnrichmentSettings>,
+}
+
+/// Resolved enrichment settings (defaults filled).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HistoryEnrichmentSettings {
+    /// Host name.
+    pub host: String,
+    /// Environment variable name holding the host token.
+    pub token_env: String,
+    /// Maximum change requests enriched per build.
+    pub max_prs_per_build: u32,
+    /// Maximum host requests per build.
+    pub max_requests_per_build: u32,
+    /// Maximum fetched body characters kept per record.
+    pub max_body_chars: u32,
 }
 
 /// Optional embedding provider settings (operator-selected, never mandatory).
@@ -204,6 +280,8 @@ pub struct EffectiveConfig {
     pub embedding_scope: crate::embed::EmbeddingScope,
     /// Resolved reciprocal-rank-fusion `k` (default 60).
     pub rrf_k: u32,
+    /// Resolved history-lane settings (card K5).
+    pub history: HistorySettings,
 }
 
 impl EffectiveConfig {
@@ -255,6 +333,7 @@ impl EffectiveConfig {
         let mut document_roles: Vec<(RoleRule, Origin)> = Vec::new();
         let mut cache_dir = DEFAULT_CACHE_DIR.to_string();
         let mut embedding: Option<EmbeddingConfig> = None;
+        let mut history: Option<HistoryConfig> = None;
         let mut rrf_k = crate::embed::DEFAULT_RRF_K;
 
         for (origin, config) in [(Origin::Committed, committed), (Origin::Local, local)] {
@@ -290,6 +369,9 @@ impl EffectiveConfig {
                 {
                     rrf_k = k;
                 }
+                if let Some(settings) = &config.history {
+                    history = Some(settings.clone());
+                }
             }
         }
 
@@ -323,6 +405,24 @@ impl EffectiveConfig {
             None => crate::embed::EmbeddingScope::Docs,
         };
 
+        // Resolve history-lane settings (defaults fill operator gaps).
+        let history_settings = history.map(|settings| HistorySettings {
+            enabled: settings.enabled.unwrap_or(false),
+            horizon: settings.horizon.unwrap_or(crate::history::DEFAULT_HORIZON),
+            max_paths_per_commit: settings.max_paths_per_commit.unwrap_or(20),
+            diff_hunks: settings.diff_hunks.unwrap_or(false),
+            enrichment: settings
+                .enrichment
+                .map(|enrichment| HistoryEnrichmentSettings {
+                    host: enrichment.host.unwrap_or_default(),
+                    token_env: enrichment.token_env.unwrap_or_default(),
+                    max_prs_per_build: enrichment.max_prs_per_build.unwrap_or(10),
+                    max_requests_per_build: enrichment.max_requests_per_build.unwrap_or(50),
+                    max_body_chars: enrichment.max_body_chars.unwrap_or(20_000),
+                }),
+        });
+        let history = history_settings.unwrap_or_default();
+
         Ok(EffectiveConfig {
             preset,
             preset_origin,
@@ -335,6 +435,7 @@ impl EffectiveConfig {
             embedding,
             embedding_scope,
             rrf_k,
+            history,
         })
     }
 }
@@ -381,10 +482,7 @@ impl EffectiveConfig {
                     }
                 }
                 if let Some(name) = &settings.api_key_env
-                    && !name
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && !is_valid_env_name(name)
                 {
                     problems.push(format!(
                         "embedding.apiKeyEnv must be a valid environment variable name: {name}"
@@ -410,6 +508,38 @@ impl EffectiveConfig {
                 );
             }
             None => {}
+        }
+        if self.history.enabled {
+            if self.history.horizon == 0 {
+                problems.push("history.horizon must be greater than 0".into());
+            }
+            if self.history.max_paths_per_commit == 0 {
+                problems.push("history.maxPathsPerCommit must be greater than 0".into());
+            }
+        }
+        if let Some(enrichment) = &self.history.enrichment {
+            if enrichment.host.trim().is_empty() {
+                problems.push(
+                    "history.enrichment.host is required when enrichment is configured".into(),
+                );
+            }
+            let valid_token_env = is_valid_env_name(&enrichment.token_env);
+            if !valid_token_env {
+                problems.push(format!(
+                    "history.enrichment.tokenEnv must be a valid environment variable name: {}",
+                    enrichment.token_env
+                ));
+            }
+            if enrichment.max_prs_per_build == 0 {
+                problems.push("history.enrichment.maxPrsPerBuild must be greater than 0".into());
+            }
+            if enrichment.max_requests_per_build == 0 {
+                problems
+                    .push("history.enrichment.maxRequestsPerBuild must be greater than 0".into());
+            }
+            if enrichment.max_body_chars == 0 {
+                problems.push("history.enrichment.maxBodyChars must be greater than 0".into());
+            }
         }
         problems
     }
@@ -458,8 +588,39 @@ impl EffectiveConfig {
                 settings.max_input_chars_per_build.unwrap_or(0),
             ));
         }
+        if self.history.enabled {
+            key.push_str(&format!(
+                "history|{}|{}|{}|{}\n",
+                self.history.horizon,
+                self.history.max_paths_per_commit,
+                self.history.diff_hunks,
+                match &self.history.enrichment {
+                    Some(enrichment) => format!(
+                        "{},{},{},{},{}",
+                        enrichment.host,
+                        enrichment.token_env,
+                        enrichment.max_prs_per_build,
+                        enrichment.max_requests_per_build,
+                        enrichment.max_body_chars
+                    ),
+                    None => String::new(),
+                },
+            ));
+        }
         key.push_str(&self.rrf_k.to_string());
         hash::sha256_hex(key)
+    }
+}
+
+/// A valid environment variable name: a letter or underscore followed by
+/// letters, digits or underscores (`[A-Za-z_][A-Za-z0-9_]*`).
+fn is_valid_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
     }
 }
 

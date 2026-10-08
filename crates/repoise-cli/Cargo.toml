@@ -13,10 +13,14 @@ name = "repoise"
 path = "src/main.rs"
 
 [features]
-default = ["remote-embedding"]
+default = ["remote-embedding", "github-enrichment"]
 # HTTPS transport for the OpenAI-compatible embedding provider. Disabling it
 # removes the network stack from the binary; lexical operation is unaffected.
 remote-embedding = ["ureq"]
+# HTTPS transport for the verified GitHub history enrichment provider.
+# Disabling it keeps commit-to-PR hints unverified; local indexing is
+# unaffected.
+github-enrichment = ["ureq"]
 
 [dependencies]
 repoise-core.workspace = true

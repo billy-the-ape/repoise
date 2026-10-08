@@ -39,8 +39,9 @@ pub const MAX_RESULTS_CAP: u32 = 20;
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 1200;
 /// Max hits kept per file (sibling/range repetition suppression).
 const MAX_HITS_PER_FILE: usize = 3;
-/// Candidate row cap before ranking/pagination.
-const CANDIDATE_CAP: usize = 400;
+/// Candidate row cap before ranking/pagination (shared by the chunk and
+/// history lanes).
+pub const CANDIDATE_CAP: usize = 400;
 /// Cursor time-to-live (milliseconds).
 const CURSOR_TTL_MS: i64 = 60 * 60 * 1000;
 /// Candidate cap for the vector rank fed into fusion.
@@ -298,6 +299,30 @@ fn decode_cursor(
         return Err(Error::IndexState("cursor expired".into()));
     }
     Ok(decoded.off)
+}
+
+/// Encodes a cursor for the history lane (filter strings are lane-scoped,
+/// so chunk-lane and history-lane cursors never validate against each
+/// other).
+pub fn encode_history_cursor(
+    generation: i64,
+    query: &str,
+    filters: &str,
+    offset: u32,
+    now_ms: i64,
+) -> String {
+    encode_cursor(generation, query, filters, offset, now_ms)
+}
+
+/// Decodes and validates a history-lane cursor.
+pub fn decode_history_cursor(
+    cursor: &str,
+    generation: i64,
+    query: &str,
+    filters: &str,
+    now_ms: i64,
+) -> Result<u32> {
+    decode_cursor(cursor, generation, query, filters, now_ms)
 }
 /// Derives the (repo_id, worktree_id) scope plus sanitized remote identity
 /// for one adapter without running a full inventory.

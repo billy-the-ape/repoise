@@ -21,12 +21,14 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references, plus the pinned tree-sitter TypeScript/TSX and JavaScript/JSX code grammars and a line-window fallback for other code languages |
 | `crates/repoise-core/src/indexing.rs` | Incremental index build: reuse/reparse/tombstone reconciliation, secret redaction, code symbol and reference-edge resolution, optional cache-first embedding with atomic vector publication, embedding-cache GC, `state.json` publication |
 | `crates/repoise-core/src/embed.rs` | Versioned embedding provider interface, profile fingerprinting, vector dimension/finiteness validation, bounded embedding client (batching, timeout, retry, cancellation, budgets), content-addressed SQLite embedding cache and reference-counted GC |
+| `crates/repoise-core/src/history.rs` | Bounded local history lane: adapter `HistoryProvider` seam, first-parent horizon sets with explicit shallow/horizon gaps, PR-hint parsing, stable item ids, separate FTS5/BM25 history search lane, and the optional verified-host enrichment session (provider seam, repository-scoped ETag host cache, per-build budgets, fail-closed revocation) |
 | `crates/repoise-core/src/search.rs` | Lexical search (BM25 + explainable boosts, per-file cap, bound cursors, fallback suggestions) plus hybrid RRF fusion over stored vectors with retrieval-mode/coverage reporting and lexical degradation; scope resolution and GitHub permalink validation |
 | `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; `Stale` diagnostics |
 | `crates/repoise-core/src/status.rs` | Scope/snapshot/index/freshness view with config and cache diagnostics |
 | `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |
 | `crates/repoise-core/src/purge.rs` | Removal of generated cache data only, with scope-id validation |
 | `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge adapters) |
+| `crates/repoise-cli/src/github_enrichment.rs` | Optional (`github-enrichment` CLI feature) read-only GitHub transport for history enrichment: commit-to-PR verification, ETag-cached change-request fetch, request budgets, rate-limit/permission classification |
 | `crates/repoise-core/tests/` and `crates/repoise-cli/tests/` | Contract and executable behavior fixtures |
 | `schemas/` | Published versioned configuration schema |
 | `npm/repoise/` | Thin launcher and allowlisted npm package metadata |

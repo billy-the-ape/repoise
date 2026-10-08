@@ -95,6 +95,44 @@ feature; `cargo check -p repoise-cli --no-default-features` produces the lexical
 binary. `doctor` additionally warns (without failing) when `endpoint` resolves to a
 non-TLS `http://` remote host: source text and the API key would travel in cleartext.
 
+## Optional history lane
+
+`index` records a bounded local history lane only when the effective config sets
+`history.enabled` (default false). The lane covers first-parent (mainline) commits
+within `history.horizon` (default 500), with bounded changed-path summaries
+(`history.maxPathsPerCommit`, default 20) and optional bounded diff hunk
+descriptors (`history.diffHunks`, default false). Shallow clones and horizon cuts
+are reported as explicit gaps, never silently omitted. Git is required for the
+history lane (tested against Git 2.43+); the adapter deliberately avoids
+output framing that changed between Git versions (whitespace-split `rev-list`
+instead of `-z`, NUL framing only where Git guarantees it), so older packaged
+Gits cannot silently empty the lane. History publishes in the
+same generation as the docs/code index but is a separate search lane:
+`search --lane history` ranks history items (message, revision, affected paths,
+host metadata) with FTS5/BM25; the default lane never returns history items, and
+`read` does not accept history items. `status` reports the published lane state
+(on/off, item count, head revision, gaps, enrichment stops), and each history
+search response carries the same lane coverage; enrichment items skipped by a
+budget or early stop are counted as unattempted rather than left silent.
+
+GitHub PR enrichment is opt-in inside the lane via `history.enrichment`
+(`host: "github"`, `tokenEnv` (required, a valid environment variable name),
+`maxPrsPerBuild`, `maxRequestsPerBuild`, `maxBodyChars`). Commit-message `#123`
+references stay unverified hints until the host API confirms the commit belongs
+to that change request (the commit's PR list is fetched once per commit,
+bounded and paginated, and matched against the hints); only then is a
+verified association (title, bounded body, state, permalink, fetched time)
+stored. The token is read from the named environment variable at runtime and
+never enters config or caches; a missing or empty token disables enrichment
+entirely — no unauthenticated requests are sent — without affecting local
+indexing. The transport is built into the CLI behind the default
+`github-enrichment` feature (`ureq` read-only requests to `api.github.com`);
+`cargo check -p repoise-cli --no-default-features` produces the no-enrichment
+binary. Host responses are ETag-cached in a repository-scoped JSON cache under
+the cache root (removed by `purge --all`), requests are bounded per build, rate
+limits (primary and secondary/`Retry-After`) stop the enrichment pass, and a
+permission denial fails closed by invalidating the cached remote content.
+
 ## Installation and artifacts
 
 `bash scripts/install.sh` (PowerShell: `./scripts/install.ps1`) uses `cargo install --path`
