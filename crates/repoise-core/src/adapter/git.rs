@@ -176,6 +176,88 @@ fn hunk_descriptors(
     Ok(parse_hunk_stream(&out, max_hunks))
 }
 
+/// Decodes a `---`/`+++` path field: git terminates these lines with a
+/// single TAB when the name contains whitespace, and still C-quotes names
+/// containing tab/newline/`"`/`\` even with `core.quotepath=false`.
+fn decode_path_field(value: &str) -> String {
+    let untabbed = value.strip_suffix('\t').unwrap_or(value);
+    decode_c_quoted_path(untabbed)
+}
+
+/// Decodes a C-quoted path (backslash escapes, octal and two-digit hex),
+/// returning non-quoted values unchanged.
+fn decode_c_quoted_path(value: &str) -> String {
+    let Some(body) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) else {
+        return value.to_string();
+    };
+    let bytes = body.as_bytes();
+    let mut out: Vec<u8> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b != b'\\' {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        match bytes.get(i) {
+            Some(b'n') => {
+                out.push(b'\n');
+                i += 1;
+            }
+            Some(b't') => {
+                out.push(b'\t');
+                i += 1;
+            }
+            Some(b'r') => {
+                out.push(b'\r');
+                i += 1;
+            }
+            Some(b'\\') => {
+                out.push(b'\\');
+                i += 1;
+            }
+            Some(b'"') => {
+                out.push(b'"');
+                i += 1;
+            }
+            Some(b'x') | Some(b'X') => {
+                // Two-digit hex escape (git's form for high bytes).
+                if i + 2 < bytes.len()
+                    && let Ok(text) = std::str::from_utf8(&bytes[i + 1..i + 3])
+                    && let Ok(byte) = u8::from_str_radix(text, 16)
+                {
+                    out.push(byte);
+                    i += 3;
+                } else {
+                    out.push(b'x');
+                    i += 1;
+                }
+            }
+            Some(b'0'..=b'7') => {
+                // Up to three octal digits.
+                let start = i;
+                while i < bytes.len() && matches!(bytes[i], b'0'..=b'7') && i - start < 3 {
+                    i += 1;
+                }
+                let text = std::str::from_utf8(&bytes[start..i]).unwrap_or("0");
+                match u8::from_str_radix(text, 8) {
+                    Ok(byte) => out.push(byte),
+                    Err(_) => out.push(b'0'),
+                }
+            }
+            Some(other) => {
+                out.push(b'\\');
+                out.push(*other);
+                i += 1;
+            }
+            None => out.push(b'\\'),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Parses a `git diff-tree -p --unified=0` stream into bounded hunk
 /// descriptors. Hunk bodies are consumed exactly per the `@@ -a,b +c,d @@`
 /// counts, so a removed line such as `-- comment` (rendered `--- comment`)
@@ -242,13 +324,13 @@ fn parse_hunk_stream(out: &str, max_hunks: u32) -> (Vec<crate::history::HunkDesc
         if let Some(old) = line.strip_prefix("--- ") {
             // Deletions: the hunk keeps the old path.
             if old != "/dev/null" {
-                current_path = old.to_string();
+                current_path = decode_path_field(old);
             }
             continue;
         }
         if let Some(new) = line.strip_prefix("+++ ") {
             if new != "/dev/null" {
-                current_path = new.to_string();
+                current_path = decode_path_field(new);
             }
             continue;
         }
@@ -291,6 +373,131 @@ fn format_nonce() -> String {
         .wrapping_add(tick.wrapping_mul(1_442_695_040_888_963_407))
         .wrapping_add((std::process::id() as u64).wrapping_mul(69_069));
     format!("{mixed:x}")
+}
+
+/// Framing bytes of the nonce-framed history log stream (`\x01` opens a
+/// record header, `\x1f` separates header fields).
+const HISTORY_SOH: char = '\u{1}';
+const HISTORY_US: char = '\u{1f}';
+
+/// One commit successfully mapped from the framed log stream.
+struct MappedCommit {
+    /// Commit sha (unqualified; the caller qualifies it as `git:`).
+    sha: String,
+    /// Raw parent list (space-separated shas; empty for the root).
+    parents_raw: String,
+    /// Raw author name.
+    author_raw: String,
+    /// Raw commit time (unix seconds).
+    ts_raw: String,
+    /// Raw message (unredacted; the caller redacts).
+    message_raw: String,
+    /// Recorded paths, bounded by the per-commit limit.
+    affected_paths: Vec<String>,
+    /// Number of recorded paths beyond the limit.
+    paths_truncated: u32,
+}
+
+/// Maps a NUL-tokenized, nonce-framed `git log` stream against the trusted
+/// rev-list. Pure (no git), so the nonce check, path attribution and
+/// unmapped-revision counting can be unit-tested on every platform. A sha
+/// claimed by more than one record is never trusted; unmapped revisions
+/// are counted so the caller can report them as an explicit gap.
+fn map_history_stream(
+    tokens: &[String],
+    nonce: &str,
+    rev_list: &[String],
+    max_paths_per_commit: usize,
+) -> (Vec<MappedCommit>, u32) {
+    /// One parsed commit record: header fields (when well-formed) and the
+    /// path lines that follow it in the stream.
+    struct Entry {
+        /// (sha, parents, author, time, message) when the header is valid.
+        fields: Option<(String, String, String, String, String)>,
+        /// Recorded paths for this commit.
+        paths: Vec<String>,
+    }
+    let mut entries: Vec<Entry> = Vec::new();
+    for token in tokens {
+        // Only a header carrying this invocation's nonce is a real record;
+        // everything else is a path of the previous record.
+        let Some(rest) = token
+            .strip_prefix(HISTORY_SOH)
+            .and_then(|rest| rest.strip_prefix(nonce))
+        else {
+            match entries.last_mut() {
+                Some(entry) => entry.paths.push(token.clone()),
+                None => entries.push(Entry {
+                    fields: None,
+                    paths: vec![token.clone()],
+                }),
+            };
+            continue;
+        };
+        let parts: Vec<&str> = rest.splitn(5, HISTORY_US).collect();
+        if parts.len() == 5 {
+            entries.push(Entry {
+                fields: Some((
+                    parts[0].to_string(),
+                    parts[1].to_string(),
+                    parts[2].to_string(),
+                    parts[3].to_string(),
+                    parts[4].to_string(),
+                )),
+                paths: Vec::new(),
+            });
+        } else {
+            // A header-shaped token that is not a valid header (a repository
+            // file named after the framing bytes): treat it as a path line
+            // of the previous record.
+            match entries.last_mut() {
+                Some(entry) => entry.paths.push(token.clone()),
+                None => entries.push(Entry {
+                    fields: None,
+                    paths: vec![token.clone()],
+                }),
+            }
+        }
+    }
+    // Map records to the trusted rev-list: a sha claimed by more than one
+    // record (a planted fake header) is never trusted.
+    let mut by_sha: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if let Some((sha, _, _, _, _)) = &entry.fields {
+            by_sha.entry(sha.as_str()).or_default().push(index);
+        }
+    }
+    let mut items = Vec::new();
+    let mut unmapped = 0u32;
+    for sha in rev_list {
+        let entry = match by_sha.get(sha.as_str()) {
+            Some(candidates) if candidates.len() == 1 => Some(&entries[candidates[0]]),
+            _ => None,
+        };
+        let Some((_, parents_raw, author_raw, ts_raw, message_raw)) =
+            entry.and_then(|entry| entry.fields.as_ref())
+        else {
+            // The log stream cannot be mapped cleanly for this commit (e.g.
+            // a planted fake header); drop it rather than trust repository
+            // content for field positions, but never silently: the omission
+            // is reported as an explicit gap by the caller.
+            unmapped += 1;
+            continue;
+        };
+        let raw_paths = entry.map(|entry| entry.paths.clone()).unwrap_or_default();
+        let paths_truncated = raw_paths.len().saturating_sub(max_paths_per_commit) as u32;
+        let affected_paths = raw_paths.into_iter().take(max_paths_per_commit).collect();
+        items.push(MappedCommit {
+            sha: sha.clone(),
+            parents_raw: parents_raw.to_string(),
+            author_raw: author_raw.to_string(),
+            ts_raw: ts_raw.to_string(),
+            message_raw: message_raw.to_string(),
+            affected_paths,
+            paths_truncated,
+        });
+    }
+    (items, unmapped)
 }
 
 impl SourceAdapter for GitAdapter {
@@ -463,8 +670,6 @@ impl crate::history::HistoryProvider for GitAdapter {
         // field (message or path) cannot shift the field positions of other
         // commits, and a path that looks like a framing header cannot be
         // mistaken for one (the nonce is unguessable from repo content).
-        const SOH: char = '\u{1}';
-        const US: char = '\u{1f}';
         let nonce = format_nonce();
         let out = self.run_git(&[
             "-c",
@@ -475,7 +680,7 @@ impl crate::history::HistoryProvider for GitAdapter {
             &horizon,
             "-z",
             "--name-only",
-            &format!("--format={SOH}{nonce}%H{US}%P{US}%an{US}%at{US}%B"),
+            &format!("--format={HISTORY_SOH}{nonce}%H{HISTORY_US}%P{HISTORY_US}%an{HISTORY_US}%at{HISTORY_US}%B"),
         ])?;
         // `--name-only` interleaves a bare newline with the framing; it can
         // only appear at token edges (a repository path cannot contain a
@@ -486,108 +691,37 @@ impl crate::history::HistoryProvider for GitAdapter {
             .filter(|token| !token.is_empty())
             .map(str::to_string)
             .collect();
-
-        /// One parsed commit record: header fields (when well-formed) and
-        /// the path lines that follow it in the stream.
-        struct Entry {
-            /// (sha, parents, author, time, message) when the header is valid.
-            fields: Option<(String, String, String, String, String)>,
-            /// Recorded paths for this commit (bounded later).
-            paths: Vec<String>,
-        }
-        let mut entries: Vec<Entry> = Vec::new();
-        for token in tokens {
-            // Only a header carrying this invocation's nonce is a real
-            // record; everything else is a path of the previous record.
-            let Some(rest) = token
-                .strip_prefix(SOH)
-                .and_then(|rest| rest.strip_prefix(nonce.as_str()))
-            else {
-                match entries.last_mut() {
-                    Some(entry) => entry.paths.push(token),
-                    None => entries.push(Entry {
-                        fields: None,
-                        paths: vec![token],
-                    }),
-                }
-                continue;
-            };
-            let parts: Vec<&str> = rest.splitn(5, US).collect();
-            if parts.len() == 5 {
-                entries.push(Entry {
-                    fields: Some((
-                        parts[0].to_string(),
-                        parts[1].to_string(),
-                        parts[2].to_string(),
-                        parts[3].to_string(),
-                        parts[4].to_string(),
-                    )),
-                    paths: Vec::new(),
-                });
-            } else {
-                // A header-shaped token that is not a valid header (a
-                // repository file named after the framing bytes): treat it
-                // as a path line of the previous record.
-                match entries.last_mut() {
-                    Some(entry) => entry.paths.push(token),
-                    None => entries.push(Entry {
-                        fields: None,
-                        paths: vec![token],
-                    }),
-                }
-            }
-        }
-        // Map records to the trusted rev-list: a sha claimed by more than
-        // one record (a planted fake header) is never trusted.
-        let mut by_sha: std::collections::HashMap<&str, Vec<usize>> =
-            std::collections::HashMap::new();
-        for (index, entry) in entries.iter().enumerate() {
-            if let Some((sha, _, _, _, _)) = &entry.fields {
-                by_sha.entry(sha.as_str()).or_default().push(index);
-            }
-        }
+        let (mapped, unmapped) = map_history_stream(
+            &tokens,
+            &nonce,
+            &rev_list,
+            spec.max_paths_per_commit as usize,
+        );
         let mut items = Vec::new();
-        let mut unmapped = 0usize;
-        for sha in &rev_list {
-            let entry = match by_sha.get(sha.as_str()) {
-                Some(candidates) if candidates.len() == 1 => Some(&entries[candidates[0]]),
-                _ => None,
-            };
-            let Some((_, parents_raw, author_raw, ts_raw, message_raw)) =
-                entry.and_then(|entry| entry.fields.as_ref())
-            else {
-                // The log stream cannot be mapped cleanly for this commit
-                // (e.g. a planted fake header); drop it rather than trust
-                // repository content for field positions, but never silently:
-                // the omission is reported as an explicit gap below.
-                unmapped += 1;
-                continue;
-            };
-            let raw_paths = entry.map(|entry| entry.paths.clone()).unwrap_or_default();
-            let max_paths = spec.max_paths_per_commit as usize;
-            let paths_truncated = raw_paths.len().saturating_sub(max_paths);
-            let affected_paths: Vec<String> = raw_paths.into_iter().take(max_paths).collect();
-            let redacted = crate::ignore::redact_secret_content(message_raw);
+        for commit in mapped {
+            let redacted = crate::ignore::redact_secret_content(&commit.message_raw);
             let pr_hint = crate::history::pr_hint_from_message(&redacted);
             let mut item = HistoryItem {
-                revision_id: format!("git:{sha}"),
-                parents: parents_raw
+                revision_id: format!("git:{}", commit.sha),
+                parents: commit
+                    .parents_raw
                     .split_whitespace()
                     .map(|parent| format!("git:{parent}"))
                     .collect(),
                 message: redacted,
-                author: if author_raw.is_empty() {
+                author: if commit.author_raw.is_empty() {
                     None
                 } else {
-                    Some(author_raw.to_string())
+                    Some(commit.author_raw)
                 },
-                committed_at_ms: ts_raw
+                committed_at_ms: commit
+                    .ts_raw
                     .trim()
                     .parse::<i64>()
                     .ok()
                     .map(|seconds| seconds * 1000),
-                affected_paths,
-                paths_truncated: paths_truncated as u32,
+                affected_paths: commit.affected_paths,
+                paths_truncated: commit.paths_truncated,
                 hunks: Vec::new(),
                 hunks_truncated: 0,
                 pr_hint: if pr_hint.is_empty() {
@@ -598,9 +732,9 @@ impl crate::history::HistoryProvider for GitAdapter {
                 association: None,
             };
             if spec.diff_hunks {
-                let first_parent = parents_raw.split_whitespace().next();
+                let first_parent = commit.parents_raw.split_whitespace().next();
                 let (hunks, truncated) =
-                    hunk_descriptors(self, sha, first_parent, MAX_HUNKS_PER_COMMIT)?;
+                    hunk_descriptors(self, &commit.sha, first_parent, MAX_HUNKS_PER_COMMIT)?;
                 item.hunks = hunks;
                 item.hunks_truncated = truncated;
             }
@@ -625,7 +759,7 @@ impl crate::history::HistoryProvider for GitAdapter {
 }
 #[cfg(test)]
 mod tests {
-    use super::parse_hunk_stream;
+    use super::{map_history_stream, parse_hunk_stream};
     use crate::history::HunkDescriptor;
 
     fn fields(hunks: &[HunkDescriptor]) -> Vec<(&str, u32, u32, u32, u32)> {
@@ -641,6 +775,99 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn header(nonce: &str, sha: &str, parents: &str, author: &str, ts: &str, msg: &str) -> String {
+        format!("\u{1}{nonce}{sha}\u{1f}{parents}\u{1f}{author}\u{1f}{ts}\u{1f}{msg}")
+    }
+
+    #[test]
+    fn planted_header_shaped_path_keeps_the_real_commit() {
+        let nonce = "abc123";
+        let sha = "a1".repeat(20);
+        // The planted token looks like a framing header for the same sha but
+        // carries no nonce, so it must stay a path of the real record.
+        let planted = format!("\u{1}{sha}\u{1f}\u{1f}\u{1f}\u{1f}");
+        let tokens = vec![
+            header(nonce, &sha, "", "Author", "1234", "Real message (#7)"),
+            "a.md".to_string(),
+            planted.clone(),
+        ];
+        let rev_list = vec![sha.clone()];
+        let (items, unmapped) = map_history_stream(&tokens, nonce, &rev_list, 20);
+        assert_eq!(unmapped, 0, "the real commit must survive");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].sha, sha);
+        assert_eq!(
+            items[0].affected_paths,
+            vec!["a.md".to_string(), planted],
+            "the planted path is a path, not a header"
+        );
+    }
+
+    #[test]
+    fn unmapped_mainline_revisions_are_counted_for_the_gap() {
+        let nonce = "abc123";
+        let sha_a = "b2".repeat(20);
+        let sha_b = "c3".repeat(20);
+        let tokens = vec![header(nonce, &sha_a, &sha_b, "Author", "1234", "msg")];
+        let rev_list = vec![sha_b.clone(), sha_a.clone()];
+        let (items, unmapped) = map_history_stream(&tokens, nonce, &rev_list, 20);
+        assert_eq!(unmapped, 1, "sha_b has no mappable record");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].sha, sha_a);
+        assert_eq!(
+            items[0].parents_raw, sha_b,
+            "parents come from the mapped record"
+        );
+    }
+
+    #[test]
+    fn duplicate_sha_claims_are_never_trusted() {
+        let nonce = "abc123";
+        let sha = "d4".repeat(20);
+        // Two records claim the same sha: neither can be trusted.
+        let tokens = vec![
+            header(nonce, &sha, "", "A", "1", "first"),
+            header(nonce, &sha, "", "B", "2", "second"),
+        ];
+        let rev_list = vec![sha.clone()];
+        let (items, unmapped) = map_history_stream(&tokens, nonce, &rev_list, 20);
+        assert_eq!(unmapped, 1);
+        assert!(items.is_empty(), "no record may win a contested sha");
+    }
+
+    #[test]
+    fn hunk_paths_strip_git_trailing_tab_and_decode_c_quotes() {
+        let stream = "diff --git a/my notes.md b/my notes.md\n\
+                      --- my notes.md\t\n\
+                      +++ my notes.md\n\
+                      @@ -1,0 +1,1 @@\n\
+                      +hello\n\
+                      diff --git a/weird b/weird\n\
+                      --- \"weird\\tname.md\"\n\
+                      +++ \"weird\\tname.md\"\n\
+                      @@ -2 +2 @@\n\
+                      -old\n\
+                      +new\n";
+        let (hunks, _) = parse_hunk_stream(stream, 10);
+        assert_eq!(
+            fields(&hunks),
+            vec![("my notes.md", 1, 0, 1, 1), ("weird\tname.md", 2, 1, 2, 1),]
+        );
+    }
+
+    #[test]
+    fn c_quoted_octal_paths_are_decoded() {
+        // 日 in UTF-8 is \346\227\245 under git's octal C-quoting.
+        let stream = "diff --git a/x b/x\n\
+                      --- \"\\346\\227\\245.md\"\n\
+                      +++ \"\\346\\227\\245.md\"\n\
+                      @@ -1 +1 @@\n\
+                      -old\n\
+                      +new\n";
+        let (hunks, _) = parse_hunk_stream(stream, 10);
+        assert_eq!(fields(&hunks), vec![("\u{65e5}.md", 1, 1, 1, 1)]);
     }
 
     #[test]

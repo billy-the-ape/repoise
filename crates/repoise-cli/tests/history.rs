@@ -26,6 +26,7 @@ fn git(args: &[&str], dir: &Path) {
     );
 }
 
+#[cfg(unix)]
 /// Runs git with piped stdin and returns trimmed stdout (fixtures that
 /// must feed content to a git plumbing command such as `hash-object`).
 fn git_stdin(args: &[&str], dir: &Path, stdin: &str) -> String {
@@ -326,6 +327,11 @@ fn root_commit_hunks_cover_only_its_own_files() {
     }
 }
 
+// git for Windows rejects control bytes in a path even when supplied via
+// `update-index --cacheinfo`, so the planted path cannot be staged there;
+// the framing logic is covered on every platform by the pure
+// `map_history_stream` unit tests in the Git adapter.
+#[cfg(unix)]
 #[test]
 fn crafted_header_like_path_cannot_hide_a_commit() {
     let dir = init_git_repo("crafted", r#"{"history":{"enabled":true}}"#);
