@@ -55,11 +55,15 @@ fn git_stdin(args: &[&str], dir: &Path, stdin: &str) -> String {
 }
 
 /// Runs git and returns its trimmed stdout (test fixtures need revisions).
+/// Only the unix-gated planted-path fixture uses it, so it is gated too
+/// (an unused helper is a `-D warnings` dead-code error on Windows).
+#[cfg(unix)]
 fn git_capture(args: &[&str], dir: &Path) -> String {
     let out = git_capture_unchecked(args, dir);
     String::from_utf8(out).unwrap().trim().to_string()
 }
 
+#[cfg(unix)]
 fn git_capture_unchecked(args: &[&str], dir: &Path) -> Vec<u8> {
     let out = Command::new("git")
         .args(args)
