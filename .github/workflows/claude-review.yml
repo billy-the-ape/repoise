@@ -1,0 +1,245 @@
+name: Claude Code Review
+
+# Triggered by CI finishing rather than by the pull request itself, so the
+# review reads CI's result instead of reproducing it. This also sidesteps the
+# bootstrap problem the pull_request trigger had: a workflow_run job always runs
+# the default branch's copy of this file, so the action's byte-identical check
+# passes by construction and a change here is testable without being merged first.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+
+jobs:
+  review:
+    # CI also runs on pushes to main and on manual dispatch, and
+    # workflow_run fires for all of them. Only a pull_request run has something to
+    # review. Cancelled and skipped runs produced no result to read.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion != 'cancelled' &&
+       github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ubuntu-latest
+    # Scopes CLAUDE_CODE_OAUTH_TOKEN to this environment. Secrets stored on an
+    # environment are invisible to a job that does not name it, so without this
+    # line the token resolves to empty and the action fails on auth. Keep the
+    # environment free of required reviewers or wait timers: a protection rule
+    # here would park every review run pending an approval.
+    environment: claude
+    permissions:
+      contents: read # the review never writes code; sweep runs elsewhere
+      pull-requests: write # only for the review submitted below
+      issues: write # only for the nit-backlog issue; grants nothing over code
+      actions: read # to read the upstream CI run and its logs
+      id-token: write
+    steps:
+      # workflow_run's payload does not carry the pull request reliably — the
+      # pull_requests array is empty for fork runs and inconsistent otherwise — so
+      # resolve it from the head SHA instead.
+      - name: Resolve the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR: ${{ inputs.pr_number }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            PR="$INPUT_PR"
+            CI_CONCLUSION="not available (manual run, no upstream CI)"
+            CI_URL="none"
+          else
+            PR=$(gh api "repos/$REPO/commits/$RUN_SHA/pulls" \
+                   --jq 'map(select(.state == "open")) | .[0].number // empty')
+            CI_CONCLUSION="$RUN_CONCLUSION"
+            CI_URL="${{ github.server_url }}/$REPO/actions/runs/$RUN_ID"
+          fi
+
+          if [ -z "$PR" ]; then
+            echo "No open pull request for $RUN_SHA — nothing to review."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # The PR can be merged or closed while CI is still running.
+          read -r STATE DRAFT HEAD_SHA < <(gh api "repos/$REPO/pulls/$PR" \
+            --jq '[.state, (.draft|tostring), .head.sha] | @tsv')
+          if [ "$STATE" != "open" ]; then
+            echo "PR #$PR is $STATE — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A draft is skipped on the automatic path but reviewed on a manual
+          # dispatch, because asking for it by hand is explicit intent — the same
+          # split Anthropic's managed Code Review makes. It is also the only way
+          # to review an in-progress branch, since marking a draft ready does not
+          # re-run a CI workflow whose pull_request trigger has no type filter.
+          if [ "$DRAFT" = "true" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "PR #$PR is a draft and this run is automatic — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "skip=false"
+            echo "number=$PR"
+            echo "head_sha=$HEAD_SHA"
+            echo "ci_conclusion=$CI_CONCLUSION"
+            echo "ci_url=$CI_URL"
+          } >> "$GITHUB_OUTPUT"
+          echo "Reviewing PR #$PR at $HEAD_SHA (CI: $CI_CONCLUSION)"
+
+      # workflow_run runs in the default branch's context, so the head ref has to
+      # be explicit. Checking out head is safe here because the tool grant below
+      # has no build or test command: nothing from the pull request executes.
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.skip != 'true'
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.pr.outputs.skip != 'true'
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Temporary, until one run posts a review: the job log is where a denied
+          # tool call shows up, including a Skill denial that would make the
+          # delegation below quietly not happen. Drop it once this is working.
+          show_full_output: true
+          additional_permissions: |
+            actions: read
+          # Both marketplaces: reviewer:review delegates the review itself to
+          # Anthropic's code-review skill rather than reimplementing it.
+          plugin_marketplaces: |
+            https://github.com/anthropics/claude-code.git
+            https://github.com/billy-the-ape/claude-plugins.git
+          plugins: |
+            code-review@claude-code-plugins
+            reviewer@ape-plugins
+          prompt: >-
+            /reviewer:review --comment ${{ github.repository }}/pull/${{ steps.pr.outputs.number }}
+            CI has already run on this commit and concluded:
+            ${{ steps.pr.outputs.ci_conclusion }}. Its logs are at
+            ${{ steps.pr.outputs.ci_url }} — read that rather than running the
+            suite yourself.
+          # --allowedTools is the entire pre-approved set, not an addition to a
+          # default one. Skill is permissioned, so the delegation needs it named
+          # here. git subcommands are listed individually because a bare
+          # Bash(git *) also permits `git -c <key>=<program>`, which runs
+          # arbitrary programs. Write is scoped to the verdict file, so no source
+          # file is writable, and no build or test command is granted at all.
+          claude_args: >-
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Skill,Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git rev-parse *),Write(./.claude-review-verdict.json)"
+
+      # No verdict file means the review did not finish. That is the exact silent
+      # failure this workflow has produced on every run so far — a green check
+      # with nothing posted — so make it visible instead.
+      - name: Read the verdict
+        id: verdict
+        if: steps.pr.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -f .claude-review-verdict.json ]; then
+            echo "::error::No verdict file was written. The review did not complete; see the step above."
+            exit 1
+          fi
+          cat .claude-review-verdict.json
+          echo "event=$(jq -r '.event' .claude-review-verdict.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo 'summary<<VERDICT_EOF'
+            jq -r '.summary' .claude-review-verdict.json
+            echo 'VERDICT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # The review is submitted here, from the verdict, rather than by Claude. The
+      # agent never holds approval power; the approval is a mechanical consequence
+      # of the findings. github-actions[bot] is a different identity from the PR
+      # author, so it can approve pull requests you opened yourself.
+      - name: Submit the review
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.number }}
+          REVIEW_EVENT: ${{ steps.verdict.outputs.event }}
+          REVIEW_BODY: ${{ steps.verdict.outputs.summary }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/pulls/$PR/reviews" \
+            -f event="$REVIEW_EVENT" \
+            -f body="$REVIEW_BODY"
+
+      # The nits are already in the verdict, so there is no discovery pass. This
+      # step is the only thing holding issue write, and it runs after the review
+      # so a backlog hiccup cannot stop the review from being posted.
+      - name: Record nits in the backlog issue
+        if: steps.pr.outputs.skip != 'true' && steps.verdict.outputs.event != 'COMMENT'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.pr.outputs.number }}
+          SHA: ${{ steps.pr.outputs.head_sha }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+
+          # Found by label, never by a hardcoded number, so this ports to other repos.
+          ISSUE=$(gh issue list --repo "$REPO" --label nit-backlog --state open \
+                    --limit 1 --json number --jq '.[0].number // empty')
+          if [ -z "$ISSUE" ]; then
+            gh label create nit-backlog --repo "$REPO" --color ededed \
+              --description "Review nits awaiting a sweep" 2>/dev/null || true
+            URL=$(gh issue create --repo "$REPO" --label nit-backlog \
+              --title "Nit backlog" \
+              --body "Nits recorded by Claude code review, grouped by the pull request that surfaced them. \`/reviewer:sweep\` clears them in batches.
+
+          Ticking a box means fixed. If a nit is still in the code, the next review of that PR reports it again and rewrites its block, so a tick that does not reflect reality will come back. To stop a nit being reported at all, add the rule to AGENTS.md rather than ticking it here.")
+            ISSUE="${URL##*/}"
+            echo "Created backlog issue #$ISSUE"
+          fi
+
+          BODY="$RUNNER_TEMP/backlog.md"
+          gh issue view "$ISSUE" --repo "$REPO" --json body --jq .body > "$BODY"
+
+          python3 - "$BODY" <<'PY'
+          import json, os, pathlib, re, sys
+
+          pr, sha = os.environ["PR"], os.environ["SHA"]
+          server, repo = os.environ["SERVER"], os.environ["REPO"]
+          body_file = pathlib.Path(sys.argv[1])
+          nits = json.load(open(".claude-review-verdict.json")).get("nits") or []
+
+          begin, end = f"<!-- nits:pr-{pr} -->", f"<!-- /nits:pr-{pr} -->"
+          rows = []
+          for n in nits:
+              path = n["path"]
+              loc = f"{path}:{n['line']}" if n.get("line") else path
+              anchor = f"#L{n['line']}" if n.get("line") else ""
+              note = str(n.get("note", "")).strip()
+              rows.append(f"- [ ] [`{loc}`]({server}/{repo}/blob/{sha}/{path}{anchor}) — {note}")
+          block = "\n".join([begin, "", f"**[#{pr}]({server}/{repo}/pull/{pr})**", "", *rows, "", end])
+
+          body = body_file.read_text()
+          pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.S)
+          if not nits:
+              new = re.sub(r"\n{3,}", "\n\n", pattern.sub("", body)).rstrip() + "\n"
+          elif pattern.search(body):
+              new = pattern.sub(block, body)
+          else:
+              new = body.rstrip() + "\n\n" + block + "\n"
+          body_file.write_text(new)
+          print(f"recorded {len(nits)} nit(s) for PR {pr}")
+          PY
+
+          gh issue edit "$ISSUE" --repo "$REPO" --body-file "$BODY"
+          echo "Backlog: $SERVER/$REPO/issues/$ISSUE"
