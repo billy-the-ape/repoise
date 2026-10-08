@@ -137,7 +137,13 @@ jobs:
             ${{ steps.pr.outputs.ci_url }} — read that rather than running the
             suite yourself, with `gh run view <run id> --log-failed`.
             Write the final verdict to the relative path
-            ./.claude-review-verdict.json, exactly as spelled.
+            ./.claude-review-verdict.json, exactly as spelled. Besides the
+            existing fields, include "comments": an array of inline review
+            comments, one per important finding, each
+            {"path": "<file>", "line": <line number in the new version of the
+            file, inside the PR diff>, "body": "<the finding and, if small, the
+            fix>"}. Use an empty array when there are none. Do not post comments
+            yourself; the workflow submits them from the verdict.
           # --allowedTools is the entire pre-approved set, not an addition to a
           # default one. Skill is permissioned, so the delegation needs it named
           # here. git subcommands are listed individually because a bare
@@ -192,11 +198,27 @@ jobs:
           PR: ${{ steps.pr.outputs.number }}
           REVIEW_EVENT: ${{ steps.verdict.outputs.event }}
           REVIEW_BODY: ${{ steps.verdict.outputs.summary }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
-          gh api "repos/$REPO/pulls/$PR/reviews" \
-            -f event="$REVIEW_EVENT" \
-            -f body="$REVIEW_BODY"
+          # Inline comments come from the verdict's "comments" array. The action's
+          # own inline-comment tool is unavailable here: it is only registered for
+          # pull_request-style events, and this job runs on workflow_run or
+          # workflow_dispatch. GitHub rejects the whole review (422) if any comment
+          # line is outside the diff, so fall back to the summary alone rather than
+          # losing the review.
+          PAYLOAD=$(jq -c --arg event "$REVIEW_EVENT" --arg body "$REVIEW_BODY" \
+            --arg sha "$HEAD_SHA" '{
+              event: $event, body: $body, commit_id: $sha,
+              comments: [(.comments // [])[]
+                | select(.path and .line and .body)
+                | {path, line, side: "RIGHT", body}]
+            }' .claude-review-verdict.json)
+          if ! echo "$PAYLOAD" | gh api "repos/$REPO/pulls/$PR/reviews" --input -; then
+            echo "::warning::Review with inline comments was rejected; posting the summary only."
+            echo "$PAYLOAD" | jq -c 'del(.comments)' \
+              | gh api "repos/$REPO/pulls/$PR/reviews" --input -
+          fi
 
       # The nits are already in the verdict, so there is no discovery pass. This
       # step is the only thing holding issue write, and it runs after the review
