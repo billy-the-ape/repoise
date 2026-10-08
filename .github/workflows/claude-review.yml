@@ -135,7 +135,10 @@ jobs:
             CI has already run on this commit and concluded:
             ${{ steps.pr.outputs.ci_conclusion }}. Its logs are at
             ${{ steps.pr.outputs.ci_url }} — read that rather than running the
-            suite yourself, with `gh run view <run id> --log-failed`.
+            suite yourself, with `gh run view <run id> --log-failed`. CI is
+            context, not a substitute for the review: still read every changed
+            file in the pull request diff, and do not stop at the CI result.
+            State in the summary exactly which files you read.
             Write the final verdict to the relative path
             ./.claude-review-verdict.json, exactly as spelled. Besides the
             existing fields, include "comments": an array of inline review
@@ -171,7 +174,7 @@ jobs:
           # same two paths are also granted as Edit rules: Claude Code files its
           # file-write permissions under Edit. Still one file, nothing else writable.
           claude_args: >-
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Skill,Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git rev-parse *),Bash(gh pr view *),Bash(gh pr diff *),Bash(gh run view *),Write(./.claude-review-verdict.json),Write(/${{ github.workspace }}/.claude-review-verdict.json),Edit(./.claude-review-verdict.json),Edit(/${{ github.workspace }}/.claude-review-verdict.json)"
+            --effort high --allowedTools "mcp__github_inline_comment__create_inline_comment,Skill,Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git rev-parse *),Bash(gh pr view *),Bash(gh pr diff *),Bash(gh run view *),Write(./.claude-review-verdict.json),Write(/${{ github.workspace }}/.claude-review-verdict.json),Edit(./.claude-review-verdict.json),Edit(/${{ github.workspace }}/.claude-review-verdict.json)"
 
       # No verdict file means the review did not finish. That is the exact silent
       # failure this workflow has produced on every run so far — a green check
