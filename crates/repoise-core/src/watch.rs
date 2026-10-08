@@ -61,7 +61,7 @@ pub struct WatchPublication {
     /// Published generation id.
     pub generation_id: i64,
     /// Changed paths that triggered the publication (empty when a full
-    /// reparse was run).
+    /// reparse was run); repository-relative with forward-slash separators.
     pub changed_paths: Vec<String>,
     /// Files reparsed by the publication.
     pub files_reparsed: usize,
@@ -73,7 +73,6 @@ pub struct WatchPublication {
     pub duration_ms: u64,
 }
 
-/// One step of the watch loop.
 /// Outcome of one watcher step.
 #[derive(Debug)]
 pub enum WatchStep {
@@ -257,16 +256,23 @@ impl Watcher {
             let path: &std::path::Path = file.path.as_path();
             match prev_set.get(path) {
                 Some(prev_hash) if *prev_hash == file.content_hash => {}
-                _ => changed.push(file.path.to_string_lossy().into_owned()),
+                _ => changed.push(normalized_rel_path(path)),
             }
         }
         for path in prev_set.keys() {
             if !live_set.contains_key(path) {
-                changed.push(path.to_string_lossy().into_owned());
+                changed.push(normalized_rel_path(path));
             }
         }
         changed.sort();
         changed.dedup();
         Ok(changed)
     }
+}
+
+/// Renders a repository-relative path with forward-slash separators on every
+/// platform (repository paths in the index and CLI output are always
+/// forward-slash relative).
+fn normalized_rel_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
