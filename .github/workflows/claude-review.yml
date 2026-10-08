@@ -135,7 +135,14 @@ jobs:
             CI has already run on this commit and concluded:
             ${{ steps.pr.outputs.ci_conclusion }}. Its logs are at
             ${{ steps.pr.outputs.ci_url }} — read that rather than running the
-            suite yourself, with `gh run view <run id> --log-failed`.
+            suite yourself, with `gh run view <run id> --log-failed`. CI is
+            context, not a substitute for the review: still read, at minimum,
+            every changed file in the pull request diff, and do not stop at
+            the CI result. 
+            Read unchanged but related files as needed, sparingly, when more 
+            context demands.
+            State in the summary exactly which files you read, flagging unedited but
+            related files as (related).
             Write the final verdict to the relative path
             ./.claude-review-verdict.json, exactly as spelled. Besides the
             existing fields, include "comments": an array of inline review
@@ -144,6 +151,13 @@ jobs:
             file, inside the PR diff>, "body": "<the finding and, if small, the
             fix>"}. Use an empty array when there are none. Do not post comments
             yourself; the workflow submits them from the verdict.
+            Nits that have a clear, mechanical, single-location fix also go in
+            "comments", not in "nits": make the body a short note followed by a
+            GitHub suggestion block (a fenced block with the language
+            "suggestion" containing the exact replacement for the line or lines
+            commented on) so it can be applied in one click. Use "nits" only for
+            nits that are unclear or too large for a suggestion; those still go
+            to the backlog issue.
           # --allowedTools is the entire pre-approved set, not an addition to a
           # default one. Skill is permissioned, so the delegation needs it named
           # here. git subcommands are listed individually because a bare
@@ -164,7 +178,7 @@ jobs:
           # same two paths are also granted as Edit rules: Claude Code files its
           # file-write permissions under Edit. Still one file, nothing else writable.
           claude_args: >-
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Skill,Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git rev-parse *),Bash(gh pr view *),Bash(gh pr diff *),Bash(gh run view *),Write(./.claude-review-verdict.json),Write(/${{ github.workspace }}/.claude-review-verdict.json),Edit(./.claude-review-verdict.json),Edit(/${{ github.workspace }}/.claude-review-verdict.json)"
+            --effort high --allowedTools "mcp__github_inline_comment__create_inline_comment,Skill,Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git rev-parse *),Bash(gh pr view *),Bash(gh pr diff *),Bash(gh run view *),Write(./.claude-review-verdict.json),Write(/${{ github.workspace }}/.claude-review-verdict.json),Edit(./.claude-review-verdict.json),Edit(/${{ github.workspace }}/.claude-review-verdict.json)"
 
       # No verdict file means the review did not finish. That is the exact silent
       # failure this workflow has produced on every run so far — a green check
