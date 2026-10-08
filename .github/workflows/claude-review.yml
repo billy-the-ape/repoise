@@ -74,8 +74,18 @@ jobs:
           # The PR can be merged or closed while CI is still running.
           read -r STATE DRAFT HEAD_SHA < <(gh api "repos/$REPO/pulls/$PR" \
             --jq '[.state, (.draft|tostring), .head.sha] | @tsv')
-          if [ "$STATE" != "open" ] || [ "$DRAFT" = "true" ]; then
-            echo "PR #$PR is $STATE (draft=$DRAFT) — skipping."
+          if [ "$STATE" != "open" ]; then
+            echo "PR #$PR is $STATE — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A draft is skipped on the automatic path but reviewed on a manual
+          # dispatch, because asking for it by hand is explicit intent — the same
+          # split Anthropic's managed Code Review makes. It is also the only way
+          # to review an in-progress branch, since marking a draft ready does not
+          # re-run a CI workflow whose pull_request trigger has no type filter.
+          if [ "$DRAFT" = "true" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "PR #$PR is a draft and this run is automatic — skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
