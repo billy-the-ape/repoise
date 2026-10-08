@@ -136,9 +136,13 @@ jobs:
             ${{ steps.pr.outputs.ci_conclusion }}. Its logs are at
             ${{ steps.pr.outputs.ci_url }} — read that rather than running the
             suite yourself, with `gh run view <run id> --log-failed`. CI is
-            context, not a substitute for the review: still read every changed
-            file in the pull request diff, and do not stop at the CI result.
-            State in the summary exactly which files you read.
+            context, not a substitute for the review: still read, at minimum,
+            every changed file in the pull request diff, and do not stop at
+            the CI result. 
+            Read unchanged but related files as needed, sparingly, when more 
+            context demands.
+            State in the summary exactly which files you read, flagging unedited but
+            related files as (related).
             Write the final verdict to the relative path
             ./.claude-review-verdict.json, exactly as spelled. Besides the
             existing fields, include "comments": an array of inline review
