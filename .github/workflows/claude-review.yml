@@ -110,6 +110,10 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         if: steps.pr.outputs.skip != 'true'
+        env:
+          # For the read-only gh calls in the allowlist below; the job token
+          # already has pull-requests: read via write and actions: read.
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Temporary, until one run posts a review: the job log is where a denied
@@ -131,15 +135,27 @@ jobs:
             CI has already run on this commit and concluded:
             ${{ steps.pr.outputs.ci_conclusion }}. Its logs are at
             ${{ steps.pr.outputs.ci_url }} — read that rather than running the
-            suite yourself.
+            suite yourself, with `gh run view <run id> --log-failed`.
+            Write the final verdict to the relative path
+            ./.claude-review-verdict.json, exactly as spelled.
           # --allowedTools is the entire pre-approved set, not an addition to a
           # default one. Skill is permissioned, so the delegation needs it named
           # here. git subcommands are listed individually because a bare
           # Bash(git *) also permits `git -c <key>=<program>`, which runs
           # arbitrary programs. Write is scoped to the verdict file, so no source
           # file is writable, and no build or test command is granted at all.
+          #
+          # The gh entries are read-only subcommands, and they are required: the
+          # delegated code-review skill starts with `gh pr view`, and the prompt
+          # sends the agent to the upstream run's logs with `gh run view`. Without
+          # them every call is denied (run 37817935519), the review cannot finish,
+          # and no verdict is written. Posting stays out of the agent's hands:
+          # there is deliberately no `gh pr comment`, `gh pr review` or `gh api`.
+          # The verdict path is listed twice because a permission rule matches the
+          # path as the agent spells it, and the agent resolved it to an absolute
+          # path in that run; `//` is the rule syntax for a filesystem-absolute path.
           claude_args: >-
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Skill,Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git rev-parse *),Write(./.claude-review-verdict.json)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Skill,Read,Grep,Glob,Bash(git diff *),Bash(git log *),Bash(git status *),Bash(git rev-parse *),Bash(gh pr view *),Bash(gh pr diff *),Bash(gh run view *),Write(./.claude-review-verdict.json),Write(/${{ github.workspace }}/.claude-review-verdict.json)"
 
       # No verdict file means the review did not finish. That is the exact silent
       # failure this workflow has produced on every run so far — a green check
