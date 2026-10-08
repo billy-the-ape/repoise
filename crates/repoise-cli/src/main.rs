@@ -44,6 +44,10 @@ enum Command {
     Status,
     Search,
     Read,
+    Related,
+    Check,
+    Watch,
+    Overlay,
     Purge,
 }
 
@@ -57,6 +61,7 @@ struct CliOptions {
     preset: Option<String>,
     provider: Option<String>,
     adopt_managed_block: Option<PathBuf>,
+    agents_snippet: bool,
     dry_run: bool,
     yes: bool,
     explain_path: Option<String>,
@@ -71,6 +76,12 @@ struct CliOptions {
     search_mode: Option<String>,
     rrf_k: Option<u32>,
     lane: Option<String>,
+    relations: Vec<String>,
+    fresh: bool,
+    watch_interval_ms: Option<u64>,
+    watch_debounce_ms: Option<u64>,
+    watch_max_pending: Option<u64>,
+    overlay_action: Option<String>,
     purge_all: bool,
     repo_id: Option<String>,
     worktree_id: Option<String>,
@@ -90,6 +101,11 @@ COMMANDS:
     status [ROOT]                 Show scope, snapshot, index and freshness
     search --query <Q> [ROOT]     Offline lexical search over the current index
     read --source-id <ID> [ROOT]  Exact read-back of a search result
+    related --source-id <ID> [ROOT]  Follow structural/section links from a source
+    check [ROOT]                  Offline freshness and coverage check (automation)
+    watch [ROOT]                  Incremental watch loop (Ctrl+C cancels safely)
+    overlay uninstall [ROOT]      Remove only the managed overlay (dry-run capable)
+    overlay update [ROOT]         3-way template migration of the overlay
     init [ROOT]                   Configure the repository (non-interactive)
     purge                         Remove generated cache data (--all or one scope)
     help                          Show this help
@@ -119,8 +135,26 @@ INIT OPTIONS:
     --preset <PRESET>           docs-only | docs-code-lexical | hybrid
     --provider <NAME>           Embedding provider (required for hybrid)
     --adopt-managed-block <FILE>  Append the managed marker block to FILE
+    --agents-snippet              Manage an agent-guidance block in AGENTS.md
     --dry-run                   Report planned changes without writing
     --yes                       Confirm (never prompts; documents intent)
+
+RELATED OPTIONS:
+    --source-id <ID>            Opaque source id from search/related results
+    --relation <KIND>           references | referenced-by | children | parent (repeatable; all when omitted)
+
+CHECK OPTIONS:
+    --fresh                     Require a fresh index (stable exit codes: 0 ok,
+                                1 error, 2 usage, 3 missing/stale, 4 coverage not met)
+
+WATCH OPTIONS:
+    --interval <MS>             Poll interval (default 500)
+    --debounce <MS>             Debounce before publication (default 200)
+    --max-pending <N>           Bounded changed-path set; beyond it: full reparse (default 4096)
+
+OVERLAY OPTIONS:
+    uninstall | update          Overlay action (uninstall removes; update migrates)
+    --dry-run                   Report changes without writing
 
 PURGE OPTIONS:
     --all                       Remove the entire cache root
@@ -152,6 +186,13 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         search_mode: None,
         rrf_k: None,
         lane: None,
+        relations: Vec::new(),
+        fresh: true,
+        agents_snippet: false,
+        watch_interval_ms: None,
+        watch_debounce_ms: None,
+        watch_max_pending: None,
+        overlay_action: None,
         purge_all: false,
         repo_id: None,
         worktree_id: None,
@@ -171,6 +212,10 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "status" => opts.command = Command::Status,
             "search" => opts.command = Command::Search,
             "read" => opts.command = Command::Read,
+            "related" => opts.command = Command::Related,
+            "check" => opts.command = Command::Check,
+            "watch" => opts.command = Command::Watch,
+            "overlay" => opts.command = Command::Overlay,
             "purge" => opts.command = Command::Purge,
             "--json" => opts.json = true,
             "--dry-run" => opts.dry_run = true,
@@ -263,6 +308,38 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                 i += 1;
                 opts.lane = Some(require_value(args, i, "--lane")?);
             }
+            "--relation" => {
+                i += 1;
+                opts.relations.push(require_value(args, i, "--relation")?);
+            }
+            "--fresh" => opts.fresh = true,
+            "--agents-snippet" => opts.agents_snippet = true,
+            "--interval" => {
+                i += 1;
+                let value = require_value(args, i, "--interval")?;
+                opts.watch_interval_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("--interval must be a positive integer: {value}"))?,
+                );
+            }
+            "--debounce" => {
+                i += 1;
+                let value = require_value(args, i, "--debounce")?;
+                opts.watch_debounce_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("--debounce must be a positive integer: {value}"))?,
+                );
+            }
+            "--max-pending" => {
+                i += 1;
+                let value = require_value(args, i, "--max-pending")?;
+                opts.watch_max_pending =
+                    Some(value.parse::<u64>().map_err(|_| {
+                        format!("--max-pending must be a positive integer: {value}")
+                    })?);
+            }
             "--all" => opts.purge_all = true,
             "--repo-id" => {
                 i += 1;
@@ -287,14 +364,37 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             | Command::Init
             | Command::Status
             | Command::Search
-            | Command::Read => opts.root = PathBuf::from(first),
+            | Command::Read
+            | Command::Related
+            | Command::Check
+            | Command::Watch => opts.root = PathBuf::from(first),
+            Command::Overlay => match first.as_str() {
+                "uninstall" | "update" => {
+                    opts.overlay_action = Some(first.to_string());
+                    if let Some(root) = positional.get(1) {
+                        opts.root = PathBuf::from(root);
+                    }
+                }
+                _ => {
+                    return Err(format!(
+                        "overlay requires an action (uninstall or update): {first}"
+                    ));
+                }
+            },
             Command::Greet | Command::Help | Command::Version | Command::Purge => {
                 return Err(format!("unexpected argument: {first}"));
             }
         }
-        if positional.len() > 1 {
-            return Err(format!("unexpected argument: {}", positional[1]));
+        let limit = match opts.command {
+            Command::Overlay => 2,
+            _ => 1,
+        };
+        if positional.len() > limit {
+            return Err(format!("unexpected argument: {}", positional[limit]));
         }
+    }
+    if matches!(opts.command, Command::Overlay) && opts.overlay_action.is_none() {
+        return Err("overlay requires an action (uninstall or update)".into());
     }
     Ok(opts)
 }
@@ -350,6 +450,10 @@ fn run(opts: CliOptions) -> Result<ExitCode, String> {
         Command::Status => run_status(&opts),
         Command::Search => run_search(&opts),
         Command::Read => run_read(&opts),
+        Command::Related => run_related(&opts),
+        Command::Check => run_check(&opts),
+        Command::Watch => run_watch(&opts),
+        Command::Overlay => run_overlay(&opts),
         Command::Purge => run_purge(&opts),
     }
 }
@@ -703,6 +807,7 @@ fn run_init(opts: &CliOptions) -> Result<ExitCode, String> {
         yes: opts.yes,
         provider: opts.provider.clone(),
         adopt_managed_block: opts.adopt_managed_block.clone(),
+        agents_snippet: opts.agents_snippet,
     };
     let plan = repoise_core::init::plan(&opts.root, &options).map_err(|err| err.to_string())?;
     let outcome = if opts.dry_run {
@@ -740,6 +845,264 @@ fn run_init(opts: &CliOptions) -> Result<ExitCode, String> {
         println!("next: run `repoise doctor` to verify effective settings");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_related(opts: &CliOptions) -> Result<ExitCode, String> {
+    let source_id = opts
+        .source_id
+        .as_deref()
+        .ok_or("--source-id <ID> is required for related")?
+        .to_string();
+    let kinds: Vec<repoise_core::related::RelationKind> = opts
+        .relations
+        .iter()
+        .map(|kind| {
+            repoise_core::related::RelationKind::parse(kind).ok_or_else(|| {
+                format!(
+                    "unknown relation kind: {kind} (expected references, referenced-by, children, or parent)"
+                )
+            })
+        })
+        .collect::<Result<_, String>>()?;
+    let ctx = build_context(opts)?;
+    let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
+    let request = repoise_core::related::RelatedRequest {
+        source_id,
+        kinds,
+        limit: opts.max_results,
+        max_output_tokens: opts.max_output_tokens,
+    };
+    let response =
+        match repoise_core::related::related(ctx.adapter.as_ref(), ctx.mode, &store, &request) {
+            Ok(response) => response,
+            Err(Error::IndexState(message)) if message.starts_with("no published index") => {
+                return Ok(ExitCode::from(3));
+            }
+            Err(err) => return Err(err.to_string()),
+        };
+    if opts.json {
+        println!("{}", json(&response)?);
+    } else {
+        println!(
+            "{} related source(s), generation {}",
+            response.results.len(),
+            response.generation_id
+        );
+        for related in &response.results {
+            println!(
+                "{}: {} ({}; L{}-L{}{})",
+                related.path,
+                related.title,
+                related.relation,
+                related.line_start,
+                related.line_end,
+                related
+                    .edge_kind
+                    .as_deref()
+                    .map(|kind| {
+                        let name = related
+                            .name
+                            .as_deref()
+                            .map(|name| format!(" {name}"))
+                            .unwrap_or_default();
+                        format!("; {kind}{name}")
+                    })
+                    .unwrap_or_default(),
+            );
+            println!("  source-id: {}", related.source_id);
+            if !related.excerpt.is_empty() {
+                println!("  {}", related.excerpt);
+            }
+            if let Some(url) = &related.url {
+                println!("  url: {url}");
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_check(opts: &CliOptions) -> Result<ExitCode, String> {
+    let ctx = build_context(opts)?;
+    let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
+    let options = repoise_core::check::CheckOptions {
+        require_fresh: opts.fresh,
+    };
+    let result = repoise_core::check::check(
+        ctx.adapter.as_ref(),
+        ctx.mode,
+        &ctx.effective,
+        ctx.config_file.as_deref(),
+        &store,
+        &ctx.cache,
+        &options,
+    )
+    .map_err(|err| err.to_string())?;
+    if opts.json {
+        println!("{}", json(&result)?);
+    } else {
+        println!("check: {:?}", result.category);
+        println!("fresh: {}", result.fresh);
+        println!("coverage met: {}", result.coverage_met);
+        for reason in &result.reasons {
+            println!("  - {reason}");
+        }
+    }
+    let code = match result.category {
+        repoise_core::check::CheckCategory::Ok => ExitCode::SUCCESS,
+        repoise_core::check::CheckCategory::Missing | repoise_core::check::CheckCategory::Stale => {
+            ExitCode::from(3)
+        }
+        repoise_core::check::CheckCategory::CoverageNotMet => ExitCode::from(4),
+    };
+    Ok(code)
+}
+
+fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    let ctx = build_context(opts)?;
+    let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
+    let options = repoise_core::watch::WatchOptions {
+        interval: Duration::from_millis(
+            opts.watch_interval_ms
+                .unwrap_or(repoise_core::watch::DEFAULT_INTERVAL.as_millis() as u64),
+        ),
+        debounce: Duration::from_millis(
+            opts.watch_debounce_ms
+                .unwrap_or(repoise_core::watch::DEFAULT_DEBOUNCE.as_millis() as u64),
+        ),
+        max_pending_paths: opts
+            .watch_max_pending
+            .unwrap_or(repoise_core::watch::DEFAULT_MAX_PENDING_PATHS as u64)
+            as usize,
+    };
+    let mut watcher = repoise_core::watch::Watcher::new(
+        ctx.adapter,
+        ctx.mode,
+        ctx.effective,
+        store,
+        ctx.cache,
+        options,
+    )
+    .map_err(|err| err.to_string())?;
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_handler = cancel.clone();
+    if let Err(err) = ctrlc::set_handler(move || {
+        cancel_handler.store(true, Ordering::SeqCst);
+    }) {
+        return Err(format!("could not install SIGINT handler: {err}"));
+    }
+    println!(
+        "watching {}/{} (interval {} ms, debounce {} ms); Ctrl+C cancels",
+        ctx.repo_id,
+        ctx.worktree_id,
+        options.interval.as_millis(),
+        options.debounce.as_millis()
+    );
+    loop {
+        match watcher.step(&cancel) {
+            Ok(repoise_core::watch::WatchStep::Idle) => {}
+            Ok(repoise_core::watch::WatchStep::Published(outcome)) => {
+                if opts.json {
+                    println!("{}", json(&outcome)?);
+                } else {
+                    println!(
+                        "published generation {} ({} file(s) reparsed{}{}; {} ms)",
+                        outcome.generation_id,
+                        outcome.files_reparsed,
+                        if outcome.force_full {
+                            ", full reparse"
+                        } else {
+                            ""
+                        },
+                        if outcome.branch_switch {
+                            ", branch switch"
+                        } else {
+                            ""
+                        },
+                        outcome.duration_ms
+                    );
+                    for path in &outcome.changed_paths {
+                        println!("  changed: {path}");
+                    }
+                }
+            }
+            Ok(repoise_core::watch::WatchStep::Cancelled) => break,
+            Err(err) => {
+                eprintln!("watch step failed: {err}");
+            }
+        }
+        if cancel.load(Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(options.interval);
+    }
+    println!("watch stopped (safe cancel; last complete generation retained)");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_overlay(opts: &CliOptions) -> Result<ExitCode, String> {
+    let root = std::fs::canonicalize(&opts.root).map_err(|err| err.to_string())?;
+    match opts.overlay_action.as_deref() {
+        Some("uninstall") => {
+            let outcome = repoise_core::overlay::uninstall(&root, opts.dry_run)
+                .map_err(|err| err.to_string())?;
+            if opts.json {
+                println!("{}", json(&outcome)?);
+            } else {
+                for path in &outcome.removed_files {
+                    println!("removed file: {path}");
+                }
+                for path in &outcome.removed_blocks {
+                    println!("removed block: {path}");
+                }
+                for conflict in &outcome.conflicts {
+                    eprintln!("conflict: {}: {}", conflict.path, conflict.reason);
+                }
+                if outcome.manifest_removed {
+                    println!("overlay manifest removed");
+                } else if !outcome.dry_run {
+                    println!("overlay manifest retained (conflicts or already removed)");
+                }
+                if outcome.dry_run {
+                    println!("dry run: nothing written");
+                }
+            }
+            if !outcome.conflicts.is_empty() {
+                return Err("overlay uninstall left conflicts; review and re-run".to_string());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("update") => {
+            let outcome = repoise_core::overlay::update(&root, opts.dry_run)
+                .map_err(|err| err.to_string())?;
+            if opts.json {
+                println!("{}", json(&outcome)?);
+            } else {
+                for path in &outcome.updated {
+                    println!("updated: {path}");
+                }
+                for path in &outcome.unchanged {
+                    println!("unchanged: {path}");
+                }
+                for conflict in &outcome.conflicts {
+                    eprintln!("conflict: {}: {}", conflict.path, conflict.reason);
+                }
+                if outcome.manifest_updated {
+                    println!("overlay manifest re-pinned");
+                }
+                if outcome.dry_run {
+                    println!("dry run: nothing written");
+                }
+            }
+            if !outcome.conflicts.is_empty() {
+                return Err("overlay update left conflicts; review and re-run".to_string());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        _ => Err("overlay requires an action (uninstall or update)".to_string()),
+    }
 }
 
 fn default_adapter(

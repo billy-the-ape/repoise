@@ -15,7 +15,8 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/classify.rs` | Role/lifecycle classification: explicit front matter, configured rules, path inference |
 | `crates/repoise-core/src/discovery.rs` | Deterministic inventory: snapshot manifest, file records, skip diagnostics |
 | `crates/repoise-core/src/provenance.rs` | Versioned repository/snapshot/file provenance record shapes and remote identity sanitization |
-| `crates/repoise-core/src/init.rs` and `doctor.rs` | Idempotent overlay init (config, overlay manifest, optional managed block) and effective-settings reporting |
+| `crates/repoise-core/src/init.rs` and `doctor.rs` | Idempotent overlay init (config, overlay manifest, optional managed block and AGENTS snippet) and effective-settings reporting |
+| `crates/repoise-core/src/overlay.rs` | Non-destructive overlay lifecycle: uninstall of unchanged managed files/blocks, three-way template update with installed-byte baselines, conflict reporting |
 | `crates/repoise-core/src/hash.rs` | Lowercase SHA-256 helpers used across manifests and fingerprints |
 | `crates/repoise-core/src/store.rs` | SQLite (WAL) + FTS5 persistent store: transactional generation publication, retention, current/previous generation access |
 | `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references, plus the pinned tree-sitter TypeScript/TSX and JavaScript/JSX code grammars and a line-window fallback for other code languages |
@@ -25,9 +26,12 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/search.rs` | Lexical search (BM25 + explainable boosts, per-file cap, bound cursors, fallback suggestions) plus hybrid RRF fusion over stored vectors with retrieval-mode/coverage reporting and lexical degradation; scope resolution and GitHub permalink validation |
 | `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; `Stale` diagnostics |
 | `crates/repoise-core/src/status.rs` | Scope/snapshot/index/freshness view with config and cache diagnostics |
+| `crates/repoise-core/src/check.rs` | Offline freshness/coverage check over the status view with stable categories for automation (no provider calls) |
+| `crates/repoise-core/src/related.rs` | Bounded related-knowledge service: reference-edge, reverse-reference, parent/child-chunk and heading-structure links from a source chunk |
+| `crates/repoise-core/src/watch.rs` | Incremental watch loop: debounced scanning, coalesced per-path content, bounded pending-path publication through the shared index operation, branch-switch rescan and safe cancellation |
 | `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |
 | `crates/repoise-core/src/purge.rs` | Removal of generated cache data only, with scope-id validation |
-| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge adapters) |
+| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge/related/check/watch/overlay adapters) |
 | `crates/repoise-cli/src/github_enrichment.rs` | Optional (`github-enrichment` CLI feature) read-only GitHub transport for history enrichment: commit-to-PR verification, ETag-cached change-request fetch, request budgets, rate-limit/permission classification |
 | `crates/repoise-core/tests/` and `crates/repoise-cli/tests/` | Contract and executable behavior fixtures |
 | `schemas/` | Published versioned configuration schema |

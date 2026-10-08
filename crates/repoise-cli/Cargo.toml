@@ -24,6 +24,7 @@ github-enrichment = ["ureq"]
 
 [dependencies]
 repoise-core.workspace = true
+ctrlc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "json"], optional = true }

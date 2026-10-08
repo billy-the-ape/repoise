@@ -12,6 +12,7 @@ license = "MIT"
 
 [workspace.dependencies]
 repoise-core = { path = "crates/repoise-core" }
+ctrlc = "=3.4.2"
 serde = { version = "=1.0.219", features = ["derive"] }
 serde_json = "=1.0.140"
 sha2 = "=0.10.9"

@@ -14,6 +14,7 @@
 
 pub mod adapter;
 pub mod cache;
+pub mod check;
 pub mod chunk;
 pub mod classify;
 pub mod config;
@@ -26,12 +27,15 @@ pub mod history;
 pub mod ignore;
 pub mod indexing;
 pub mod init;
+pub mod overlay;
 pub mod provenance;
 pub mod purge;
 pub mod read;
+pub mod related;
 pub mod search;
 pub mod status;
 pub mod store;
+pub mod watch;
 
 /// Human-readable project identity used by the native CLI.
 pub const NAME: &str = "Repoise";

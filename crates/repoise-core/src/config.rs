@@ -54,6 +54,21 @@ pub struct Config {
     /// Optional history lane settings (card K5).
     #[serde(default)]
     pub history: Option<HistoryConfig>,
+    /// Optional MCP server settings (card K6).
+    #[serde(default)]
+    pub mcp: Option<McpConfig>,
+}
+
+/// Optional MCP server settings (card K6). The stdio MCP server is read-only
+/// by default; the refresh operation is opt-in and constrained to the
+/// configured scope, providers and budgets (it never executes repository
+/// scripts or changes code/docs).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct McpConfig {
+    /// Expose the opt-in `refresh_project_knowledge` MCP tool (default false).
+    #[serde(default)]
+    pub refresh: Option<bool>,
 }
 
 /// Optional history-lane settings (card K5). The lane is off until this block
@@ -282,6 +297,8 @@ pub struct EffectiveConfig {
     pub rrf_k: u32,
     /// Resolved history-lane settings (card K5).
     pub history: HistorySettings,
+    /// Whether the MCP refresh operation is enabled (card K6, default false).
+    pub mcp_refresh: bool,
 }
 
 impl EffectiveConfig {
@@ -334,6 +351,7 @@ impl EffectiveConfig {
         let mut cache_dir = DEFAULT_CACHE_DIR.to_string();
         let mut embedding: Option<EmbeddingConfig> = None;
         let mut history: Option<HistoryConfig> = None;
+        let mut mcp_refresh = false;
         let mut rrf_k = crate::embed::DEFAULT_RRF_K;
 
         for (origin, config) in [(Origin::Committed, committed), (Origin::Local, local)] {
@@ -371,6 +389,9 @@ impl EffectiveConfig {
                 }
                 if let Some(settings) = &config.history {
                     history = Some(settings.clone());
+                }
+                if let Some(settings) = &config.mcp {
+                    mcp_refresh = settings.refresh.unwrap_or(false);
                 }
             }
         }
@@ -436,6 +457,7 @@ impl EffectiveConfig {
             embedding_scope,
             rrf_k,
             history,
+            mcp_refresh,
         })
     }
 }
