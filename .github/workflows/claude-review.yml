@@ -33,10 +33,10 @@ jobs:
     # here would park every review run pending an approval.
     environment: claude
     permissions:
-      contents: read         # the review never writes code; sweep runs elsewhere
-      pull-requests: write   # only for the review submitted below
-      issues: write          # only for the nit-backlog issue; grants nothing over code
-      actions: read          # to read the upstream CI run and its logs
+      contents: read # the review never writes code; sweep runs elsewhere
+      pull-requests: write # only for the review submitted below
+      issues: write # only for the nit-backlog issue; grants nothing over code
+      actions: read # to read the upstream CI run and its logs
       id-token: write
     steps:
       # workflow_run's payload does not carry the pull request reliably — the
