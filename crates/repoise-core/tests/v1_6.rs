@@ -692,3 +692,207 @@ fn overlay_update_advances_baselines_despite_sibling_conflicts() {
     assert!(!removed.manifest_removed);
     assert!(!repo.root.join(repoise_core::CONFIG_FILENAME).exists());
 }
+#[test]
+fn init_rejects_managed_block_and_agents_snippet_for_same_file() {
+    let repo = DirRepo::new("init-both-options", &[("README.md", "hello\n")]);
+    let options = repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::DocsOnly,
+        dry_run: true,
+        yes: true,
+        provider: None,
+        adopt_managed_block: Some(PathBuf::from("AGENTS.md")),
+        agents_snippet: true,
+    };
+    let err = repoise_core::init::plan(&repo.root, &options).unwrap_err();
+    let message = format!("{err}");
+    assert!(message.contains("AGENTS.md"), "{message}");
+}
+
+#[test]
+fn adopt_managed_block_in_agents_md_keeps_managed_block_role() {
+    let repo = DirRepo::new("adopt-agents-md", &[("README.md", "hello\n")]);
+    let options = repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::DocsOnly,
+        dry_run: false,
+        yes: true,
+        provider: None,
+        adopt_managed_block: Some(PathBuf::from("AGENTS.md")),
+        agents_snippet: false,
+    };
+    let plan = repoise_core::init::plan(&repo.root, &options).unwrap();
+    repoise_core::init::apply(&plan).unwrap();
+
+    // The role follows the option, not the target path.
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.root.join(repoise_core::OVERLAY_FILENAME)).unwrap(),
+    )
+    .unwrap();
+    let agents_entry = manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "AGENTS.md")
+        .unwrap();
+    assert_eq!(agents_entry["role"], "managed-block");
+
+    // A template upgrade migrates the generic block; it must never be
+    // replaced by the agents-snippet text.
+    let old_block = repoise_core::init::managed_block().replace("1.0.0", "0.9.0");
+    std::fs::write(repo.root.join("AGENTS.md"), format!("{old_block}\n")).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.root.join(repoise_core::OVERLAY_FILENAME)).unwrap(),
+    )
+    .unwrap();
+    for entry in manifest["files"].as_array_mut().unwrap().iter_mut() {
+        if entry["path"] == "AGENTS.md" {
+            entry["installed"] = serde_json::json!(&old_block);
+        }
+    }
+    std::fs::write(
+        repo.root.join(repoise_core::OVERLAY_FILENAME),
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let done = repoise_core::overlay::update(&repo.root, false).unwrap();
+    assert!(done.updated.contains(&"AGENTS.md".to_string()));
+    assert!(done.conflicts.is_empty());
+    let agents = std::fs::read_to_string(repo.root.join("AGENTS.md")).unwrap();
+    assert!(agents.contains("run `repoise doctor`"));
+    assert!(!agents.contains("Prefer `repoise search`"));
+}
+
+#[test]
+fn overlay_update_re_pins_manifest_versions() {
+    let repo = DirRepo::new(
+        "overlay-repin-versions",
+        &[("README.md", "# Repo\n\nHello.\n")],
+    );
+    init_overlay(&repo, false);
+    // Simulate a tool/template upgrade: old manifest metadata plus an old
+    // installed baseline for the block.
+    let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["tool_version"] = serde_json::json!("0.0.1");
+    manifest["template_version"] = serde_json::json!("0.9.0");
+    for entry in manifest["files"].as_array_mut().unwrap().iter_mut() {
+        if entry["path"] == "README.md" {
+            let old_block = repoise_core::init::managed_block().replace("1.0.0", "0.9.0");
+            entry["installed"] = serde_json::json!(&old_block);
+        }
+    }
+    std::fs::write(
+        repo.root.join("README.md"),
+        format!(
+            "# Repo\n\nHello.\n{}\n",
+            repoise_core::init::managed_block().replace("1.0.0", "0.9.0")
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let done = repoise_core::overlay::update(&repo.root, false).unwrap();
+    assert!(done.updated.contains(&"README.md".to_string()));
+    assert!(done.manifest_updated);
+
+    // The manifest now carries the running tool/template versions, so a
+    // re-run of init no longer reports version drift.
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["template_version"], repoise_core::TEMPLATE_VERSION);
+    assert_ne!(manifest["tool_version"], "0.0.1");
+}
+
+#[test]
+fn init_upgrades_stale_manifest_and_update_can_migrate() {
+    let repo = DirRepo::new("stale-manifest", &[("README.md", "# Repo\n\nHello.\n")]);
+    init_overlay(&repo, false);
+    // Simulate a manifest from an older tool: same managed files, but old
+    // versions, no preset and no roles/baselines.
+    let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
+    let stale = serde_json::json!({
+        "tool_version": "0.0.1",
+        "template_version": "0.9.0",
+        "files": [
+            {"path": repoise_core::CONFIG_FILENAME, "kind": "file"},
+            {"path": "README.md", "kind": "block"}
+        ]
+    });
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&stale).unwrap() + "\n",
+    )
+    .unwrap();
+
+    let options = repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::DocsOnly,
+        dry_run: false,
+        yes: true,
+        provider: None,
+        adopt_managed_block: Some(PathBuf::from("README.md")),
+        agents_snippet: false,
+    };
+    let plan = repoise_core::init::plan(&repo.root, &options).unwrap();
+    let manifest_file = plan
+        .files
+        .iter()
+        .find(|file| file.relative.as_path() == repoise_core::OVERLAY_FILENAME)
+        .unwrap();
+    assert_eq!(
+        manifest_file.action,
+        repoise_core::init::FileAction::Upgrade
+    );
+    let outcome = repoise_core::init::apply(&plan).unwrap();
+    assert!(outcome.conflicts.is_empty());
+    assert!(
+        outcome
+            .upgraded
+            .contains(&PathBuf::from(repoise_core::OVERLAY_FILENAME))
+    );
+
+    // The upgraded manifest has current versions, roles, and live-byte
+    // baselines for the entries that lost theirs.
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["template_version"], repoise_core::TEMPLATE_VERSION);
+    let readme_entry = manifest["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "README.md")
+        .unwrap();
+    assert_eq!(readme_entry["role"], "managed-block");
+    assert_eq!(
+        readme_entry["installed"],
+        serde_json::json!(repoise_core::init::managed_block())
+    );
+
+    // A later template upgrade now migrates through the 3-way merge.
+    let old_block = repoise_core::init::managed_block().replace("1.0.0", "0.9.0");
+    std::fs::write(
+        repo.root.join("README.md"),
+        format!("# Repo\n\nHello.\n{old_block}\n"),
+    )
+    .unwrap();
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    for entry in manifest["files"].as_array_mut().unwrap().iter_mut() {
+        if entry["path"] == "README.md" {
+            entry["installed"] = serde_json::json!(&old_block);
+        }
+    }
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let done = repoise_core::overlay::update(&repo.root, false).unwrap();
+    assert!(done.updated.contains(&"README.md".to_string()));
+    assert!(done.conflicts.is_empty());
+}

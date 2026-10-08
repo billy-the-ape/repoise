@@ -291,6 +291,10 @@ pub fn update(root: &Path, dry_run: bool) -> Result<UpdateOutcome, Error> {
             }
         }
         if baselines_changed {
+            // Re-pin the manifest to the running tool/template versions so
+            // `repoise init` no longer sees a version drift after an update.
+            new_manifest.tool_version = env!("CARGO_PKG_VERSION").to_string();
+            new_manifest.template_version = crate::TEMPLATE_VERSION.to_string();
             fs::write(
                 root.join(OVERLAY_FILENAME),
                 serde_json::to_string_pretty(&new_manifest)? + "\n",

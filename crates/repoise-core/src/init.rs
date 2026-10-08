@@ -40,6 +40,8 @@ pub enum FileAction {
     Create,
     /// File already has exactly the managed content.
     Unchanged,
+    /// Tool-owned file pinned to an older template; init re-pins it.
+    Upgrade,
     /// File exists with different content; init will not touch it.
     Conflict,
 }
@@ -226,6 +228,8 @@ pub struct InitOutcome {
     pub created: Vec<PathBuf>,
     /// Files already managed and unchanged.
     pub unchanged: Vec<PathBuf>,
+    /// Tool-owned files re-pinned to the current template versions.
+    pub upgraded: Vec<PathBuf>,
     /// Files init refused to touch (reported, not modified).
     pub conflicts: Vec<PathBuf>,
 }
@@ -308,7 +312,19 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
     });
 
     // 2. Opt-in managed blocks (marker block and/or agent-guidance snippet).
-    let mut block_entries: Vec<(String, String)> = Vec::new();
+    // The role follows the option that produced the block, not the target
+    // path, so `--adopt-managed-block AGENTS.md` keeps its generic block.
+    if opts.agents_snippet
+        && opts
+            .adopt_managed_block
+            .as_ref()
+            .is_some_and(|target| target.to_string_lossy() == AGENTS_SNIPPET_FILE)
+    {
+        return Err(Error::Init(
+            "--adopt-managed-block and --agents-snippet both target AGENTS.md; choose one".into(),
+        ));
+    }
+    let mut block_entries: Vec<(String, String, OverlayRole)> = Vec::new();
     if let Some(target) = &opts.adopt_managed_block {
         if !target.is_relative() {
             return Err(Error::Init(format!(
@@ -318,13 +334,21 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
         }
         let block = managed_block();
         files.extend(plan_block_file(&root, target, &block)?);
-        block_entries.push((target.to_string_lossy().into_owned(), block));
+        block_entries.push((
+            target.to_string_lossy().into_owned(),
+            block,
+            OverlayRole::ManagedBlock,
+        ));
     }
     if opts.agents_snippet {
         let target = PathBuf::from(AGENTS_SNIPPET_FILE);
         let block = agents_snippet_block();
         files.extend(plan_block_file(&root, &target, &block)?);
-        block_entries.push((AGENTS_SNIPPET_FILE.to_string(), block));
+        block_entries.push((
+            AGENTS_SNIPPET_FILE.to_string(),
+            block,
+            OverlayRole::AgentsSnippet,
+        ));
     }
     // 3. Overlay manifest (managed by init; pins tool + template versions).
     let mut entries: Vec<OverlayFileEntry> = vec![OverlayFileEntry::new(
@@ -333,15 +357,11 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
         Some(OverlayRole::Config),
         Some(config_content.clone()),
     )];
-    for (path, block) in &block_entries {
+    for (path, block, role) in &block_entries {
         entries.push(OverlayFileEntry::new(
             path.clone(),
             OverlayFileKind::Block,
-            if path == AGENTS_SNIPPET_FILE {
-                Some(OverlayRole::AgentsSnippet)
-            } else {
-                Some(OverlayRole::ManagedBlock)
-            },
+            Some(*role),
             Some(block.clone()),
         ));
     }
@@ -358,23 +378,56 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
         files: entries,
     };
     let manifest_path = root.join(OVERLAY_FILENAME);
-    let manifest_action = match fs::read_to_string(&manifest_path) {
+    let (manifest_action, parsed_existing) = match fs::read_to_string(&manifest_path) {
         Ok(existing) => {
             let parsed: OverlayManifest = serde_json::from_str(&existing)
                 .map_err(|err| Error::Init(format!("unparsable overlay manifest: {err}")))?;
-            if parsed == manifest {
+            let action = if parsed == manifest {
                 FileAction::Unchanged
+            } else if manifest_upgradable(&parsed, &manifest) {
+                FileAction::Upgrade
             } else {
                 FileAction::Conflict
-            }
+            };
+            (action, Some(parsed))
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => FileAction::Create,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (FileAction::Create, None),
         Err(err) => return Err(Error::Io(err)),
+    };
+    let manifest_content = match (&manifest_action, &parsed_existing) {
+        // An upgrade re-pins versions/roles but keeps the recorded baselines
+        // (falling back to live bytes for pre-v2 entries) so `overlay update`
+        // can still 3-way merge afterwards.
+        (FileAction::Upgrade, Some(parsed)) => {
+            let old_by_path: std::collections::HashMap<&str, &OverlayFileEntry> = parsed
+                .files
+                .iter()
+                .map(|old| (old.path.as_str(), old))
+                .collect();
+            let mut upgraded = manifest.clone();
+            upgraded.files = manifest
+                .files
+                .iter()
+                .map(|fresh| {
+                    let old = old_by_path.get(fresh.path.as_str()).copied();
+                    OverlayFileEntry {
+                        path: fresh.path.clone(),
+                        kind: fresh.kind,
+                        role: fresh.role,
+                        installed: old
+                            .and_then(|old| old.installed.clone())
+                            .or_else(|| live_managed_bytes(&root, fresh.kind, &fresh.path)),
+                    }
+                })
+                .collect();
+            serde_json::to_string_pretty(&upgraded)? + "\n"
+        }
+        _ => serde_json::to_string_pretty(&manifest)? + "\n",
     };
     files.push(PlannedFile {
         relative: PathBuf::from(OVERLAY_FILENAME),
         action: manifest_action,
-        content: serde_json::to_string_pretty(&manifest)? + "\n",
+        content: manifest_content,
     });
 
     Ok(InitPlan {
@@ -382,6 +435,45 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
         files,
         manifest,
     })
+}
+
+/// True when an existing manifest manages exactly the same files (path and
+/// kind) as the planned one; version fields, roles and baselines may differ.
+fn manifest_upgradable(parsed: &OverlayManifest, planned: &OverlayManifest) -> bool {
+    let shape = |manifest: &OverlayManifest| -> Vec<(String, &str)> {
+        let mut shape: Vec<(String, &str)> = manifest
+            .files
+            .iter()
+            .map(|entry| {
+                (
+                    entry.path.clone(),
+                    match entry.kind {
+                        OverlayFileKind::File => "file",
+                        OverlayFileKind::Block => "block",
+                    },
+                )
+            })
+            .collect();
+        shape.sort();
+        shape
+    };
+    shape(parsed) == shape(planned)
+}
+
+/// Live bytes to use as an upgrade baseline: the whole file for `File`
+/// entries, the managed block region for `Block` entries; `None` when the
+/// file is unreadable or the block region is missing.
+fn live_managed_bytes(root: &Path, kind: OverlayFileKind, relative: &str) -> Option<String> {
+    let current = fs::read_to_string(root.join(relative)).ok()?;
+    match kind {
+        OverlayFileKind::File => Some(current),
+        OverlayFileKind::Block => {
+            let start = current.find("<!-- repoise:managed begin")?;
+            let end_marker = "<!-- repoise:managed end -->";
+            let end = start + current[start..].find(end_marker)? + end_marker.len();
+            Some(current[start..end].to_string())
+        }
+    }
 }
 
 /// Plans a managed block inside one owner-selected file (dry-run safe):
@@ -453,6 +545,10 @@ pub fn apply(plan: &InitPlan) -> Result<InitOutcome, Error> {
             FileAction::Create => {
                 fs::write(plan.root.join(&file.relative), &file.content)?;
                 outcome.created.push(file.relative.clone());
+            }
+            FileAction::Upgrade => {
+                fs::write(plan.root.join(&file.relative), &file.content)?;
+                outcome.upgraded.push(file.relative.clone());
             }
             FileAction::Unchanged => {
                 outcome.unchanged.push(file.relative.clone());
