@@ -144,6 +144,13 @@ jobs:
             file, inside the PR diff>, "body": "<the finding and, if small, the
             fix>"}. Use an empty array when there are none. Do not post comments
             yourself; the workflow submits them from the verdict.
+            Nits that have a clear, mechanical, single-location fix also go in
+            "comments", not in "nits": make the body a short note followed by a
+            GitHub suggestion block (a fenced block with the language
+            "suggestion" containing the exact replacement for the line or lines
+            commented on) so it can be applied in one click. Use "nits" only for
+            nits that are unclear or too large for a suggestion; those still go
+            to the backlog issue.
           # --allowedTools is the entire pre-approved set, not an addition to a
           # default one. Skill is permissioned, so the delegation needs it named
           # here. git subcommands are listed individually because a bare
