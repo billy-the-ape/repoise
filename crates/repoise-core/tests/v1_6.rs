@@ -987,7 +987,7 @@ fn overlay_refuses_symlink_escape_from_manifest() {
     .unwrap();
 
     let err = repoise_core::overlay::uninstall(&repo.root, false).unwrap_err();
-    assert!(format!("{err}").contains("repository root"), "{err}");
+    assert!(format!("{err}").contains("symlink"), "{err}");
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), content);
 }
 #[test]
@@ -1101,4 +1101,135 @@ fn init_upgrade_refuses_preset_change_when_config_conflicts() {
         std::fs::read_to_string(&config_path).unwrap(),
         original_config
     );
+}
+#[cfg(unix)]
+#[test]
+fn init_refuses_dangling_symlink_leaf() {
+    let repo = DirRepo::new("dangling-leaf", &[("README.md", "hello\n")]);
+    let outside = repo
+        .root
+        .parent()
+        .expect("repo root has a parent")
+        .join("outside-dangling.md");
+    // A repo that ships AGENTS.md as a dangling link outside the root.
+    std::os::unix::fs::symlink(&outside, repo.root.join("AGENTS.md")).unwrap();
+
+    let options = |adopt: Option<PathBuf>, snippet: bool| repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::DocsOnly,
+        dry_run: true,
+        yes: true,
+        provider: None,
+        adopt_managed_block: adopt,
+        agents_snippet: snippet,
+    };
+    // --adopt-managed-block through the dangling link.
+    let err = repoise_core::init::plan(
+        &repo.root,
+        &options(Some(PathBuf::from("AGENTS.md")), false),
+    )
+    .unwrap_err();
+    assert!(format!("{err}").contains("symlink"), "{err}");
+    // --agents-snippet through the same dangling link.
+    let err = repoise_core::init::plan(&repo.root, &options(None, true)).unwrap_err();
+    assert!(format!("{err}").contains("symlink"), "{err}");
+    assert!(!outside.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn overlay_refuses_dangling_symlink_entry() {
+    let repo = DirRepo::new("dangling-manifest", &[("README.md", "hello\n")]);
+    init_overlay(&repo, false);
+    let outside = repo
+        .root
+        .parent()
+        .expect("repo root has a parent")
+        .join("outside-dangling2.md");
+    std::os::unix::fs::symlink(&outside, repo.root.join("AGENTS.md")).unwrap();
+    let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["files"].as_array_mut().unwrap().push(serde_json::json!({
+        "path": "AGENTS.md",
+        "kind": "block",
+        "role": "agents-snippet",
+        "installed": "<!-- repoise:agents-snippet begin -->\nx\n<!-- repoise:agents-snippet end -->"
+    }));
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let err = repoise_core::overlay::uninstall(&repo.root, false).unwrap_err();
+    assert!(format!("{err}").contains("symlink"), "{err}");
+    let err = repoise_core::overlay::update(&repo.root, false).unwrap_err();
+    assert!(format!("{err}").contains("symlink"), "{err}");
+    assert!(!outside.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_and_overlay_refuse_symlinked_parent_outside() {
+    let repo = DirRepo::new("symlink-parent", &[("README.md", "hello\n")]);
+    let outside_dir = repo
+        .root
+        .parent()
+        .expect("repo root has a parent")
+        .join("outside-dir");
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    std::os::unix::fs::symlink(&outside_dir, repo.root.join("docs")).unwrap();
+
+    let options = repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::DocsOnly,
+        dry_run: true,
+        yes: true,
+        provider: None,
+        adopt_managed_block: Some(PathBuf::from("docs/x.md")),
+        agents_snippet: false,
+    };
+    let err = repoise_core::init::plan(&repo.root, &options).unwrap_err();
+    assert!(format!("{err}").contains("repository root"), "{err}");
+    assert!(!outside_dir.join("x.md").exists());
+
+    // Manifest side: an entry under the symlinked parent must be refused too.
+    init_overlay(&repo, false);
+    let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    manifest["files"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "path": "docs/y.md",
+            "kind": "file",
+            "role": "managed-block",
+            "installed": "SECRET\n"
+        }));
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err = repoise_core::overlay::uninstall(&repo.root, false).unwrap_err();
+    assert!(format!("{err}").contains("repository root"), "{err}");
+    assert!(!outside_dir.join("y.md").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_allows_symlinked_parent_inside_root() {
+    let repo = DirRepo::new("symlink-inside", &[("realdocs/base.md", "content\n")]);
+    std::os::unix::fs::symlink("realdocs", repo.root.join("docs")).unwrap();
+    let options = repoise_core::init::InitOptions {
+        preset: repoise_core::config::Preset::DocsOnly,
+        dry_run: false,
+        yes: true,
+        provider: None,
+        adopt_managed_block: Some(PathBuf::from("docs/x.md")),
+        agents_snippet: false,
+    };
+    let plan = repoise_core::init::plan(&repo.root, &options).unwrap();
+    repoise_core::init::apply(&plan).unwrap();
+    assert!(repo.root.join("realdocs/x.md").exists());
 }

@@ -289,10 +289,12 @@ pub fn render_config(opts: &InitOptions) -> Result<String, Error> {
     let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
     Ok(format!("{pretty}\n"))
 }
-/// Validates a path that a managed overlay entry or the
-/// `--adopt-managed-block` option may use: it must be relative, contain no
-/// `..`, root or prefix components, and — when it exists — must resolve
-/// (through symlinks) inside `root`, which must be canonical. Manifests and
+/// Validates a path that a managed overlay entry or an init option may
+/// use: it must be relative, contain no `..`, root or prefix components,
+/// and stay inside `root` (which must be canonical) even when the leaf is
+/// missing: a final component that is a symlink is refused, and the nearest
+/// existing ancestor (the target itself when present) must canonicalize
+/// inside `root`, which catches symlinked parent directories. Manifests and
 /// option values are repository content and therefore untrusted.
 pub fn validate_repo_relative_path(root: &Path, path: &Path) -> Result<(), Error> {
     if path.is_absolute() {
@@ -315,14 +317,42 @@ pub fn validate_repo_relative_path(root: &Path, path: &Path) -> Result<(), Error
         )));
     }
     let target = root.join(path);
-    if target.exists() {
-        let resolved = target.canonicalize().map_err(Error::Io)?;
-        if !resolved.starts_with(root) {
-            return Err(Error::Init(format!(
-                "path resolves outside the repository root: {}",
-                path.display()
-            )));
+    // A final component that is a symlink (dangling or not) is refused:
+    // writes would follow it, and overlay targets name ordinary files.
+    if fs::symlink_metadata(&target)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(Error::Init(format!(
+            "path is a symlink and will not be followed: {}",
+            path.display()
+        )));
+    }
+    // Containment: canonicalize the target when it exists, otherwise the
+    // nearest existing ancestor, so a symlinked parent directory that points
+    // outside the repository is caught even when the leaf is missing.
+    let mut ancestor = target.as_path();
+    loop {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => break,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => match ancestor.parent() {
+                Some(parent) => ancestor = parent,
+                None => {
+                    return Err(Error::Init(format!(
+                        "path resolves outside the repository root: {}",
+                        path.display()
+                    )));
+                }
+            },
+            Err(err) => return Err(Error::Io(err)),
         }
+    }
+    let resolved = fs::canonicalize(ancestor).map_err(Error::Io)?;
+    if !resolved.starts_with(root) {
+        return Err(Error::Init(format!(
+            "path resolves outside the repository root: {}",
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -374,6 +404,8 @@ pub fn plan(root: &Path, opts: &InitOptions) -> Result<InitPlan, Error> {
     }
     if opts.agents_snippet {
         let target = PathBuf::from(AGENTS_SNIPPET_FILE);
+        // The repo may ship a symlink at this path; refuse before planning.
+        validate_repo_relative_path(&root, &target)?;
         let block = agents_snippet_block();
         files.extend(plan_block_file(&root, &target, &block)?);
         block_entries.push((
