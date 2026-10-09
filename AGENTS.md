@@ -11,10 +11,15 @@ status freshness, offline lexical search, exact read-back and purge (cards K1–
 plus card K3: opt-in OpenAI-compatible embeddings with a content-addressed cache,
 vector coverage, hybrid RRF search, budgets and embedding-cache GC, and card K4:
 TypeScript/JavaScript structural code chunks, symbols, syntactic reference edges and
-the line-window fallback for other code languages (embedding scope docs or docs+code).
+the line-window fallback for other code languages (embedding scope docs or docs+code),
+card K5: the opt-in offline local history lane (`search --lane history`), and part of
+card K6: the related-knowledge service, offline `check` with stable exit codes, the
+incremental `watch` loop, and the non-destructive overlay lifecycle (init agents
+snippet, `overlay uninstall`, `overlay update` three-way template migration).
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
 The npm wrapper and Windows npm package remain pending a registry name review.
-History and MCP are not implemented yet; the local inference embedding preset is
+The MCP stdio server, build/Actions examples, package release validation and the
+evaluation harness remain pending; the local inference embedding preset is
 evaluated, not shipped; OIDC staging is configured but unverified.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 

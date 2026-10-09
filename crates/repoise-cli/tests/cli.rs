@@ -240,3 +240,128 @@ fn purge_requires_scope_or_all_and_removes_cache_only() {
     assert!(!root.join(".repoise").join("repos").exists());
     assert!(root.join("README.md").exists());
 }
+#[test]
+fn check_exit_codes_and_json_category() {
+    let root = temp_root("check");
+    // No index: exit code 3 (missing), machine-readable category.
+    let missing = cli(&["check", "--json", root.to_str().unwrap()]);
+    assert_eq!(missing.status.code(), Some(3));
+    let value: serde_json::Value =
+        serde_json::from_slice(&missing.stdout).expect("check --json is valid JSON");
+    assert_eq!(value["category"], "missing");
+
+    // Fresh index: exit code 0.
+    assert!(cli(&["index", root.to_str().unwrap()]).status.success());
+    let fresh = cli(&["check", root.to_str().unwrap()]);
+    assert!(fresh.status.success());
+    assert!(
+        String::from_utf8(fresh.stdout)
+            .unwrap()
+            .contains("check: Ok")
+    );
+
+    // Live change: exit code 3 (stale).
+    std::fs::write(root.join("README.md"), "hello again\n").unwrap();
+    let stale = cli(&["check", root.to_str().unwrap()]);
+    assert_eq!(stale.status.code(), Some(3));
+    assert!(
+        String::from_utf8(stale.stdout)
+            .unwrap()
+            .contains("check: Stale")
+    );
+}
+
+#[test]
+fn related_requires_source_id_and_reports_related_sources() {
+    let root = temp_root("related");
+    assert!(cli(&["index", root.to_str().unwrap()]).status.success());
+    let found = cli(&[
+        "search",
+        "--json",
+        "--query",
+        "hello",
+        root.to_str().unwrap(),
+    ]);
+    let value: serde_json::Value = serde_json::from_slice(&found.stdout).unwrap();
+    let source_id = value["results"][0]["source_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let related = cli(&[
+        "related",
+        "--json",
+        "--source-id",
+        &source_id,
+        root.to_str().unwrap(),
+    ]);
+    assert!(related.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&related.stdout).unwrap();
+    assert_eq!(value["source"]["source_id"], source_id);
+    assert!(value["results"].is_array());
+
+    // Missing source id is an operational error; unknown kinds are rejected.
+    let missing_id = cli(&["related", root.to_str().unwrap()]);
+    assert_eq!(missing_id.status.code(), Some(1));
+    let bad_kind = cli(&[
+        "related",
+        "--source-id",
+        &source_id,
+        "--relation",
+        "bogus",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(bad_kind.status.code(), Some(1));
+}
+
+#[test]
+fn overlay_uninstall_and_update_commands() {
+    let root = temp_root("overlay");
+    let init = cli(&[
+        "init",
+        "--adopt-managed-block",
+        "README.md",
+        "--agents-snippet",
+        root.to_str().unwrap(),
+    ]);
+    assert!(init.status.success());
+    assert!(root.join("repoise.overlay.json").exists());
+
+    // Dry run removes nothing.
+    let dry = cli(&["overlay", "uninstall", "--dry-run", root.to_str().unwrap()]);
+    assert!(dry.status.success());
+    assert!(root.join("repoise.overlay.json").exists());
+    assert!(
+        String::from_utf8(dry.stdout)
+            .unwrap()
+            .contains("dry run: nothing written")
+    );
+
+    // Real uninstall: manifest and config go, README body survives.
+    let done = cli(&["overlay", "uninstall", root.to_str().unwrap()]);
+    assert!(done.status.success());
+    assert!(!root.join("repoise.overlay.json").exists());
+    assert!(!root.join("repoise.config.json").exists());
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(readme.starts_with("hello\n"));
+    assert!(!readme.contains("repoise:managed"));
+
+    // Re-init, then update with no template change: a no-op success.
+    assert!(
+        cli(&[
+            "init",
+            "--adopt-managed-block",
+            "README.md",
+            root.to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    let update = cli(&["overlay", "update", root.to_str().unwrap()]);
+    assert!(update.status.success());
+    assert!(root.join("repoise.overlay.json").exists());
+
+    // A missing action is a usage error.
+    let no_action = cli(&["overlay", root.to_str().unwrap()]);
+    assert_eq!(no_action.status.code(), Some(2));
+}

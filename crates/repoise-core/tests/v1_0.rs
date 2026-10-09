@@ -446,6 +446,7 @@ fn init_is_idempotent_nondestructive_and_preserves_managed_blocks() {
         yes: true,
         provider: None,
         adopt_managed_block: Some("README.md".into()),
+        agents_snippet: false,
     };
     // Dry run never writes.
     let p = plan(&root, &opts).unwrap();
@@ -500,6 +501,7 @@ fn init_is_idempotent_nondestructive_and_preserves_managed_blocks() {
         yes: true,
         provider: None,
         adopt_managed_block: None,
+        agents_snippet: false,
     };
     assert!(plan(&root2, &bad).is_err());
     let good = InitOptions {
@@ -508,6 +510,7 @@ fn init_is_idempotent_nondestructive_and_preserves_managed_blocks() {
         yes: true,
         provider: Some("openai".into()),
         adopt_managed_block: None,
+        agents_snippet: false,
     };
     let p = plan(&root2, &good).unwrap();
     apply(&p).unwrap();

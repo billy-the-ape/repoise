@@ -8,7 +8,12 @@ relevant code, documentation and history with compact, source-linked context.
 publication), `status` (scope/snapshot/freshness), `search` (offline lexical search over
 docs and code chunks, plus hybrid search over an operator-configured OpenAI-compatible
 embedding provider) and `read` (exact read-back with hash validation), plus `purge` for
-generated cache data. Code indexing covers TypeScript/TSX and JavaScript/JSX structural
+generated cache data. `related` follows structural/section links from an indexed source
+(reference edges, referencers, parent/child chunks), `check` reports stable
+freshness/coverage exit codes for automation, and `watch` runs the incremental watch loop
+with safe Ctrl+C cancellation. `overlay uninstall`/`overlay update` manage the
+non-destructive overlay lifecycle (byte-level conflict reporting and three-way template
+migration). Code indexing covers TypeScript/TSX and JavaScript/JSX structural
 chunks with symbols and syntactic reference edges, and a line-window fallback for other
 code languages; embeddings apply to code only when the embedding scope includes it.
 MCP is not implemented yet. An opt-in local history lane (bounded mainline commits
@@ -43,6 +48,9 @@ cargo run --package repoise-cli -- explain --path README.md
 cargo run --package repoise-cli -- index            # build and publish the offline index
 cargo run --package repoise-cli -- status           # scope, snapshot and freshness
 cargo run --package repoise-cli -- search --query README
+cargo run --package repoise-cli -- related --source-id <ID>  # follow links from a result
+cargo run --package repoise-cli -- check                     # stable freshness/coverage exit codes
+cargo run --package repoise-cli -- watch                     # incremental watch loop (Ctrl+C)
 ```
 
 Rust 1.99.0 is pinned. See the development guide for Unix/Windows scripts and CI artifacts.

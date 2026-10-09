@@ -105,6 +105,8 @@ pub fn print_init(plan: &InitPlan, _outcome: Option<&InitOutcome>, dry_run: bool
             FileAction::Create if dry_run => "would create",
             FileAction::Create => "created",
             FileAction::Unchanged => "unchanged",
+            FileAction::Upgrade if dry_run => "would upgrade (not modified)",
+            FileAction::Upgrade => "upgraded",
             FileAction::Conflict if dry_run => "would conflict (not modified)",
             FileAction::Conflict => "conflict (not modified)",
         };
