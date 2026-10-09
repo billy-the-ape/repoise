@@ -38,6 +38,7 @@ jobs:
       issues: write # only for the nit-backlog issue; grants nothing over code
       actions: read # to read the upstream CI run and its logs
       id-token: write
+      statuses: write # the "Claude Code Review" row on the PR's check list
     steps:
       # workflow_run's payload does not carry the pull request reliably — the
       # pull_requests array is empty for fork runs and inconsistent otherwise — so
@@ -99,6 +100,22 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Reviewing PR #$PR at $HEAD_SHA (CI: $CI_CONCLUSION)"
 
+      # A workflow_run job's own check attaches to the default branch's commit, so
+      # it never appears on the pull request. A commit status on the PR head SHA
+      # does, which is why the review's progress is mirrored there. Do not make it
+      # a required check: skipped runs (closed, draft) post no status at all.
+      - name: Mark the review as running
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=pending -f context="Claude Code Review" \
+            -f description="Review in progress" -f target_url="$RUN_URL"
+
       # workflow_run runs in the default branch's context, so the head ref has to
       # be explicit. Checking out head is safe here because the tool grant below
       # has no build or test command: nothing from the pull request executes.
@@ -138,8 +155,8 @@ jobs:
             suite yourself, with `gh run view <run id> --log-failed`. CI is
             context, not a substitute for the review: still read, at minimum,
             every changed file in the pull request diff, and do not stop at
-            the CI result. 
-            Read unchanged but related files as needed, sparingly, when more 
+            the CI result.
+            Read unchanged but related files as needed, sparingly, when more
             context demands.
             State in the summary exactly which files you read, flagging unedited but
             related files as (related).
@@ -233,6 +250,29 @@ jobs:
             echo "$PAYLOAD" | jq -c 'del(.comments)' \
               | gh api "repos/$REPO/pulls/$PR/reviews" --input -
           fi
+
+      # Runs on failure and cancellation too, so a broken review shows as a red
+      # row on the PR instead of leaving the pending status stuck. head_sha is
+      # empty when the PR could not be resolved or the run was skipped, and then
+      # there is no pending status to replace.
+      - name: Report the review result
+        if: always() && steps.pr.outputs.skip == 'false' && steps.pr.outputs.head_sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_STATUS: ${{ job.status }}
+          REVIEW_EVENT: ${{ steps.verdict.outputs.event }}
+        run: |
+          case "$JOB_STATUS" in
+            success)   STATE=success; DESC="Review posted: ${REVIEW_EVENT:-done}" ;;
+            cancelled) STATE=error;   DESC="Review cancelled" ;;
+            *)         STATE=failure; DESC="Review did not complete" ;;
+          esac
+          gh api "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$STATE" -f context="Claude Code Review" \
+            -f description="$DESC" -f target_url="$RUN_URL"
 
       # The nits are already in the verdict, so there is no discovery pass. This
       # step is the only thing holding issue write, and it runs after the review
