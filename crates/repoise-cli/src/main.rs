@@ -23,6 +23,7 @@ use repoise_core::search::{QueryEmbedder, SearchMode};
 use repoise_core::store::Store;
 use repoise_core::{CACHE_ENV_VAR, CONFIG_FILENAME};
 
+mod mcp;
 mod output;
 use output::{json, print_doctor, print_explain, print_init};
 
@@ -48,6 +49,7 @@ enum Command {
     Check,
     Watch,
     Overlay,
+    Mcp,
     Purge,
 }
 
@@ -85,6 +87,7 @@ struct CliOptions {
     purge_all: bool,
     repo_id: Option<String>,
     worktree_id: Option<String>,
+    allow_refresh: bool,
 }
 
 const USAGE: &str = "\
@@ -104,6 +107,7 @@ COMMANDS:
     related --source-id <ID> [ROOT]  Follow structural/section links from a source
     check [ROOT]                  Offline freshness and coverage check (automation)
     watch [ROOT]                  Incremental watch loop (Ctrl+C cancels safely)
+    mcp [ROOT]                    stdio MCP server (JSON-RPC 2.0 on stdin/stdout)
     overlay uninstall [ROOT]      Remove only the managed overlay (dry-run capable)
     overlay update [ROOT]         3-way template migration of the overlay
     init [ROOT]                   Configure the repository (non-interactive)
@@ -152,6 +156,9 @@ WATCH OPTIONS:
     --debounce <MS>             Debounce before publication (default 200)
     --max-pending <N>           Bounded changed-path set; beyond it: full reparse (default 4096)
 
+MCP OPTIONS:
+    --allow-refresh             Expose the opt-in refresh tool (read-only by default)
+
 OVERLAY OPTIONS:
     uninstall | update          Overlay action (uninstall removes; update migrates)
     --dry-run                   Report changes without writing
@@ -196,6 +203,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         purge_all: false,
         repo_id: None,
         worktree_id: None,
+        allow_refresh: false,
     };
     let mut positional = Vec::new();
     let mut i = 0;
@@ -216,6 +224,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "check" => opts.command = Command::Check,
             "watch" => opts.command = Command::Watch,
             "overlay" => opts.command = Command::Overlay,
+            "mcp" => opts.command = Command::Mcp,
             "purge" => opts.command = Command::Purge,
             "--json" => opts.json = true,
             "--dry-run" => opts.dry_run = true,
@@ -341,6 +350,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                     })?);
             }
             "--all" => opts.purge_all = true,
+            "--allow-refresh" => opts.allow_refresh = true,
             "--repo-id" => {
                 i += 1;
                 opts.repo_id = Some(require_value(args, i, "--repo-id")?);
@@ -367,7 +377,8 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             | Command::Read
             | Command::Related
             | Command::Check
-            | Command::Watch => opts.root = PathBuf::from(first),
+            | Command::Watch
+            | Command::Mcp => opts.root = PathBuf::from(first),
             Command::Overlay => match first.as_str() {
                 "uninstall" | "update" => {
                     opts.overlay_action = Some(first.to_string());
@@ -453,6 +464,7 @@ fn run(opts: CliOptions) -> Result<ExitCode, String> {
         Command::Related => run_related(&opts),
         Command::Check => run_check(&opts),
         Command::Watch => run_watch(&opts),
+        Command::Mcp => mcp::run_mcp(&opts),
         Command::Overlay => run_overlay(&opts),
         Command::Purge => run_purge(&opts),
     }
@@ -1381,7 +1393,10 @@ fn run_read(opts: &CliOptions) -> Result<ExitCode, String> {
         .to_string();
     let ctx = build_context(opts)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
-    let request = repoise_core::read::ReadRequest { source_id };
+    let request = repoise_core::read::ReadRequest {
+        source_id,
+        max_output_tokens: opts.max_output_tokens,
+    };
     let result = match repoise_core::read::read(ctx.adapter.as_ref(), ctx.mode, &store, &request) {
         Ok(result) => result,
         Err(Error::IndexState(message)) if message.starts_with("no published index") => {

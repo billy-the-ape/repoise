@@ -373,6 +373,7 @@ fn indexing_full_build_search_and_exact_read() {
         &h.store,
         &ReadRequest {
             source_id: hit.source_id.clone(),
+            max_output_tokens: None,
         },
     )
     .unwrap();
@@ -384,6 +385,58 @@ fn indexing_full_build_search_and_exact_read() {
     let expected: Vec<&str> = lines[(hit.line_start as usize - 1)..hit.line_end as usize].to_vec();
     assert_eq!(result.text, expected.join("\n"));
     assert!(!result.revision_hash.is_empty());
+    // Default budget: the small read is not truncated and is counted.
+    assert!(!result.truncated);
+    assert!(result.output_tokens > 0);
+    assert!(result.tokens_estimated);
+}
+
+#[test]
+fn read_applies_output_token_budget_at_line_boundaries() {
+    let body: String = (0..40)
+        .map(|i| format!("line {i} describes the gizmo assembly"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let md = format!("# Guide\n\n{body}\n");
+    let files: Vec<(&str, &str)> = vec![("docs/long.md", md.as_str())];
+    let h = harness("e2e-read-budget", &files);
+    build(&files, &h);
+    let response = search_files(&files, &h, "gizmo");
+    let hit = &response.results[0];
+    let adapter = fake_adapter(&h.root, &files);
+    // A small budget truncates at a line boundary and marks the result.
+    let result = read::read(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &h.store,
+        &ReadRequest {
+            source_id: hit.source_id.clone(),
+            max_output_tokens: Some(10),
+        },
+    )
+    .unwrap();
+    assert!(result.truncated);
+    assert!(
+        repoise_core::search::estimate_tokens(&result.text) <= 10,
+        "truncated text must fit the budget"
+    );
+    // The truncation cuts from the end at a line boundary: the served text is
+    // an exact line-prefix of the full validated range text.
+    let full = read::read(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &h.store,
+        &ReadRequest {
+            source_id: hit.source_id.clone(),
+            max_output_tokens: None,
+        },
+    )
+    .unwrap();
+    assert!(full.text.starts_with(&result.text), "line-boundary prefix");
+    assert!(!result.text.contains("line 5"));
+    // The same read without a budget serves the full validated range text.
+    assert!(!full.truncated);
+    assert!(full.text.contains("line 39"));
 }
 
 #[test]
@@ -439,7 +492,10 @@ fn read_rejects_stale_sources_and_missing_files_are_dropped() {
         &adapter,
         SnapshotMode::PlainDirectory,
         &h.store,
-        &ReadRequest { source_id },
+        &ReadRequest {
+            source_id,
+            max_output_tokens: None,
+        },
     )
     .unwrap_err();
     assert!(

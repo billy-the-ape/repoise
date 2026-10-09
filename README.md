@@ -3,7 +3,8 @@
 An offline-first repository knowledge indexer for coding agents, designed to help them find
 relevant code, documentation and history with compact, source-linked context.
 
-**Status: offline docs+code index with opt-in hybrid search.** The native CLI supports
+**Status: offline docs+code index with opt-in hybrid search and a stdio MCP server.** The
+native CLI supports
 `init`, `doctor`, `explain`, `index` (incremental chunking and persistent SQLite/FTS5
 publication), `status` (scope/snapshot/freshness), `search` (offline lexical search over
 docs and code chunks, plus hybrid search over an operator-configured OpenAI-compatible
@@ -16,9 +17,13 @@ non-destructive overlay lifecycle (byte-level conflict reporting and three-way t
 migration). Code indexing covers TypeScript/TSX and JavaScript/JSX structural
 chunks with symbols and syntactic reference edges, and a line-window fallback for other
 code languages; embeddings apply to code only when the embedding scope includes it.
-MCP is not implemented yet. An opt-in local history lane (bounded mainline commits
-with separate `search --lane history` retrieval and optional verified GitHub PR
-enrichment) is available. Native `0.1.0-alpha.0`
+An opt-in local history lane (bounded mainline commits with separate
+`search --lane history` retrieval and optional verified GitHub PR enrichment) is
+available. The stdio MCP server (`repoise mcp`) exposes
+`search_project_knowledge`, `read_project_knowledge`, `related_project_knowledge` and
+`project_knowledge_status` over the same shared services — read-only by default, with an
+explicitly opt-in `refresh_project_knowledge` tool (`mcp.refresh` or `--allow-refresh`);
+see the [MCP guide](docs/mcp.md). Native `0.1.0-alpha.0`
 archives are published, along with Linux/macOS npm binary packages. The main npm
 launcher and Windows npm package are pending a registry name review; `npx repoise`
 is not yet a usable installation path.
@@ -26,6 +31,7 @@ is not yet a usable installation path.
 - [v1 master plan](docs/plans/v1_master_plan.md) — design, implementation cards and benchmark gates.
 - [Code structure](docs/architecture.md) — crate responsibilities and portability boundaries.
 - [Persistent index and cache](docs/storage.md) — storage layout, generations and invariants.
+- [MCP server](docs/mcp.md) — stdio launch, tools and client registration.
 - [Development](docs/development.md) — toolchain, checks, build and installation.
 - [Publishing](docs/publish/README.md) — npm staging, approvals, native releases and current status.
 - [Agent contributor guide](AGENTS.md) — navigation, Rust practices and documentation maintenance.
@@ -51,6 +57,7 @@ cargo run --package repoise-cli -- search --query README
 cargo run --package repoise-cli -- related --source-id <ID>  # follow links from a result
 cargo run --package repoise-cli -- check                     # stable freshness/coverage exit codes
 cargo run --package repoise-cli -- watch                     # incremental watch loop (Ctrl+C)
+cargo run --package repoise-cli -- mcp                       # stdio MCP server (see docs/mcp.md)
 ```
 
 Rust 1.99.0 is pinned. See the development guide for Unix/Windows scripts and CI artifacts.

@@ -196,6 +196,17 @@
           }
         }
       }
+    },
+    "mcp": {
+      "description": "Optional stdio MCP server settings. The server is read-only by default; the refresh tool is opt-in.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "refresh": {
+          "description": "Expose the opt-in refresh_project_knowledge MCP tool (default false). Refresh runs the same bounded, transactional index operation as `repoise index` for the configured scope.",
+          "type": "boolean"
+        }
+      }
     }
   }
 }
