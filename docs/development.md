@@ -47,6 +47,7 @@ repoise search --query <Q> [ROOT]     # offline lexical search over the current 
 repoise read --source-id <ID> [ROOT]  # exact read-back of a search result
 repoise init [ROOT]                   # idempotent, non-interactive configuration
 repoise purge                         # remove generated cache data (--all or one scope)
+repoise mcp [ROOT]                    # stdio MCP server (JSON-RPC 2.0; --allow-refresh to expose refresh)
 repoise greet | help | version
 ```
 
@@ -78,8 +79,10 @@ repoise read --source-id <ID> "$tmp"   # exact text with hash validation
 The workspace test suite covers these behaviors end to end:
 `cargo test --workspace --locked` (contract fixtures live in
 `crates/repoise-core/tests/v1_0.rs`, `crates/repoise-core/tests/v1_1.rs` and
-`crates/repoise-cli/tests/cli.rs`; secret fixtures are generated in memory and
-never stored in Git). See [storage.md](storage.md) for the persistent index layout.
+`crates/repoise-cli/tests/cli.rs`, `crates/repoise-cli/tests/mcp.rs` for the stdio MCP
+server; secret fixtures are generated in memory and
+never stored in Git). See [storage.md](storage.md) for the persistent index layout and
+[mcp.md](mcp.md) for the MCP server.
 
 ## Optional hybrid search
 

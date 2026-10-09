@@ -24,14 +24,15 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/embed.rs` | Versioned embedding provider interface, profile fingerprinting, vector dimension/finiteness validation, bounded embedding client (batching, timeout, retry, cancellation, budgets), content-addressed SQLite embedding cache and reference-counted GC |
 | `crates/repoise-core/src/history.rs` | Bounded local history lane: adapter `HistoryProvider` seam, first-parent horizon sets with explicit shallow/horizon gaps, PR-hint parsing, stable item ids, separate FTS5/BM25 history search lane, and the optional verified-host enrichment session (provider seam, repository-scoped ETag host cache, per-build budgets, fail-closed revocation) |
 | `crates/repoise-core/src/search.rs` | Lexical search (BM25 + explainable boosts, per-file cap, bound cursors, fallback suggestions) plus hybrid RRF fusion over stored vectors with retrieval-mode/coverage reporting and lexical degradation; scope resolution and GitHub permalink validation |
-| `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; `Stale` diagnostics |
+| `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; optional output-token budget with line-boundary truncation (`truncated`/`output_tokens`); `Stale` diagnostics |
 | `crates/repoise-core/src/status.rs` | Scope/snapshot/index/freshness view with config and cache diagnostics |
 | `crates/repoise-core/src/check.rs` | Offline freshness/coverage check over the status view with stable categories for automation (no provider calls) |
 | `crates/repoise-core/src/related.rs` | Bounded related-knowledge service: reference-edge, reverse-reference, parent/child-chunk and heading-structure links from a source chunk |
 | `crates/repoise-core/src/watch.rs` | Incremental watch loop: debounced scanning, coalesced per-path content, bounded pending-path publication through the shared index operation, branch-switch rescan and safe cancellation |
 | `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |
 | `crates/repoise-core/src/purge.rs` | Removal of generated cache data only, with scope-id validation |
-| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge/related/check/watch/overlay adapters) |
+| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge/related/check/watch/overlay/mcp adapters) |
+| `crates/repoise-cli/src/mcp.rs` | stdio MCP server (JSON-RPC 2.0 over stdin/stdout): `search_project_knowledge`, `read_project_knowledge`, `related_project_knowledge`, `project_knowledge_status` and the opt-in `refresh_project_knowledge`; scope-bound, read-only by default, stdout carries protocol traffic only |
 | `crates/repoise-cli/src/github_enrichment.rs` | Optional (`github-enrichment` CLI feature) read-only GitHub transport for history enrichment: commit-to-PR verification, ETag-cached change-request fetch, request budgets, rate-limit/permission classification |
 | `crates/repoise-core/tests/` and `crates/repoise-cli/tests/` | Contract and executable behavior fixtures |
 | `schemas/` | Published versioned configuration schema |
@@ -41,10 +42,12 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `.github/workflows/` | Cross-platform checks and manually requested build artifacts |
 | `docs/plans/` | Intended scope and acceptance gates, not shipped behavior |
 | `docs/storage.md` | Current-state guide for the persistent index and cache layout |
+| `docs/mcp.md` | Current-state guide for the stdio MCP server: launch, tools, client registration |
 
 The CLI depends on the core; the core must not depend on a CLI or agent client.
-A future MCP adapter must call the same core services (`indexing`, `search`, `read`,
-`status`) that the CLI adapters already use.
+The MCP stdio adapter (`crates/repoise-cli/src/mcp.rs`) calls the same core services
+(`indexing`, `search`, `read`, `related`, `status`) that the CLI adapters already use,
+and serves the identical versioned response schemas.
 Add crates when real dependency, platform or feature boundaries justify them; avoid empty
 placeholder crates.
 

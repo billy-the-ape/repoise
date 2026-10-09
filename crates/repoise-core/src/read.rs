@@ -14,14 +14,20 @@ use crate::Result;
 use crate::adapter::SnapshotMode;
 use crate::error::Error;
 use crate::hash;
-use crate::search::{github_url, scope_for_search};
+use crate::search::{estimate_tokens, github_url, scope_for_search};
 use crate::store::{self, Store};
+
+/// Default output token budget for exact reads (estimated tokens).
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 2500;
 
 /// One exact read request.
 #[derive(Clone, Debug)]
 pub struct ReadRequest {
     /// Opaque source id from a search hit.
     pub source_id: String,
+    /// Output token budget (estimated; default 2,500). Oversized exact text is
+    /// truncated at a line boundary and the response is marked truncated.
+    pub max_output_tokens: Option<u64>,
 }
 
 /// One exact read result.
@@ -45,7 +51,7 @@ pub struct ReadResult {
     /// Inclusive byte range in the snapshot file.
     pub byte_start: u64,
     pub byte_end: u64,
-    /// Chunk text at the validated range.
+    /// Chunk text at the validated range (possibly truncated to the budget).
     pub text: String,
     /// Classification role.
     pub role: String,
@@ -53,6 +59,12 @@ pub struct ReadResult {
     pub lifecycle: String,
     /// Validated permalink (GitHub remotes with Git revisions only).
     pub url: Option<String>,
+    /// Estimated output tokens consumed by the returned text.
+    pub output_tokens: u64,
+    /// Token counts are estimates (no tokenizer configured).
+    pub tokens_estimated: bool,
+    /// Whether the exact text was truncated to the output budget.
+    pub truncated: bool,
 }
 /// Reads one source exactly, validating hashes against the live snapshot.
 pub fn read(
@@ -151,6 +163,16 @@ pub fn read(
             reason: "chunk text at the stored range differs from the index".into(),
         });
     }
+    // Server-side output cap: the validated exact text is truncated at a line
+    // boundary when it exceeds the budget, and the response is marked.
+    let budget = request
+        .max_output_tokens
+        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+    let (text, truncated) = if estimate_tokens(&range_text) > budget {
+        (truncate_to_budget(&range_text, budget), true)
+    } else {
+        (range_text, false)
+    };
     Ok(ReadResult {
         source_id: request.source_id.clone(),
         scope: crate::search::ScopeView {
@@ -168,7 +190,7 @@ pub fn read(
         line_end,
         byte_start,
         byte_end,
-        text: range_text,
+        text: text.clone(),
         role,
         lifecycle,
         url: github_url(
@@ -178,5 +200,28 @@ pub fn read(
             line_start,
             line_end,
         ),
+        output_tokens: estimate_tokens(&text),
+        tokens_estimated: true,
+        truncated,
     })
+}
+
+/// Truncates validated text to the estimated token budget, preferring line
+/// boundaries. A single line longer than the budget is hard-cut.
+fn truncate_to_budget(text: &str, budget: u64) -> String {
+    let mut current = text.to_string();
+    while estimate_tokens(&current) > budget {
+        match current.rfind('\n') {
+            Some(position) if position > 0 => {
+                current = current[..position].to_string();
+            }
+            _ => {
+                let max_chars = budget as usize * 4;
+                let chars: Vec<char> = current.chars().collect();
+                current = chars.iter().take(max_chars).collect();
+                break;
+            }
+        }
+    }
+    current
 }

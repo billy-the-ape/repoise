@@ -12,15 +12,17 @@ plus card K3: opt-in OpenAI-compatible embeddings with a content-addressed cache
 vector coverage, hybrid RRF search, budgets and embedding-cache GC, and card K4:
 TypeScript/JavaScript structural code chunks, symbols, syntactic reference edges and
 the line-window fallback for other code languages (embedding scope docs or docs+code),
-card K5: the opt-in offline local history lane (`search --lane history`), and part of
-card K6: the related-knowledge service, offline `check` with stable exit codes, the
-incremental `watch` loop, and the non-destructive overlay lifecycle (init agents
-snippet, `overlay uninstall`, `overlay update` three-way template migration).
+card K5: the opt-in offline local history lane (`search --lane history`), and card K6:
+the related-knowledge service, offline `check` with stable exit codes, the incremental
+`watch` loop, the non-destructive overlay lifecycle (init agents snippet, `overlay
+uninstall`, `overlay update` three-way template migration) and the stdio MCP server
+(lexical-first; refresh tool opt-in via `mcp.refresh` or `--allow-refresh`; see
+docs/mcp.md).
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
-The npm wrapper and Windows npm package remain pending a registry name review.
-The MCP stdio server, build/Actions examples, package release validation and the
-evaluation harness remain pending; the local inference embedding preset is
-evaluated, not shipped; OIDC staging is configured but unverified.
+The npm wrapper, Windows npm package and expanded release smoke tests remain pending
+a registry name review; build/Actions examples and the evaluation harness remain
+pending. The local inference embedding preset is evaluated, not shipped; OIDC staging
+is configured but unverified.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
 ## Read only the context relevant to the task
@@ -35,6 +37,7 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | npm ownership, release controls and distribution   | [Publishing guides](docs/publish/README.md); [alpha status](docs/publish/alpha-0-status.md); [Changelog](CHANGELOG.md) |
 | Intake, parsing and freshness planning             | Master plan sections 4–7                                                                                               |
 | Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
+| MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md)                                                                                             |
 | Agent interfaces and installation                  | Master plan sections 8–10                                                                                              |
 | Benchmarks, resource budgets and adoption gates    | Master plan section 11                                                                                                 |
 | Implementation sequence and rollout                | Master plan sections 12–14                                                                                             |
