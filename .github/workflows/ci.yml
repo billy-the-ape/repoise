@@ -65,5 +65,5 @@ jobs:
       - name: Package Windows native binary
         if: runner.os == 'Windows'
         run: node scripts/release/pack.mjs ${{ matrix.target }} target/release/repoise.exe
-      - name: Smoke packed tarballs and native archive
+      - name: Smoke packed installs and native archive (offline functional fixture)
         run: node scripts/release/smoke.mjs ${{ matrix.target }}
