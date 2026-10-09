@@ -15,8 +15,12 @@
 - `read` gained an optional output-token budget with line-boundary truncation and a
   `truncated`/`output_tokens` report (CLI `--max-output-tokens`, default 2500 for
   exact reads).
-- Scope-bound server: optional `repoId`/`worktreeId`/`snapshotMode` arguments must match
-  the server-configured scope; opaque source ids remain references, not authorization.
+- Scope-bound server: optional `repoId`/`worktreeId`/`snapshotMode` arguments must
+  match the server-configured scope (refresh included); opaque source ids remain
+  references, not authorization. Tool arguments are validated against the advertised
+  input schemas (required fields, types, enums, numeric bounds,
+  `additionalProperties`) before any service call; violations are JSON-RPC
+  `-32602` invalid-params errors.
 - Client registration guide at `docs/mcp.md` (generic stdio server shape;
   client-specific examples remain unverified).
 

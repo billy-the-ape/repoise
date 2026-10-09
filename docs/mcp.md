@@ -44,13 +44,18 @@ server's configured scope is rejected with a `scope mismatch` error. Opaque
 source ids are references, not authorization: every operation rechecks the
 configured scope, and ids from other scopes fail with a clean diagnostic.
 
-Errors follow the MCP pattern: protocol failures are JSON-RPC errors
-(parse `-32700`, invalid request `-32600`, method not found `-32601`), while
-service-level failures (stale source, missing index, unknown source id,
-scope mismatch, disabled refresh) are tool results with `isError: true` and a
-diagnostic text. Cursor tokens are bound to their exact query and filters, and
-`read` failures report `stale source (...)` with the reason (content hash
-changed since the index) — never a panic.
+Errors follow the MCP conventions: protocol failures are JSON-RPC errors
+(parse `-32700`, method not found `-32601`), and tool-argument validation
+failures are JSON-RPC invalid-params errors (`-32602`). Tool arguments are
+validated against the advertised input schemas — required fields, types,
+enum values, numeric bounds and `additionalProperties: false` — before any
+service is invoked; scope mismatches and unknown tools are also rejected as
+`-32602`. Service-level failures (stale source, missing index, unknown
+source id, disabled refresh, cursor bound to a different query) are tool
+results with `isError: true` and a diagnostic text. Cursor tokens are bound
+to their exact query and filters, and `read` failures report
+`stale source (...)` with the reason (content hash changed since the
+index) — never a panic.
 
 ## Client registration
 
@@ -102,7 +107,9 @@ cargo test --package repoise-cli --test mcp --locked
 ```
 
 The acceptance suite covers protocol initialization, tool discovery/calls,
-CLI/MCP result equivalence, stale/hash errors, scope enforcement, refresh
-permissions (flag and config), cursor binding and clean shutdown on stdin EOF.
-See [AGENTS.md](../AGENTS.md) and [development.md](development.md) for the
+CLI/MCP result equivalence, argument validation (typed filters/scope arguments,
+unknown properties, numeric bounds, mismatched refresh scope with no generation
+published), stale/hash errors, scope enforcement, refresh permissions (flag
+and config), cursor binding and clean shutdown on stdin EOF. See
+[AGENTS.md](../AGENTS.md) and [development.md](development.md) for the
 full check list.

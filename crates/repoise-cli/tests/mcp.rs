@@ -130,6 +130,21 @@ impl Mcp {
             .to_string()
     }
 
+    /// A call rejected as JSON-RPC `-32602` (invalid params) before any
+    /// service is invoked.
+    fn invalid_params(&mut self, id: u32, tool: &str, args: Value) -> String {
+        let response = self.call(id, tool, args);
+        assert_eq!(
+            response["error"].get("code"),
+            Some(&json!(-32602)),
+            "expected a -32602 invalid-params error: {response}"
+        );
+        response["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .to_string()
+    }
+
     fn close(mut self) -> std::process::ExitStatus {
         // Dropping the stdin handle closes the pipe: the server sees EOF and
         // shuts down cleanly.
@@ -282,8 +297,8 @@ fn mcp_stale_hash_and_missing_errors() {
         unknown.contains("source id not in the current generation"),
         "{unknown}"
     );
-    // Unknown tools are tool-level errors, not protocol errors.
-    let unknown_tool = mcp.tool_error(5, "nope", json!({}));
+    // Unknown tools are a protocol-level invalid-params error, not a tool result.
+    let unknown_tool = mcp.invalid_params(5, "nope", json!({}));
     assert!(unknown_tool.contains("unknown tool"), "{unknown_tool}");
     mcp.close();
 }
@@ -364,20 +379,21 @@ fn mcp_scope_enforcement() {
     let root_arg = root.to_string_lossy().into_owned();
     cli_json(&["index", "--json", &root_arg]);
     let mut mcp = Mcp::spawn(&root, &[]);
-    // Opaque ids and scope arguments must match the server-configured scope.
-    let bad_repo = mcp.tool_error(
+    // Opaque ids and scope arguments must match the server-configured scope;
+    // mismatches are protocol-level invalid-params errors.
+    let bad_repo = mcp.invalid_params(
         1,
         "search_project_knowledge",
         json!({ "query": "hello", "repoId": "not-this-repo" }),
     );
     assert!(bad_repo.contains("scope mismatch"), "{bad_repo}");
-    let bad_worktree = mcp.tool_error(
+    let bad_worktree = mcp.invalid_params(
         2,
         "read_project_knowledge",
         json!({ "sourceId": "x", "worktreeId": "other-worktree" }),
     );
     assert!(bad_worktree.contains("scope mismatch"), "{bad_worktree}");
-    let bad_mode = mcp.tool_error(
+    let bad_mode = mcp.invalid_params(
         3,
         "project_knowledge_status",
         json!({ "snapshotMode": "committed" }),
@@ -460,4 +476,193 @@ fn mcp_shutdown_and_protocol_errors() {
     // Closing stdin: clean shutdown, exit code 0.
     let status = mcp.close();
     assert!(status.success(), "clean shutdown on stdin EOF");
+}
+#[test]
+fn mcp_rejects_invalidly_typed_arguments() {
+    let root = temp_root("typed-args");
+    std::fs::write(root.join("README.md"), "hello world\n").unwrap();
+    let mut mcp = Mcp::spawn(&root, &[]);
+    // Type errors are -32602 invalid-params, rejected before any service call.
+    let query = mcp.invalid_params(
+        1,
+        "search_project_knowledge",
+        json!({ "query": 42, "pathFilter": 7, "cursor": 8, "mode": 9, "role": 10 }),
+    );
+    assert!(query.contains("query must be a string"), "{query}");
+    let cursor = mcp.invalid_params(
+        2,
+        "search_project_knowledge",
+        json!({ "query": "hello", "cursor": 3 }),
+    );
+    assert!(cursor.contains("cursor must be a string"), "{cursor}");
+    let mode = mcp.invalid_params(
+        3,
+        "search_project_knowledge",
+        json!({ "query": "hello", "mode": 1 }),
+    );
+    assert!(mode.contains("mode must be a string"), "{mode}");
+    let role = mcp.invalid_params(
+        4,
+        "search_project_knowledge",
+        json!({ "query": "hello", "role": 5 }),
+    );
+    assert!(role.contains("role must be a string"), "{role}");
+    // Scope arguments must be strings too (type checks precede mismatch checks).
+    let scope = mcp.invalid_params(
+        5,
+        "project_knowledge_status",
+        json!({ "repoId": 1, "worktreeId": 2, "snapshotMode": 3 }),
+    );
+    assert!(scope.contains("repoId must be a string"), "{scope}");
+    // Unknown enum values are rejected as well.
+    let bad_role = mcp.invalid_params(
+        6,
+        "search_project_knowledge",
+        json!({ "query": "hello", "role": "bogus" }),
+    );
+    assert!(bad_role.contains("role must be one of"), "{bad_role}");
+    let bad_mode = mcp.invalid_params(
+        7,
+        "search_project_knowledge",
+        json!({ "query": "hello", "mode": "quantum" }),
+    );
+    assert!(bad_mode.contains("mode must be one of"), "{bad_mode}");
+    let bad_relation = mcp.invalid_params(
+        8,
+        "related_project_knowledge",
+        json!({ "sourceId": "x", "relations": ["bogus"] }),
+    );
+    assert!(
+        bad_relation.contains("unknown relation kind: bogus"),
+        "{bad_relation}"
+    );
+    let bad_relations = mcp.invalid_params(
+        9,
+        "related_project_knowledge",
+        json!({ "sourceId": "x", "relations": 1 }),
+    );
+    assert!(
+        bad_relations.contains("relations must be an array"),
+        "{bad_relations}"
+    );
+    mcp.close();
+}
+
+#[test]
+fn mcp_rejects_unknown_properties() {
+    let root = temp_root("unknown-props");
+    std::fs::write(root.join("README.md"), "hello world\n").unwrap();
+    let mut mcp = Mcp::spawn(&root, &[]);
+    let search = mcp.invalid_params(
+        1,
+        "search_project_knowledge",
+        json!({ "query": "hello", "extra": 1 }),
+    );
+    assert!(search.contains("unknown property: extra"), "{search}");
+    let read = mcp.invalid_params(
+        2,
+        "read_project_knowledge",
+        json!({ "sourceId": "x", "bogus": true }),
+    );
+    assert!(read.contains("unknown property: bogus"), "{read}");
+    let related = mcp.invalid_params(
+        3,
+        "related_project_knowledge",
+        json!({ "sourceId": "x", "offset": 0 }),
+    );
+    assert!(related.contains("unknown property: offset"), "{related}");
+    let status = mcp.invalid_params(4, "project_knowledge_status", json!({ "query": "x" }));
+    assert!(status.contains("unknown property: query"), "{status}");
+    mcp.close();
+}
+
+#[test]
+fn mcp_rejects_numeric_bound_violations() {
+    let root = temp_root("numeric-bounds");
+    std::fs::write(root.join("README.md"), "hello world\n").unwrap();
+    let mut mcp = Mcp::spawn(&root, &[]);
+    let zero = mcp.invalid_params(
+        1,
+        "search_project_knowledge",
+        json!({ "query": "hello", "maxResults": 0 }),
+    );
+    assert!(zero.contains("maxResults must be at least 1"), "{zero}");
+    let too_big = mcp.invalid_params(
+        2,
+        "search_project_knowledge",
+        json!({ "query": "hello", "maxResults": 21 }),
+    );
+    assert!(
+        too_big.contains("maxResults must be at most 20"),
+        "{too_big}"
+    );
+    let negative = mcp.invalid_params(
+        3,
+        "read_project_knowledge",
+        json!({ "sourceId": "x", "maxOutputTokens": -5 }),
+    );
+    assert!(
+        negative.contains("maxOutputTokens must be at least 1"),
+        "{negative}"
+    );
+    let fraction = mcp.invalid_params(
+        4,
+        "search_project_knowledge",
+        json!({ "query": "hello", "maxResults": 1.5 }),
+    );
+    assert!(
+        fraction.contains("maxResults must be an integer"),
+        "{fraction}"
+    );
+    let limit = mcp.invalid_params(
+        5,
+        "related_project_knowledge",
+        json!({ "sourceId": "x", "limit": 21 }),
+    );
+    assert!(limit.contains("limit must be at most 20"), "{limit}");
+    let rrfk = mcp.invalid_params(
+        6,
+        "search_project_knowledge",
+        json!({ "query": "hello", "rrfK": 0 }),
+    );
+    assert!(rrfk.contains("rrfK must be at least 1"), "{rrfk}");
+    mcp.close();
+}
+
+#[test]
+fn mcp_refresh_requires_matching_scope() {
+    let root = temp_root("refresh-scope");
+    std::fs::write(root.join("README.md"), "hello world\n").unwrap();
+    let mut mcp = Mcp::spawn(&root, &["--allow-refresh"]);
+    // The advertised refresh schema includes the scope-verification properties.
+    let list = mcp.request(1, "tools/list", json!({}));
+    let refresh = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "refresh_project_knowledge")
+        .expect("refresh tool advertised");
+    assert!(
+        refresh["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("repoId"),
+        "{refresh}"
+    );
+    // Mismatched scope: rejected before any index work.
+    let mismatch = mcp.invalid_params(
+        2,
+        "refresh_project_knowledge",
+        json!({ "repoId": "not-this-repo" }),
+    );
+    assert!(mismatch.contains("scope mismatch"), "{mismatch}");
+    // The rejected call published no generation.
+    let status = mcp.tool_result(3, "project_knowledge_status", json!({}));
+    assert_eq!(status["index"], Value::Null);
+    // A call with a matching scope still publishes a generation.
+    let outcome = mcp.tool_result(4, "refresh_project_knowledge", json!({}));
+    assert!(outcome["generation_id"].as_i64().unwrap() >= 1);
+    let after = mcp.tool_result(5, "project_knowledge_status", json!({}));
+    assert!(after["index"].is_object());
+    mcp.close();
 }

@@ -129,7 +129,10 @@ fn handle_message(server: &Server, line: &str) -> Option<Value> {
         "initialize" => Some(success_response(id, initialize_result(&params))),
         "ping" => Some(success_response(id, Value::Object(Map::new()))),
         "tools/list" => Some(success_response(id, json!({ "tools": server.tools() }))),
-        "tools/call" => Some(success_response(id, server.tool_call(&params))),
+        "tools/call" => match server.tool_call(&params) {
+            Ok(result) => Some(success_response(id, result)),
+            Err((code, message)) => Some(error_response(id, code, &message)),
+        },
         other => Some(error_response(
             id,
             -32601,
@@ -233,17 +236,24 @@ impl Server {
             tools.push(json!({
                 "name": "refresh_project_knowledge",
                 "description": "Opt-in incremental refresh: rebuild and publish the index for the configured scope (the same operation as `repoise index`). Never executes repository scripts.",
-                "inputSchema": json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+                "inputSchema": scope_input_schema(),
             }));
         }
         tools
     }
 
-    /// Dispatches one `tools/call` request.
-    fn tool_call(&self, params: &Value) -> Value {
+    /// Dispatches one `tools/call` request. Argument-validation failures are
+    /// JSON-RPC `-32602` invalid-params errors (no service is invoked); service
+    /// failures are MCP tool results with `isError: true`.
+    fn tool_call(&self, params: &Value) -> Result<Value, (i64, String)> {
         let object = match params.as_object() {
             Some(object) if object.get("name").and_then(Value::as_str).is_some() => object,
-            _ => return tool_error("invalid params: tools/call requires a string tool name"),
+            _ => {
+                return Err((
+                    -32602,
+                    "invalid params: tools/call requires a string tool name".into(),
+                ));
+            }
         };
         let name = object
             .get("name")
@@ -253,55 +263,168 @@ impl Server {
         let empty = Map::new();
         let arguments: &Map<String, Value> = match object.get("arguments") {
             Some(Value::Object(map)) => map,
-            Some(_) => return tool_error("invalid params: arguments must be an object"),
+            Some(_) => {
+                return Err((-32602, "invalid params: arguments must be an object".into()));
+            }
             None => &empty,
         };
-        match self.call_tool(&name, arguments) {
+        let validation = match name.as_str() {
+            "search_project_knowledge" => self.validate_search_args(arguments),
+            "read_project_knowledge" => self.validate_read_args(arguments),
+            "related_project_knowledge" => self.validate_related_args(arguments),
+            "project_knowledge_status" => self.validate_status_args(arguments),
+            "refresh_project_knowledge" => self.validate_refresh_args(arguments),
+            other => return Err((-32602, format!("unknown tool: {other}"))),
+        };
+        if let Err(message) = validation {
+            return Err((-32602, format!("invalid params for {name}: {message}")));
+        }
+        let outcome = match name.as_str() {
+            "search_project_knowledge" => self.call_search(arguments),
+            "read_project_knowledge" => self.call_read(arguments),
+            "related_project_knowledge" => self.call_related(arguments),
+            "project_knowledge_status" => self.call_status(arguments),
+            "refresh_project_knowledge" => self.call_refresh(arguments),
+            other => return Err((-32602, format!("unknown tool: {other}"))),
+        };
+        match outcome {
             Ok(value) => {
                 let text = value.to_string();
                 if text.len() > MAX_TOOL_OUTPUT_BYTES {
-                    return tool_error(&format!(
+                    return Ok(tool_error(&format!(
                         "tool result exceeded the server output cap ({MAX_TOOL_OUTPUT_BYTES} bytes); reduce maxResults or maxOutputTokens"
+                    )));
+                }
+                Ok(json!({ "content": [ { "type": "text", "text": text } ] }))
+            }
+            Err(message) => Ok(tool_error(&message)),
+        }
+    }
+
+    /// Validates search arguments against the advertised input schema
+    /// (required fields, types, enums, numeric bounds, additionalProperties).
+    fn validate_search_args(&self, args: &Map<String, Value>) -> Result<(), String> {
+        validate_required_string(args, "query")?;
+        validate_known(
+            args,
+            &[
+                "query",
+                "pathFilter",
+                "role",
+                "maxResults",
+                "maxOutputTokens",
+                "cursor",
+                "mode",
+                "rrfK",
+            ],
+        )?;
+        if let Some(value) = args.get("pathFilter") {
+            validate_string(value, "pathFilter")?;
+        }
+        if let Some(value) = args.get("role") {
+            validate_string(value, "role")?;
+            if Role::parse(value.as_str().unwrap()).is_none() {
+                return Err(
+                    "role must be one of: instruction, current-doc, decision, plan, execution-record, historical, code, config"
+                        .into(),
+                );
+            }
+        }
+        validate_u32(args, "maxResults", 1, Some(20))?;
+        validate_u64(args, "maxOutputTokens", 1)?;
+        if let Some(value) = args.get("cursor") {
+            validate_string(value, "cursor")?;
+        }
+        if let Some(value) = args.get("mode") {
+            validate_string(value, "mode")?;
+            if !matches!(
+                value.as_str().unwrap(),
+                "lexical" | "hybrid" | "vectors-only"
+            ) {
+                return Err("mode must be one of: lexical, hybrid, vectors-only".into());
+            }
+        }
+        validate_u32(args, "rrfK", 1, None)?;
+        self.check_scope(args)
+    }
+
+    /// Validates read arguments against the advertised input schema.
+    fn validate_read_args(&self, args: &Map<String, Value>) -> Result<(), String> {
+        validate_required_string(args, "sourceId")?;
+        validate_known(args, &["sourceId", "maxOutputTokens"])?;
+        validate_u64(args, "maxOutputTokens", 1)?;
+        self.check_scope(args)
+    }
+
+    /// Validates related arguments against the advertised input schema.
+    fn validate_related_args(&self, args: &Map<String, Value>) -> Result<(), String> {
+        validate_required_string(args, "sourceId")?;
+        validate_known(args, &["sourceId", "relations", "limit", "maxOutputTokens"])?;
+        if let Some(value) = args.get("relations") {
+            let Some(items) = value.as_array() else {
+                return Err("relations must be an array of relation-kind strings".into());
+            };
+            for item in items {
+                let Some(kind) = item.as_str() else {
+                    return Err(format!("relations items must be strings, found {item}"));
+                };
+                if RelationKind::parse(kind).is_none() {
+                    return Err(format!(
+                        "unknown relation kind: {kind} (expected references, referenced-by, children, or parent)"
                     ));
                 }
-                json!({ "content": [ { "type": "text", "text": text } ] })
             }
-            Err(message) => tool_error(&message),
         }
+        validate_u32(args, "limit", 1, Some(20))?;
+        validate_u64(args, "maxOutputTokens", 1)?;
+        self.check_scope(args)
     }
 
-    fn call_tool(&self, name: &str, args: &Map<String, Value>) -> Result<Value, String> {
-        match name {
-            "search_project_knowledge" => self.call_search(args),
-            "read_project_knowledge" => self.call_read(args),
-            "related_project_knowledge" => self.call_related(args),
-            "project_knowledge_status" => self.call_status(args),
-            "refresh_project_knowledge" => self.call_refresh(),
-            other => Err(format!("unknown tool: {other}")),
-        }
+    /// Validates status arguments (scope verification only).
+    fn validate_status_args(&self, args: &Map<String, Value>) -> Result<(), String> {
+        validate_known(args, &[])?;
+        self.check_scope(args)
     }
 
-    /// Validates optional scope arguments against the server-configured
-    /// scope. Opaque ids are references, not authorization: every operation
-    /// rechecks the configured scope.
+    /// Validates refresh arguments (scope verification only).
+    fn validate_refresh_args(&self, args: &Map<String, Value>) -> Result<(), String> {
+        validate_known(args, &[])?;
+        self.check_scope(args)
+    }
+
+    /// Type-checks the optional scope arguments and validates them against
+    /// the server-configured scope. Opaque ids are references, not
+    /// authorization: every operation rechecks the configured scope.
     fn check_scope(&self, args: &Map<String, Value>) -> Result<(), String> {
-        if let Some(repo) = args.get("repoId").and_then(Value::as_str)
-            && repo != self.context.repo_id
-        {
-            return Err(format!(
-                "scope mismatch: this server is bound to repo {}, refusing {repo}",
-                self.context.repo_id
-            ));
+        if let Some(value) = args.get("repoId") {
+            let repo = match value.as_str() {
+                Some(repo) => repo,
+                None => return Err("repoId must be a string".into()),
+            };
+            if repo != self.context.repo_id {
+                return Err(format!(
+                    "scope mismatch: this server is bound to repo {}, refusing {repo}",
+                    self.context.repo_id
+                ));
+            }
         }
-        if let Some(worktree) = args.get("worktreeId").and_then(Value::as_str)
-            && worktree != self.context.worktree_id
-        {
-            return Err(format!(
-                "scope mismatch: this server is bound to worktree {}, refusing {worktree}",
-                self.context.worktree_id
-            ));
+        if let Some(value) = args.get("worktreeId") {
+            let worktree = match value.as_str() {
+                Some(worktree) => worktree,
+                None => return Err("worktreeId must be a string".into()),
+            };
+            if worktree != self.context.worktree_id {
+                return Err(format!(
+                    "scope mismatch: this server is bound to worktree {}, refusing {worktree}",
+                    self.context.worktree_id
+                ));
+            }
         }
-        if let Some(mode) = args.get("snapshotMode").and_then(Value::as_str) {
+        if let Some(value) = args.get("snapshotMode") {
+            let mode = match value.as_str() {
+                Some(mode) => mode,
+                None => return Err("snapshotMode must be a string".into()),
+            };
             let expected = match self.context.mode {
                 SnapshotMode::WorkingTree => "working-tree",
                 SnapshotMode::Committed => "committed",
@@ -326,38 +449,27 @@ impl Server {
 
     fn call_search(&self, args: &Map<String, Value>) -> Result<Value, String> {
         self.check_scope(args)?;
-        let query = string_arg(args, "query")?;
+        let query = required_string(args, "query");
         if query.trim().is_empty() {
             return Err("query must not be empty".into());
         }
-        let path_filter = args
-            .get("pathFilter")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let role_filter = match args.get("role").and_then(Value::as_str) {
+        let path_filter = string_arg(args, "pathFilter");
+        let role_filter = match string_arg(args, "role").as_deref() {
             Some(name) => Some(
                 Role::parse(name)
                     .ok_or_else(|| format!("unknown role: {name} (expected instruction, current-doc, decision, plan, execution-record, historical, code, or config)"))?,
             ),
             None => None,
         };
-        let max_results = u32_arg(args, "maxResults")?;
-        let max_output_tokens = u64_arg(args, "maxOutputTokens")?;
-        let cursor = args
-            .get("cursor")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let mode = match args.get("mode").and_then(Value::as_str) {
+        let max_results = u32_value(args, "maxResults");
+        let max_output_tokens = u64_value(args, "maxOutputTokens");
+        let cursor = string_arg(args, "cursor");
+        let mode = match string_arg(args, "mode").as_deref() {
             Some("hybrid") => repoise_core::search::SearchMode::Hybrid,
             Some("vectors-only") => repoise_core::search::SearchMode::VectorsOnly,
-            Some("lexical") | None => repoise_core::search::SearchMode::Lexical,
-            Some(other) => {
-                return Err(format!(
-                    "unknown mode: {other} (expected lexical, hybrid, or vectors-only)"
-                ));
-            }
+            _ => repoise_core::search::SearchMode::Lexical,
         };
-        let rrf_k = u32_arg(args, "rrfK")?;
+        let rrf_k = u32_value(args, "rrfK");
         let query_embedder = if mode != repoise_core::search::SearchMode::Lexical {
             crate::query_embedder_from_config(&self.context.effective)?
         } else {
@@ -386,8 +498,8 @@ impl Server {
 
     fn call_read(&self, args: &Map<String, Value>) -> Result<Value, String> {
         self.check_scope(args)?;
-        let source_id = string_arg(args, "sourceId")?;
-        let max_output_tokens = u64_arg(args, "maxOutputTokens")?;
+        let source_id = required_string(args, "sourceId");
+        let max_output_tokens = u64_value(args, "maxOutputTokens");
         let result = repoise_core::read::read(
             self.context.adapter.as_ref(),
             self.context.mode,
@@ -403,7 +515,7 @@ impl Server {
 
     fn call_related(&self, args: &Map<String, Value>) -> Result<Value, String> {
         self.check_scope(args)?;
-        let source_id = string_arg(args, "sourceId")?;
+        let source_id = required_string(args, "sourceId");
         let kinds = match args.get("relations") {
             None => Vec::new(),
             Some(Value::Array(items)) => items
@@ -416,8 +528,8 @@ impl Server {
                 .collect::<Result<Vec<_>, String>>()?,
             Some(_) => return Err("relations must be an array of strings".into()),
         };
-        let limit = u32_arg(args, "limit")?;
-        let max_output_tokens = u64_arg(args, "maxOutputTokens")?;
+        let limit = u32_value(args, "limit");
+        let max_output_tokens = u64_value(args, "maxOutputTokens");
         let response = repoise_core::related::related(
             self.context.adapter.as_ref(),
             self.context.mode,
@@ -447,7 +559,8 @@ impl Server {
         serde_json::to_value(&view).map_err(|err| err.to_string())
     }
 
-    fn call_refresh(&self) -> Result<Value, String> {
+    fn call_refresh(&self, args: &Map<String, Value>) -> Result<Value, String> {
+        self.check_scope(args)?;
         if !self.allow_refresh {
             return Err(
                 "refresh_project_knowledge is not enabled: this server is read-only. Enable it with the mcp.refresh configuration (repoise.local.json / repoise.config.json) or --allow-refresh."
@@ -498,37 +611,111 @@ fn with_scope(mut schema: Value) -> Value {
     schema
 }
 
-/// Required non-empty string argument.
-fn string_arg(args: &Map<String, Value>, name: &str) -> Result<String, String> {
+/// Validates that `args` only contains properties advertised by the tool
+/// (all input schemas set `additionalProperties: false`). Scope-verification
+/// properties are allowed on every tool.
+fn validate_known(args: &Map<String, Value>, known: &[&str]) -> Result<(), String> {
+    for key in args.keys() {
+        let known = known.contains(&key.as_str())
+            || matches!(key.as_str(), "repoId" | "worktreeId" | "snapshotMode");
+        if !known {
+            return Err(format!(
+                "unknown property: {key} (it is not part of this tool's input schema)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validates a required string argument (present, string, non-empty).
+fn validate_required_string(args: &Map<String, Value>, name: &str) -> Result<(), String> {
     match args.get(name) {
-        Some(Value::String(value)) if !value.is_empty() => Ok(value.clone()),
+        Some(Value::String(value)) if !value.is_empty() => Ok(()),
         Some(Value::String(_)) => Err(format!("{name} must not be empty")),
         Some(_) => Err(format!("{name} must be a string")),
         None => Err(format!("{name} is required")),
     }
 }
 
-/// Optional positive integer argument (u32).
-fn u32_arg(args: &Map<String, Value>, name: &str) -> Result<Option<u32>, String> {
-    match args.get(name) {
-        None => Ok(None),
-        Some(Value::Number(number)) => number
-            .as_u64()
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| format!("{name} must be a positive integer"))
-            .map(Some),
-        Some(_) => Err(format!("{name} must be a positive integer")),
+/// Validates an optional argument is a string (type check only).
+fn validate_string(value: &Value, name: &str) -> Result<(), String> {
+    match value.as_str() {
+        Some(_) => Ok(()),
+        None => Err(format!("{name} must be a string")),
     }
 }
 
-/// Optional positive integer argument (u64).
-fn u64_arg(args: &Map<String, Value>, name: &str) -> Result<Option<u64>, String> {
-    match args.get(name) {
-        None => Ok(None),
-        Some(Value::Number(number)) => number
-            .as_u64()
-            .ok_or_else(|| format!("{name} must be a positive integer"))
-            .map(Some),
-        Some(_) => Err(format!("{name} must be a positive integer")),
+/// Validates an optional integer argument (u32) within advertised bounds
+/// (`minimum` defaults to 1, matching `minimum: 1` in the schemas).
+fn validate_u32(
+    args: &Map<String, Value>,
+    name: &str,
+    minimum: u32,
+    maximum: Option<u32>,
+) -> Result<(), String> {
+    let Some(value) = args.get(name) else {
+        return Ok(());
+    };
+    if let Some(int) = value.as_i64()
+        && int < 0
+    {
+        return Err(format!("{name} must be at least {minimum}"));
     }
+    let Some(number) = value.as_u64().and_then(|number| u32::try_from(number).ok()) else {
+        return Err(format!("{name} must be an integer"));
+    };
+    if number < minimum {
+        return Err(format!("{name} must be at least {minimum}"));
+    }
+    if let Some(maximum) = maximum
+        && number > maximum
+    {
+        return Err(format!("{name} must be at most {maximum}"));
+    }
+    Ok(())
+}
+
+/// Validates an optional integer argument (u64) within advertised bounds
+/// (`minimum` is 1, matching `minimum: 1` in the schemas).
+fn validate_u64(args: &Map<String, Value>, name: &str, minimum: u64) -> Result<(), String> {
+    let Some(value) = args.get(name) else {
+        return Ok(());
+    };
+    if let Some(int) = value.as_i64()
+        && int < 0
+    {
+        return Err(format!("{name} must be at least {minimum}"));
+    }
+    let Some(number) = value.as_u64() else {
+        return Err(format!("{name} must be an integer"));
+    };
+    if number < minimum {
+        return Err(format!("{name} must be at least {minimum}"));
+    }
+    Ok(())
+}
+
+/// Required string argument (validated to be a non-empty string before use).
+fn required_string(args: &Map<String, Value>, name: &str) -> String {
+    args.get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Optional string argument (validated to be a string before use).
+fn string_arg(args: &Map<String, Value>, name: &str) -> Option<String> {
+    args.get(name).and_then(Value::as_str).map(str::to_string)
+}
+
+/// Optional integer argument (u32; validated within advertised bounds).
+fn u32_value(args: &Map<String, Value>, name: &str) -> Option<u32> {
+    args.get(name)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+/// Optional integer argument (u64; validated within advertised bounds).
+fn u64_value(args: &Map<String, Value>, name: &str) -> Option<u64> {
+    args.get(name).and_then(Value::as_u64)
 }
