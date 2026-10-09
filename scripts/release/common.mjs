@@ -100,5 +100,19 @@ export function verifyVersion(tag) {
     readFileSync(new URL("../../npm/repoise/LICENSE", import.meta.url), "utf8")
   )
     throw new Error("License copies differ");
+  if (
+    readFileSync(
+      new URL("../../schemas/repoise.config.v1.schema.json", import.meta.url),
+      "utf8",
+    ) !==
+    readFileSync(
+      new URL(
+        "../../npm/repoise/schemas/repoise.config.v1.schema.json",
+        import.meta.url,
+      ),
+      "utf8",
+    )
+  )
+    throw new Error("Config schema copies differ");
   return version;
 }

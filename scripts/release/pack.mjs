@@ -18,9 +18,15 @@ mkdirSync(join(directory, "bin"), { recursive: true });
 cpSync(binary, join(directory, "bin", spec.binary));
 chmodSync(join(directory, "bin", spec.binary), 0o755);
 cpSync(join(root, "LICENSE"), join(directory, "LICENSE"));
+const schemas = join(directory, "schemas");
+mkdirSync(schemas, { recursive: true });
+cpSync(
+  join(root, "schemas/repoise.config.v1.schema.json"),
+  join(schemas, "repoise.config.v1.schema.json"),
+);
 writeFileSync(
   join(directory, "README.md"),
-  `# Repoise native binary\n\n${spec.target}; version ${version}. Early scaffold; indexing is not implemented. MIT licensed.\n`,
+  `# Repoise native binary\n\n${spec.target}; version ${version}. Offline docs+code lexical index, exact reads and stdio MCP; no Node/npm required. MIT licensed.\n`,
 );
 const config = {
   name: spec.package,
@@ -29,7 +35,7 @@ const config = {
   license: "MIT",
   os: [spec.os],
   cpu: [spec.cpu],
-  files: ["bin/", "LICENSE", "README.md"],
+  files: ["bin/", "schemas/", "LICENSE", "README.md"],
   repository: { ...manifest().repository, directory: "crates/repoise-cli" },
   publishConfig: manifest().publishConfig,
 };
@@ -57,5 +63,6 @@ run("tar", [
   directory,
   "LICENSE",
   "README.md",
+  "schemas",
 ]);
 console.log(out);
