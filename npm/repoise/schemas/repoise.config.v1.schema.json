@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/billy-the-ape/repoise/schemas/repoise.config.v1.schema.json",
+  "title": "Repoise repository configuration (schema version 1)",
+  "description": "Committed root configuration for the offline-first repository knowledge indexer. Configuration is data only; it is never executed. Secret material must be referenced through environment variables, never stored here. The local operator override file repoise.local.json uses the same shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "description": "Configuration schema version. Must be 1 for this build.",
+      "type": "integer",
+      "const": 1
+    },
+    "preset": {
+      "description": "Corpus preset. docs-only indexes documentation and configuration only; docs-code-lexical (default) adds offline lexical code indexing; hybrid adds embedding search and requires an explicitly selected provider.",
+      "type": "string",
+      "enum": ["docs-only", "docs-code-lexical", "hybrid"]
+    },
+    "inheritGitIgnores": {
+      "description": "Whether native Git ignore files (.gitignore, .git/info/exclude) are inherited (default true). Secret deny rules and containment checks always remain enforced.",
+      "type": "boolean"
+    },
+    "include": {
+      "description": "Narrow gitignore-style re-include patterns. A broad include never overrides secret deny rules or mandatory containment.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "exclude": {
+      "description": "Extra gitignore-style exclude patterns applied after package defaults.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "maxFileBytes": {
+      "description": "Maximum file size in bytes accepted into the corpus (default 1048576). Larger files are skipped with a diagnostic.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "documentRoles": {
+      "description": "Configured role mappings: gitignore-style pattern to document role. Last matching rule wins. Explicit front matter still takes precedence.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["pattern", "role"],
+        "properties": {
+          "pattern": { "type": "string", "minLength": 1 },
+          "role": {
+            "type": "string",
+            "enum": [
+              "instruction",
+              "current-doc",
+              "decision",
+              "plan",
+              "execution-record",
+              "historical",
+              "code",
+              "config"
+            ]
+          }
+        }
+      }
+    },
+    "cacheDir": {
+      "description": "Generated-data directory, kept out of the corpus by default (default .repoise). Never point this into version control.",
+      "type": "string",
+      "minLength": 1
+    },
+    "embedding": {
+      "description": "Optional embedding provider settings (operator-selected, never mandatory). Secrets resolve only through environment references.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "description": "Provider name chosen by the operator.",
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "description": "Which chunks are embedded: docs (default) or all (docs and code).",
+          "type": "string",
+          "enum": ["docs", "all"]
+        },
+        "endpoint": {
+          "description": "Endpoint reference; must be an environment reference like env:VAR_NAME, never a literal secret-bearing URL.",
+          "type": "string",
+          "pattern": "^env:[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "model": {
+          "description": "Model identifier.",
+          "type": "string",
+          "minLength": 1
+        },
+        "dimensions": {
+          "description": "Vector dimension the model produces.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "apiKeyEnv": {
+          "description": "Environment variable name holding the API key (never the secret itself).",
+          "type": "string",
+          "minLength": 1
+        },
+        "batchSize": {
+          "description": "Maximum inputs per provider batch (default 32).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutMs": {
+          "description": "Per-batch request timeout in milliseconds (default 30000).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxRetries": {
+          "description": "Retries after the first attempt for a failed batch (default 2).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxRequestsPerBuild": {
+          "description": "Maximum provider batches per build (default 500).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxInputCharsPerBuild": {
+          "description": "Maximum input characters accepted per build (default 1000000).",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "search": {
+      "description": "Optional hybrid retrieval settings.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rrfK": {
+          "description": "Reciprocal-rank-fusion k (default 60).",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "history": {
+      "description": "Optional local history lane (off until enabled). Local collection is offline; hosting enrichment is opt-in.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "description": "Enable the local history lane for builds (default false).",
+          "type": "boolean"
+        },
+        "horizon": {
+          "description": "Maximum mainline commits recorded per build (default 500).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxPathsPerCommit": {
+          "description": "Maximum changed paths kept per commit (default 20).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "diffHunks": {
+          "description": "Collect bounded diff hunk descriptors (default false).",
+          "type": "boolean"
+        },
+        "enrichment": {
+          "description": "Optional host change-request enrichment settings (opt-in, disabled by default).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["host", "tokenEnv"],
+          "properties": {
+            "host": {
+              "description": "Host name (github).",
+              "type": "string",
+              "enum": ["github"]
+            },
+            "tokenEnv": {
+              "description": "Environment variable name holding the host token (never the secret itself).",
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "maxPrsPerBuild": {
+              "description": "Maximum change requests enriched per build (default 10).",
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxRequestsPerBuild": {
+              "description": "Maximum host requests per build (default 50).",
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxBodyChars": {
+              "description": "Maximum fetched body characters kept per record (default 20000).",
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "mcp": {
+      "description": "Optional stdio MCP server settings. The server is read-only by default; the refresh tool is opt-in.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "refresh": {
+          "description": "Expose the opt-in refresh_project_knowledge MCP tool (default false). Refresh runs the same bounded, transactional index operation as `repoise index` for the configured scope.",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

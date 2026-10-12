@@ -19,9 +19,13 @@ uninstall`, `overlay update` three-way template migration) and the stdio MCP ser
 (lexical-first; refresh tool opt-in via `mcp.refresh` or `--allow-refresh`; see
 docs/mcp.md).
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
-The npm wrapper, Windows npm package and expanded release smoke tests remain pending
-a registry name review; build/Actions examples and the evaluation harness remain
-pending. The local inference embedding preset is evaluated, not shipped; OIDC staging
+The npm wrapper and Windows npm package remain pending a registry name review;
+build/Actions examples and the evaluation harness remain pending. Package release
+validation ships in the CI/release matrices: the packed-consumer smoke runs the
+same offline docs+code fixture (init, index, search, read, status, check, stdio MCP
+with read-only refresh refusal, bundled schema assets, no-Node native runs) against
+both the installed launcher and the extracted native archive on Linux, macOS and
+Windows. The local inference embedding preset is evaluated, not shipped; OIDC staging
 is configured but unverified.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 

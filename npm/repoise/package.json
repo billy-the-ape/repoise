@@ -1,7 +1,7 @@
 {
   "name": "repoise",
   "version": "0.1.0-alpha.0",
-  "description": "Offline-first repository knowledge for coding agents (early native CLI scaffold)",
+  "description": "Offline-first repository knowledge for coding agents (offline docs+code lexical index, exact reads and stdio MCP)",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,6 +15,7 @@
   },
   "files": [
     "bin/",
+    "schemas/",
     "README.md",
     "LICENSE"
   ],

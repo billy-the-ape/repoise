@@ -2,6 +2,25 @@
 
 ## Unreleased (cards K4–K6)
 
+### Card K6 — package release validation
+
+- The packed-consumer smoke now runs the same offline docs+code fixture (one Markdown doc
+  plus TypeScript and JavaScript sources) against both the installed npm launcher and the
+  extracted native archive, from outside the source checkout: `init --preset
+  docs-code-lexical`, `index`, lexical `search` (doc and code hits), exact `read` back of
+  the expected text, `status` and `check --fresh` reporting a fresh index, and a stdio MCP
+  session (initialization, initialized notification, tool discovery, search/read/status
+  with CLI-identical results, clean shutdown on stdin EOF) that verifies the default server
+  hides and refuses `refresh_project_knowledge`.
+- Native functional runs use no Node/npm on PATH; the generated cache is isolated per
+  install; every subprocess is bounded by timeouts and the temporary tree is removed on
+  exit, so broken MCP behavior cannot hang CI.
+- The versioned config schema (`schemas/repoise.config.v1.schema.json`) ships in both
+  installed forms and is verified against the committed source; tree-sitter parser grammars
+  remain compiled into the native binary.
+- The smoke runs in the Linux/macOS/Windows CI and release matrices. The public registry
+  install path remains unvalidated pending the registry name review.
+
 ### Card K6 — stdio MCP server
 
 - `repoise mcp`: stdio MCP server (JSON-RPC 2.0 on stdin/stdout) exposing
