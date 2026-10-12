@@ -1,0 +1,119 @@
+{
+  "manifestVersion": 1,
+  "revision": "1",
+  "description": "Frozen synthetic evaluation fixtures for the offline lexical harness (card K6, item 6). All content is synthetic and public-safe. `files` maps corpus/path to the SHA-256 of the committed fixture content; each corpus replay is a deterministic Git history built from `commits` (fixed author/committer dates and identity). `dirty` operations are applied to the worktree after the clean index, for the stale/dirty scenario. History-gold revision refs resolve to the commit `ref` in the replayed history.",
+  "git": {
+    "branch": "main",
+    "userName": "Repoise Fixture",
+    "userEmail": "fixture@repoise.invalid"
+  },
+  "corpora": {
+    "acme": {
+      "kind": "git",
+      "commits": [
+        {
+          "ref": "c1",
+          "date": "2026-09-01T12:00:00Z",
+          "message": "Add README, fake env material and repoise config",
+          "files": ["README.md", ".env", "repoise.config.json"]
+        },
+        {
+          "ref": "c2",
+          "date": "2026-09-03T12:00:00Z",
+          "message": "Add relay sources and the in-memory queue plan",
+          "files": ["src/relay/relay.ts", "src/index.ts", "docs/plans/relay-plan.md"]
+        },
+        {
+          "ref": "c3",
+          "date": "2026-09-05T12:00:00Z",
+          "message": "Add ledger reconciliation and ADR 001",
+          "files": ["src/ledger/ledger.ts", "docs/decisions/adr-001-relay-commit.md"]
+        },
+        {
+          "ref": "c4",
+          "date": "2026-09-10T12:00:00Z",
+          "message": "Add relay behavioral tests",
+          "files": ["tests/relay.test.ts"]
+        },
+        {
+          "ref": "c5",
+          "date": "2026-09-15T12:00:00Z",
+          "message": "Document current architecture and legacy notes",
+          "files": ["docs/current/architecture.md", "docs/legacy/notes.md", "src/legacy/compat.js"],
+          "fileContents": {
+            "src/legacy/compat.js": "function legacyShim(items) {\n  return items.map((item) => String(item));\n}\n\nmodule.exports = { legacyShim };\n"
+          }
+        },
+        {
+          "ref": "c6",
+          "date": "2026-09-18T12:00:00Z",
+          "message": "Rename legacyShim to legacyShimV2",
+          "files": ["src/legacy/compat.js"]
+        }
+      ],
+      "dirty": [
+        {
+          "op": "appendLines",
+          "path": "src/relay/relay.ts",
+          "lines": ["// dirtymarkerzebra uncommitted worktree change"]
+        },
+        {
+          "op": "replaceText",
+          "path": "docs/current/architecture.md",
+          "old": "two-phase commit",
+          "new": "single-phase commit"
+        }
+      ]
+    },
+    "docs-site": {
+      "kind": "git",
+      "commits": [
+        {
+          "ref": "c1",
+          "date": "2026-09-01T12:00:00Z",
+          "message": "Add meridian archive docs",
+          "files": ["README.md", "docs/handbook.md", "docs/archive.md"]
+        }
+      ],
+      "dirty": []
+    },
+    "pyrepo": {
+      "kind": "git",
+      "commits": [
+        {
+          "ref": "c1",
+          "date": "2026-09-02T12:00:00Z",
+          "message": "Add pyrepo guide",
+          "files": ["docs/guide.md"]
+        },
+        {
+          "ref": "c2",
+          "date": "2026-09-04T12:00:00Z",
+          "message": "Add python core and utilities",
+          "files": ["py/core.py", "py/util.py"]
+        }
+      ],
+      "dirty": []
+    }
+  },
+  "files": {
+    "acme/.env": "8139af33cc09d9307852d0a656d40d3d3657cfb7ca24a3bfa6280288ae8875e2",
+    "acme/README.md": "6fe35817a18719493efd875877bd522eb5e3ad7a45acb51cb65cabea4c2fd8c2",
+    "acme/docs/current/architecture.md": "71d5ec1ff0160f92f2889e5c12a59c700028744fc23f1e64e5e85451087c3a34",
+    "acme/docs/decisions/adr-001-relay-commit.md": "f4680673fc67e1470a25e966458a575f33704239177590f84a223193986a27b2",
+    "acme/docs/legacy/notes.md": "d031b8ee4a4c5207d8cf1b745e2afd3fbe0bda5c5a04e57bb79cbf0fd61b77c5",
+    "acme/docs/plans/relay-plan.md": "ab1e609b3172d045a40426835e18bf4d9da42604cd25ff2de89bd75c0ea493c1",
+    "acme/repoise.config.json": "99571dd63f7ae3e18eb75c868db46aba7e83d02961922f2c42ea26faad7f40f4",
+    "acme/src/index.ts": "3cbc35fcc32998c627d829d85c5a536010f79e6cb92e3207d6ca01ef64a04776",
+    "acme/src/ledger/ledger.ts": "f38979b0fe22253a882d06d3403c4599209e6cf352eb99500dcda44a96897b63",
+    "acme/src/legacy/compat.js": "ffd80a8aa95cff07904c1d2ecc0e042fbd56863107020e119b66f36435e74406",
+    "acme/src/relay/relay.ts": "aae489b25ef67145168d0567bcc7eb98ab25ba2bb1da3dfe46f6227daeda709d",
+    "acme/tests/relay.test.ts": "b0bf5a7ed204b89b55f266421785f9b9bbf5a6d08f3315bb244ef6fceaccd073",
+    "docs-site/README.md": "27490e17aeb6392a0f98023b0389fca93954bf215b34e4e5e977920fc0c28219",
+    "docs-site/docs/archive.md": "a116a043b4c124a1fd0781f8d56b1daf4d73e93d8264d2a8963dc5cc63f6a15a",
+    "docs-site/docs/handbook.md": "751bcfd601060243e590a239396131f8cbb29eea93feb7aa64b6dfaf5167486d",
+    "pyrepo/docs/guide.md": "e1f5f0627b23ffd848d1d8caca12fc38b9a10a6ed281d32bfdfb2555b03584b2",
+    "pyrepo/py/core.py": "45cad283e322d0b63f9b66958d7676d5a865f39b19dacae60a74c006a3c08d29",
+    "pyrepo/py/util.py": "afc753375ce598c250427dda2f80e7278418e72583ced6b2e1a94c18479fe1e1"
+  }
+}

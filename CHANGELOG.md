@@ -21,6 +21,38 @@
 - The smoke runs in the Linux/macOS/Windows CI and release matrices. The public registry
   install path remains unvalidated pending the registry name review.
 
+### Card K6 — offline lexical evaluation harness
+
+- New reproducible offline evaluation path under `scripts/eval/`: frozen synthetic
+  public-safe fixtures (`acme` docs+TypeScript/JavaScript, `docs-site` docs-only,
+  `pyrepo` Python fallback) with a SHA-256 file freeze and deterministic replayed git
+  history, plus a dirty-worktree phase.
+- 60 labeled queries (48 in-tuning, 12 held-out) across exact identifiers, unknown
+  concepts, current-vs-plan conflicts, history, code behavior, tests,
+  unsupported-language fallback, docs-only, dirty/stale, secret-policy and
+  cross-scope categories; gold evidence is path/range/revision.
+- `node scripts/eval/harness.mjs` runs the built native CLI per corpus/preset,
+  measures cold build, corpus/index sizes and warm search p50/p95 (per CLI
+  invocation), validates provenance for every returned hit (path presence and
+  SHA-256 content hash at the snapshot revision, line-range bounds, history
+  revision/affected-path checks), compares the `docs-only` and `docs-code-lexical`
+  presets on the acme corpus, and writes machine-readable `results.json` plus
+  `report.md` (in git-ignored `eval-results/`) with hardware, versions and declared
+  settings.
+- Master-plan section 11 gates are reported as measured-passed, measured-failed or
+  unmeasured: exact lookup, policy, held-out recall@5 and warm latency are measured;
+  token reduction, code vectors and hybrid latency stay unmeasured — the harness
+  never infers token savings from retrieval size and never runs hybrid without an
+  operator-configured embedding provider.
+- Validated import format for real agent replay evidence
+  (`scripts/eval/replay-evidence.schema.json`, imported via
+  `--replay-evidence`): fixed model/tasks/revision/budgets and per-run measured model
+  input/output tokens, retrieval output tokens, tool count, elapsed time, task
+  correctness; derived values and missing task x condition cells are rejected.
+- Harness tests run via `npm test` (`node --test scripts/eval/*.test.mjs`); runbook at
+  `scripts/eval/RUNBOOK.md` (commands, held-out separation, pilot evidence workflow,
+  acceptance targets, rollback).
+
 ### Card K6 — stdio MCP server
 
 - `repoise mcp`: stdio MCP server (JSON-RPC 2.0 on stdin/stdout) exposing
