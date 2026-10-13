@@ -34,6 +34,7 @@ is not yet a usable installation path.
 - [MCP server](docs/mcp.md) — stdio launch, tools and client registration.
 - [Development](docs/development.md) — toolchain, checks, build and installation.
 - [Publishing](docs/publish/README.md) — npm staging, approvals, native releases and current status.
+- [Evaluation runbook](scripts/eval/RUNBOOK.md) — offline lexical evaluation on frozen fixtures.
 - [Agent contributor guide](AGENTS.md) — navigation, Rust practices and documentation maintenance.
 
 The planned native tool works independently of Node, npm, any particular language/framework,
@@ -61,3 +62,23 @@ cargo run --package repoise-cli -- mcp                       # stdio MCP server 
 ```
 
 Rust 1.99.0 is pinned. See the development guide for Unix/Windows scripts and CI artifacts.
+
+## Evaluation (offline lexical)
+
+A reproducible offline evaluation harness runs the native CLI against frozen
+synthetic fixtures (docs, TypeScript/JavaScript, Python fallback, history and
+dirty/stale scenarios) with 60 labeled queries (12 held-out), validates
+provenance for every returned hit, and reports recall@5, exact-lookup success,
+policy failures, cold build and warm search timings, corpus/index sizes,
+hardware, versions and declared settings:
+
+```sh
+cargo build --package repoise-cli
+node scripts/eval/harness.mjs          # results in eval-results/ (git-ignored)
+node --test scripts/eval/*.test.mjs    # fixture, query, metric and replay-format tests
+```
+
+Hybrid presets and the real agent pilot are explicitly unmeasured until an
+operator-configured embedding provider and the owner-approved replay evidence
+exist; the runbook documents the replay import format, acceptance targets and
+rollback. See [scripts/eval/RUNBOOK.md](scripts/eval/RUNBOOK.md).

@@ -46,7 +46,10 @@ Pushing a tag alone does not start it.
 | `stage_npm`    | Stage all four npm packages through OIDC; default false     |
 | `draft_native` | Create an unpublished native release draft; default false   |
 
-Both options false performs validation/build/assembly only. Channels can run independently.
+Both options false performs validation/build/assembly only — validation runs never
+publish: no npm package is published and no GitHub release is created. `stage_npm`
+explicitly stages the four npm packages through OIDC, and `draft_native` explicitly
+creates an unpublished native release draft. Channels can run independently.
 Tag validation checks synchronized versions/main ancestry and resolves an immutable commit.
 Builds use pinned Rust, Cargo.lock, Node 24 and fixed hosted runner labels. They run formatting,
 release-tool tests, Clippy, Rust tests and packed-consumer smoke on all three platforms.

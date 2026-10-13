@@ -30,3 +30,6 @@ dist/
 # Repoise generated data and operator-only local overrides (never commit)
 .repoise/
 repoise.local.json
+
+# Evaluation harness outputs (generated results stay out of Git)
+eval-results/

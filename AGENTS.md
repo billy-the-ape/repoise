@@ -20,7 +20,11 @@ uninstall`, `overlay update` three-way template migration) and the stdio MCP ser
 docs/mcp.md).
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
 The npm wrapper and Windows npm package remain pending a registry name review;
-build/Actions examples and the evaluation harness remain pending. Package release
+build/Actions examples remain pending. The offline lexical evaluation harness
+(frozen synthetic fixtures, 60 labeled queries with 12 held-out, per-hit
+provenance validation, recall@5/exact/policy/timing metrics, replay-evidence
+import format and runbook under scripts/eval/) has landed; hybrid evaluation
+and the owner-approved live agent pilot remain pending. Package release
 validation ships in the CI/release matrices: the packed-consumer smoke runs the
 same offline docs+code fixture (init, index, search, read, status, check, stdio MCP
 with read-only refresh refusal, bundled schema assets, no-Node native runs) against
