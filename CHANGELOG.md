@@ -49,9 +49,23 @@
   `--replay-evidence`): fixed model/tasks/revision/budgets and per-run measured model
   input/output tokens, retrieval output tokens, tool count, elapsed time, task
   correctness; derived values and missing task x condition cells are rejected.
-- Harness tests run via `npm test` (`node --test scripts/eval/*.test.mjs`); runbook at
-  `scripts/eval/RUNBOOK.md` (commands, held-out separation, pilot evidence workflow,
-  acceptance targets, rollback).
+- Shared-cache isolation phase: the harness indexes `acme` and `docs-site` into one
+  shared cache root, then verifies that foreign source ids are not readable from the
+  other scope (both directions, with content inspection), that an in-scope exact read
+  returns the exact snapshot text, and that an earlier source id is rejected as stale
+  after the indexed file changes; uncovered cases are reported as unmeasured.
+- Replay evidence is fail-closed: an invalid or malformed `--replay-evidence` file
+  stops the harness with clear diagnostics and a nonzero exit before any indexing work.
+  Aggregated token means divide by the summed `sampleSize` (per-sample means); the
+  correct rate is labeled task-level; the mean-based reduction is labeled descriptive
+  and does not establish the median-reduction gate.
+- Harness tests run via `npm test` (`node --test scripts/release/*.test.mjs
+  scripts/eval/*.test.mjs`), including regression tests for unequal sample sizes,
+  zero-token baselines, task-level correctness, null/duplicate task entries,
+  injected isolation leaks and the nonzero-exit import path; the eval JavaScript and
+  JSON files are covered by `format`/`format:check` without touching the frozen
+  fixture bytes. Runbook at `scripts/eval/RUNBOOK.md` (commands, held-out separation,
+  pilot evidence workflow, acceptance targets, rollback).
 
 ### Card K6 — stdio MCP server
 

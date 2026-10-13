@@ -14,6 +14,11 @@ pilot are explicitly out of scope here (unmeasured, not approximated).
   at the snapshot revision, SHA-256 content hash equality, line-range bounds,
   and history-lane revision/affected-path validation.
 - Policy failures: secret material, cross-scope leaks, stale (dirty) text.
+- Shared-cache scope isolation: both corpora indexed into one cache root, then
+  foreign source ids are rejected from the other scope (both directions,
+  content inspected), an in-scope exact read must return the exact snapshot
+  text, and an earlier source id must be rejected as stale after the indexed
+  file changes. Cases the fixtures cannot exercise are reported as unmeasured.
 - Docs-only vs docs-code-lexical preset comparison on the shared acme corpus.
 - Master-plan section 11 gates, each reported as measured-passed,
   measured-failed, or unmeasured.
@@ -30,7 +35,8 @@ pilot are explicitly out of scope here (unmeasured, not approximated).
 cargo build --package repoise-cli        # native CLI (debug build is fine)
 node scripts/eval/harness.mjs            # full run -> eval-results/ (git-ignored)
 node scripts/eval/harness.mjs --iterations 5 --out /tmp/eval-quick   # quick loop
-node --test scripts/eval/*.test.mjs      # fixture/query/metric/replay-format tests
+npm test                                 # release + eval tests (node --test)
+node --test scripts/eval/*.test.mjs      # eval tests only
 ```
 
 Useful options: `--out DIR`, `--iterations N` (warm samples per query),
@@ -86,13 +92,21 @@ owner-approved ai-gateway pilot (collected later). One document per run:
   elapsed ms, task correctness, retrieval errors, stale evidence, and sample
   size.
 
-Validation is strict: unknown fields are rejected (derived values such as
-token-savings percentages cannot be imported), non-integer token counts are
-rejected, and every task x condition cell must be present. `harness.mjs
---replay-evidence FILE` imports a valid file, summarizes measured per-
-condition values, and reports any reduction figure as *derived at report time
-from measured totals* — it never treats a reduction as a raw measurement.
-Missing measurements stay missing: gates G5/G6/G7 remain unmeasured until
+Validation is strict and fail-closed: unknown fields are rejected (derived
+values such as token-savings percentages cannot be imported), non-integer
+token counts are rejected, null task entries and duplicate task ids are
+rejected, and every task x condition cell must be present. An invalid or
+malformed `--replay-evidence FILE` stops the harness with clear diagnostics
+and a nonzero exit before any indexing work.
+`harness.mjs --replay-evidence FILE` imports a valid file, summarizes
+measured per-condition values, and reports any reduction figure as
+*derived at report time from measured totals* — it never treats a reduction
+as a raw measurement. Aggregated token means divide by the summed
+`sampleSize` (per-sample means), the correct rate is labeled task-level
+(`taskCorrect` is a task-level boolean; successful-repeat counts are never
+inferred), and the mean-based reduction is labeled descriptive: it does not
+establish the planned median-reduction adoption gate (G5). Missing
+measurements stay missing: gates G5/G6/G7 remain unmeasured until
 real evidence exists.
 
 ## Acceptance targets (master plan section 11)

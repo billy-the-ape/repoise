@@ -11,7 +11,9 @@
       "heldOut": false,
       "category": "exact-identifier",
       "query": "computeBatchId",
-      "gold": [{ "path": "src/relay/relay.ts", "line_start": 6, "line_end": 12 }]
+      "gold": [
+        { "path": "src/relay/relay.ts", "line_start": 6, "line_end": 12 }
+      ]
     },
     {
       "id": "Q-ACME-EXACT-02",
@@ -22,7 +24,9 @@
       "heldOut": false,
       "category": "exact-identifier",
       "query": "reconcileLedger",
-      "gold": [{ "path": "src/ledger/ledger.ts", "line_start": 6, "line_end": 12 }]
+      "gold": [
+        { "path": "src/ledger/ledger.ts", "line_start": 6, "line_end": 12 }
+      ]
     },
     {
       "id": "Q-ACME-EXACT-03",
@@ -33,7 +37,9 @@
       "heldOut": false,
       "category": "exact-identifier",
       "query": "enqueue pending RelayBatch",
-      "gold": [{ "path": "src/relay/relay.ts", "line_start": 21, "line_end": 25 }]
+      "gold": [
+        { "path": "src/relay/relay.ts", "line_start": 21, "line_end": 25 }
+      ]
     },
     {
       "id": "Q-ACME-EXACT-04",
@@ -44,7 +50,9 @@
       "heldOut": false,
       "category": "exact-identifier",
       "query": "batchIdHex digest",
-      "gold": [{ "path": "src/relay/relay.ts", "line_start": 14, "line_end": 16 }]
+      "gold": [
+        { "path": "src/relay/relay.ts", "line_start": 14, "line_end": 16 }
+      ]
     },
     {
       "id": "Q-ACME-EXACT-05",
@@ -55,7 +63,9 @@
       "heldOut": false,
       "category": "exact-identifier",
       "query": "legacyShimV2 items",
-      "gold": [{ "path": "src/legacy/compat.js", "line_start": 1, "line_end": 3 }]
+      "gold": [
+        { "path": "src/legacy/compat.js", "line_start": 1, "line_end": 3 }
+      ]
     },
     {
       "id": "Q-ACME-EXACT-06",
@@ -78,7 +88,11 @@
       "category": "exact-doc",
       "query": "ADR 001 relay commit protocol",
       "gold": [
-        { "path": "docs/decisions/adr-001-relay-commit.md", "line_start": 1, "line_end": 5 }
+        {
+          "path": "docs/decisions/adr-001-relay-commit.md",
+          "line_start": 1,
+          "line_end": 5
+        }
       ]
     },
     {
@@ -90,7 +104,13 @@
       "heldOut": false,
       "category": "exact-doc",
       "query": "journal.tsv state directory",
-      "gold": [{ "path": "docs/current/architecture.md", "line_start": 3, "line_end": 5 }]
+      "gold": [
+        {
+          "path": "docs/current/architecture.md",
+          "line_start": 3,
+          "line_end": 5
+        }
+      ]
     },
     {
       "id": "Q-ACME-CONFLICT-01",
@@ -102,8 +122,16 @@
       "category": "current-vs-plan",
       "query": "relay commit",
       "gold": [
-        { "path": "docs/current/architecture.md", "line_start": 3, "line_end": 5 },
-        { "path": "docs/decisions/adr-001-relay-commit.md", "line_start": 1, "line_end": 5 }
+        {
+          "path": "docs/current/architecture.md",
+          "line_start": 3,
+          "line_end": 5
+        },
+        {
+          "path": "docs/decisions/adr-001-relay-commit.md",
+          "line_start": 1,
+          "line_end": 5
+        }
       ],
       "assertRolesPresent": ["current-doc", "plan"],
       "note": "Current doc, ADR and plan all match; the gold evidence must be in the top 5 and both the current-doc and plan evidence must be surfaced with their correct roles (lexical ranking is density-driven, so strict current-over-plan ordering is not asserted)."
@@ -117,7 +145,9 @@
       "heldOut": false,
       "category": "current-vs-plan",
       "query": "relay in-memory event queue",
-      "gold": [{ "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }],
+      "gold": [
+        { "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }
+      ],
       "assertRolesPresent": ["plan"],
       "note": "Proposed work must be found in the top 5 and labeled plan, not current."
     },
@@ -130,7 +160,9 @@
       "heldOut": false,
       "category": "current-vs-plan",
       "query": "plan drains before shutdown",
-      "gold": [{ "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }],
+      "gold": [
+        { "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }
+      ],
       "expectTopRole": "plan"
     },
     {
@@ -142,7 +174,13 @@
       "heldOut": false,
       "category": "current-vs-plan",
       "query": "two-phase commit mirror confirms",
-      "gold": [{ "path": "docs/current/architecture.md", "line_start": 3, "line_end": 5 }],
+      "gold": [
+        {
+          "path": "docs/current/architecture.md",
+          "line_start": 3,
+          "line_end": 5
+        }
+      ],
       "assertRolesPresent": ["current-doc"],
       "note": "The current-doc evidence must be found in the top 5 and labeled current-doc (the short ADR also matches a subset of the terms and may rank higher by BM25 density)."
     },
@@ -156,8 +194,16 @@
       "category": "unknown-concept",
       "query": "relay two-phase commit durable journal",
       "gold": [
-        { "path": "docs/current/architecture.md", "line_start": 3, "line_end": 5 },
-        { "path": "docs/decisions/adr-001-relay-commit.md", "line_start": 1, "line_end": 5 }
+        {
+          "path": "docs/current/architecture.md",
+          "line_start": 3,
+          "line_end": 5
+        },
+        {
+          "path": "docs/decisions/adr-001-relay-commit.md",
+          "line_start": 1,
+          "line_end": 5
+        }
       ]
     },
     {
@@ -170,7 +216,11 @@
       "category": "unknown-concept",
       "query": "decision relay two-phase commit durable journal",
       "gold": [
-        { "path": "docs/decisions/adr-001-relay-commit.md", "line_start": 1, "line_end": 5 }
+        {
+          "path": "docs/decisions/adr-001-relay-commit.md",
+          "line_start": 1,
+          "line_end": 5
+        }
       ]
     },
     {
@@ -182,7 +232,9 @@
       "heldOut": false,
       "category": "unknown-concept",
       "query": "in-memory event queue drain shutdown risks",
-      "gold": [{ "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }]
+      "gold": [
+        { "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }
+      ]
     },
     {
       "id": "Q-ACME-CONCEPT-04",
@@ -193,7 +245,9 @@
       "heldOut": false,
       "category": "unknown-concept",
       "query": "ledger synced cron midnight flat file",
-      "gold": [{ "path": "docs/legacy/notes.md", "line_start": 8, "line_end": 9 }]
+      "gold": [
+        { "path": "docs/legacy/notes.md", "line_start": 8, "line_end": 9 }
+      ]
     },
     {
       "id": "Q-ACME-CONCEPT-05",
@@ -204,7 +258,13 @@
       "heldOut": false,
       "category": "unknown-concept",
       "query": "ledger reconciles batches nightly published",
-      "gold": [{ "path": "docs/current/architecture.md", "line_start": 7, "line_end": 8 }]
+      "gold": [
+        {
+          "path": "docs/current/architecture.md",
+          "line_start": 7,
+          "line_end": 8
+        }
+      ]
     },
     {
       "id": "Q-ACME-CONCEPT-06",
@@ -215,7 +275,9 @@
       "heldOut": false,
       "category": "unknown-concept",
       "query": "computeBatchId digest records",
-      "gold": [{ "path": "src/relay/relay.ts", "line_start": 6, "line_end": 12 }]
+      "gold": [
+        { "path": "src/relay/relay.ts", "line_start": 6, "line_end": 12 }
+      ]
     },
     {
       "id": "Q-ACME-CONCEPT-07",
@@ -226,7 +288,9 @@
       "heldOut": false,
       "category": "unknown-concept",
       "query": "enqueue pending batch RelayBatch",
-      "gold": [{ "path": "src/relay/relay.ts", "line_start": 21, "line_end": 25 }]
+      "gold": [
+        { "path": "src/relay/relay.ts", "line_start": 21, "line_end": 25 }
+      ]
     },
     {
       "id": "Q-ACME-HIST-01",
@@ -281,7 +345,9 @@
       "heldOut": false,
       "category": "code-behavior",
       "query": "batchIdHex digest toString",
-      "gold": [{ "path": "src/relay/relay.ts", "line_start": 14, "line_end": 16 }]
+      "gold": [
+        { "path": "src/relay/relay.ts", "line_start": 14, "line_end": 16 }
+      ]
     },
     {
       "id": "Q-ACME-CODE-02",
@@ -292,7 +358,9 @@
       "heldOut": false,
       "category": "code-behavior",
       "query": "reconcileLedger entries amount total",
-      "gold": [{ "path": "src/ledger/ledger.ts", "line_start": 6, "line_end": 12 }]
+      "gold": [
+        { "path": "src/ledger/ledger.ts", "line_start": 6, "line_end": 12 }
+      ]
     },
     {
       "id": "Q-ACME-CODE-03",
@@ -303,7 +371,9 @@
       "heldOut": false,
       "category": "code-behavior",
       "query": "legacyShimV2 items map String",
-      "gold": [{ "path": "src/legacy/compat.js", "line_start": 1, "line_end": 3 }]
+      "gold": [
+        { "path": "src/legacy/compat.js", "line_start": 1, "line_end": 3 }
+      ]
     },
     {
       "id": "Q-ACME-CODE-04",
@@ -325,7 +395,9 @@
       "heldOut": false,
       "category": "tests",
       "query": "computeBatchId stable first second",
-      "gold": [{ "path": "tests/relay.test.ts", "line_start": 3, "line_end": 7 }]
+      "gold": [
+        { "path": "tests/relay.test.ts", "line_start": 3, "line_end": 7 }
+      ]
     },
     {
       "id": "Q-ACME-TEST-02",
@@ -336,7 +408,9 @@
       "heldOut": false,
       "category": "tests",
       "query": "testQueueDrainsOnFlush enqueue flush",
-      "gold": [{ "path": "tests/relay.test.ts", "line_start": 9, "line_end": 13 }]
+      "gold": [
+        { "path": "tests/relay.test.ts", "line_start": 9, "line_end": 13 }
+      ]
     },
     {
       "id": "Q-ACME-TEST-03",
@@ -347,7 +421,9 @@
       "heldOut": false,
       "category": "tests",
       "query": "relay tests flush enqueue",
-      "gold": [{ "path": "tests/relay.test.ts", "line_start": 9, "line_end": 13 }]
+      "gold": [
+        { "path": "tests/relay.test.ts", "line_start": 9, "line_end": 13 }
+      ]
     },
     {
       "id": "Q-ACME-DIRTY-01",
@@ -371,7 +447,13 @@
       "heldOut": false,
       "category": "dirty-stale",
       "query": "two-phase commit durable journal",
-      "gold": [{ "path": "docs/current/architecture.md", "line_start": 3, "line_end": 5 }],
+      "gold": [
+        {
+          "path": "docs/current/architecture.md",
+          "line_start": 3,
+          "line_end": 5
+        }
+      ],
       "dirtyPhase": true,
       "requireSnapshotHash": true,
       "note": "After the dirty edit, the hit must still carry the HEAD content hash, not the dirty bytes."
@@ -385,7 +467,9 @@
       "heldOut": false,
       "category": "dirty-stale",
       "query": "single-phase commit queue",
-      "gold": [{ "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }],
+      "gold": [
+        { "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }
+      ],
       "dirtyPhase": true,
       "note": "The dirty tree says single-phase in architecture.md; the snapshot must not serve dirty bytes (enforced by the per-hit provenance hash check)."
     },
@@ -567,7 +651,9 @@
       "heldOut": true,
       "category": "exact-identifier",
       "query": "computeBatchId records digest",
-      "gold": [{ "path": "src/relay/relay.ts", "line_start": 6, "line_end": 12 }]
+      "gold": [
+        { "path": "src/relay/relay.ts", "line_start": 6, "line_end": 12 }
+      ]
     },
     {
       "id": "Q-ACME-HOLD-EXACT-02",
@@ -578,7 +664,9 @@
       "heldOut": true,
       "category": "exact-identifier",
       "query": "reconcileLedger entries total",
-      "gold": [{ "path": "src/ledger/ledger.ts", "line_start": 6, "line_end": 12 }]
+      "gold": [
+        { "path": "src/ledger/ledger.ts", "line_start": 6, "line_end": 12 }
+      ]
     },
     {
       "id": "Q-DOCS-HOLD-EXACT-01",
@@ -600,7 +688,13 @@
       "heldOut": true,
       "category": "unknown-concept",
       "query": "mirror confirms batch journal accepts",
-      "gold": [{ "path": "docs/current/architecture.md", "line_start": 3, "line_end": 5 }]
+      "gold": [
+        {
+          "path": "docs/current/architecture.md",
+          "line_start": 3,
+          "line_end": 5
+        }
+      ]
     },
     {
       "id": "Q-ACME-HOLD-CONCEPT-02",
@@ -612,7 +706,11 @@
       "category": "unknown-concept",
       "query": "superseded event queue proposal v1",
       "gold": [
-        { "path": "docs/decisions/adr-001-relay-commit.md", "line_start": 1, "line_end": 5 }
+        {
+          "path": "docs/decisions/adr-001-relay-commit.md",
+          "line_start": 1,
+          "line_end": 5
+        }
       ]
     },
     {
@@ -624,7 +722,9 @@
       "heldOut": true,
       "category": "unknown-concept",
       "query": "drains before shutdown assumes queue",
-      "gold": [{ "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }]
+      "gold": [
+        { "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }
+      ]
     },
     {
       "id": "Q-ACME-HOLD-CONCEPT-04",
@@ -635,7 +735,9 @@
       "heldOut": true,
       "category": "unknown-concept",
       "query": "flat file replaced journal adr",
-      "gold": [{ "path": "docs/legacy/notes.md", "line_start": 8, "line_end": 9 }]
+      "gold": [
+        { "path": "docs/legacy/notes.md", "line_start": 8, "line_end": 9 }
+      ]
     },
     {
       "id": "Q-DOCS-HOLD-CONCEPT-01",
@@ -679,7 +781,9 @@
       "heldOut": true,
       "category": "current-vs-plan",
       "query": "in-memory queue single-phase",
-      "gold": [{ "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }],
+      "gold": [
+        { "path": "docs/plans/relay-plan.md", "line_start": 5, "line_end": 7 }
+      ],
       "expectTopRole": "plan"
     },
     {

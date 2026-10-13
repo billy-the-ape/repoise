@@ -13,14 +13,17 @@ const CONDITIONS = [
   "docs-code-hybrid",
 ];
 
-const isNonEmptyString = (value) => typeof value === "string" && value.length > 0;
+const isNonEmptyString = (value) =>
+  typeof value === "string" && value.length > 0;
 const isInteger = (value) => Number.isInteger(value);
 const isNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
 function rejectUnknown(object, allowed, errors, where) {
   for (const key of Object.keys(object)) {
     if (!allowed.includes(key)) {
-      errors.push(`${where}: unknown field "${key}" (derived/inferred values are not importable)`);
+      errors.push(
+        `${where}: unknown field "${key}" (derived/inferred values are not importable)`,
+      );
     }
   }
 }
@@ -31,13 +34,31 @@ export function validateReplayEvidence(doc) {
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
     return { ok: false, errors: ["document must be a JSON object"] };
   }
-  rejectUnknown(doc, ["schemaVersion", "runId", "recordedAt", "operator", "fixed", "conditions", "runs"], errors, "root");
+  rejectUnknown(
+    doc,
+    [
+      "schemaVersion",
+      "runId",
+      "recordedAt",
+      "operator",
+      "fixed",
+      "conditions",
+      "runs",
+    ],
+    errors,
+    "root",
+  );
   if (doc.schemaVersion !== 1) errors.push("schemaVersion must be 1");
-  if (!isNonEmptyString(doc.runId)) errors.push("runId must be a non-empty string");
-  if (typeof doc.recordedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(doc.recordedAt)) {
+  if (!isNonEmptyString(doc.runId))
+    errors.push("runId must be a non-empty string");
+  if (
+    typeof doc.recordedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(doc.recordedAt)
+  ) {
     errors.push("recordedAt must be an RFC 3339 UTC timestamp ending in Z");
   }
-  if (!isNonEmptyString(doc.operator)) errors.push("operator must be a non-empty string");
+  if (!isNonEmptyString(doc.operator))
+    errors.push("operator must be a non-empty string");
 
   const fixed = doc.fixed;
   if (typeof fixed !== "object" || fixed === null || Array.isArray(fixed)) {
@@ -54,36 +75,72 @@ export function validateReplayEvidence(doc) {
       errors.push("fixed.model must be an object");
     } else {
       rejectUnknown(model, ["name", "revision"], errors, "fixed.model");
-      if (!isNonEmptyString(model.name)) errors.push("fixed.model.name must be a non-empty string");
-      if (!isNonEmptyString(model.revision)) errors.push("fixed.model.revision must be a non-empty string");
+      if (!isNonEmptyString(model.name))
+        errors.push("fixed.model.name must be a non-empty string");
+      if (!isNonEmptyString(model.revision))
+        errors.push("fixed.model.revision must be a non-empty string");
     }
     if (!Array.isArray(fixed.tasks) || fixed.tasks.length < 1) {
       errors.push("fixed.tasks must be a non-empty array");
     } else {
+      const seenTaskIds = new Set();
       for (const [i, task] of fixed.tasks.entries()) {
-        rejectUnknown(task, ["id", "correctnessCriteria"], errors, `fixed.tasks[${i}]`);
-        if (!isNonEmptyString(task?.id)) errors.push(`fixed.tasks[${i}].id must be a non-empty string`);
-        if (!isNonEmptyString(task?.correctnessCriteria)) {
-          errors.push(`fixed.tasks[${i}].correctnessCriteria must be a non-empty string`);
+        if (typeof task !== "object" || task === null || Array.isArray(task)) {
+          errors.push(`fixed.tasks[${i}] must be an object`);
+          continue;
+        }
+        rejectUnknown(
+          task,
+          ["id", "correctnessCriteria"],
+          errors,
+          `fixed.tasks[${i}]`,
+        );
+        if (!isNonEmptyString(task.id)) {
+          errors.push(`fixed.tasks[${i}].id must be a non-empty string`);
+        } else if (seenTaskIds.has(task.id)) {
+          errors.push(
+            `fixed.tasks[${i}].id "${task.id}" is a duplicate task id`,
+          );
+        } else {
+          seenTaskIds.add(task.id);
+        }
+        if (!isNonEmptyString(task.correctnessCriteria)) {
+          errors.push(
+            `fixed.tasks[${i}].correctnessCriteria must be a non-empty string`,
+          );
         }
       }
     }
-    if (!isNonEmptyString(fixed.revision)) errors.push("fixed.revision must be a non-empty string");
+    if (!isNonEmptyString(fixed.revision))
+      errors.push("fixed.revision must be a non-empty string");
     const budgets = fixed.budgets;
-    if (typeof budgets !== "object" || budgets === null || Array.isArray(budgets)) {
+    if (
+      typeof budgets !== "object" ||
+      budgets === null ||
+      Array.isArray(budgets)
+    ) {
       errors.push("fixed.budgets must be an object");
     } else {
-      rejectUnknown(budgets, ["contextCapTokens", "maxOutputTokens", "maxToolCalls"], errors, "fixed.budgets");
+      rejectUnknown(
+        budgets,
+        ["contextCapTokens", "maxOutputTokens", "maxToolCalls"],
+        errors,
+        "fixed.budgets",
+      );
       for (const key of ["contextCapTokens", "maxOutputTokens"]) {
         if (!isInteger(budgets[key]) || budgets[key] < 1) {
           errors.push(`fixed.budgets.${key} must be an integer >= 1`);
         }
       }
-      if (budgets.maxToolCalls !== undefined && (!isInteger(budgets.maxToolCalls) || budgets.maxToolCalls < 1)) {
+      if (
+        budgets.maxToolCalls !== undefined &&
+        (!isInteger(budgets.maxToolCalls) || budgets.maxToolCalls < 1)
+      ) {
         errors.push("fixed.budgets.maxToolCalls must be an integer >= 1");
       }
     }
-    if (!isNonEmptyString(fixed.promptVersion)) errors.push("fixed.promptVersion must be a non-empty string");
+    if (!isNonEmptyString(fixed.promptVersion))
+      errors.push("fixed.promptVersion must be a non-empty string");
   }
 
   if (!Array.isArray(doc.conditions) || doc.conditions.length < 2) {
@@ -92,7 +149,8 @@ export function validateReplayEvidence(doc) {
     errors.push("conditions must be unique");
   } else {
     for (const condition of doc.conditions) {
-      if (!CONDITIONS.includes(condition)) errors.push(`unknown condition "${condition}"`);
+      if (!CONDITIONS.includes(condition))
+        errors.push(`unknown condition "${condition}"`);
     }
   }
 
@@ -102,7 +160,9 @@ export function validateReplayEvidence(doc) {
   } else {
     const seen = new Set();
     const taskIds = new Set(
-      Array.isArray(fixed?.tasks) ? (fixed.tasks.map((task) => task?.id).filter(Boolean)) : [],
+      Array.isArray(fixed?.tasks)
+        ? fixed.tasks.map((task) => task?.id).filter(Boolean)
+        : [],
     );
     const declared = Array.isArray(doc.conditions) ? doc.conditions : [];
     for (const [i, run] of runs.entries()) {
@@ -129,13 +189,17 @@ export function validateReplayEvidence(doc) {
         errors,
         where,
       );
-      if (!isNonEmptyString(run.task)) errors.push(`${where}.task must be a non-empty string`);
+      if (!isNonEmptyString(run.task))
+        errors.push(`${where}.task must be a non-empty string`);
       else if (taskIds.size > 0 && !taskIds.has(run.task)) {
         errors.push(`${where}.task "${run.task}" is not in fixed.tasks`);
       }
-      if (!CONDITIONS.includes(run.condition)) errors.push(`${where}.condition must be a declared matrix condition`);
+      if (!CONDITIONS.includes(run.condition))
+        errors.push(`${where}.condition must be a declared matrix condition`);
       else if (!declared.includes(run.condition)) {
-        errors.push(`${where}.condition "${run.condition}" is not in the declared conditions`);
+        errors.push(
+          `${where}.condition "${run.condition}" is not in the declared conditions`,
+        );
       }
       if (!isInteger(run.sampleSize) || run.sampleSize < 1) {
         errors.push(`${where}.sampleSize must be an integer >= 1`);
@@ -149,14 +213,18 @@ export function validateReplayEvidence(doc) {
         "staleEvidence",
       ]) {
         if (!isInteger(run[key]) || run[key] < 0) {
-          errors.push(`${where}.${key} must be a measured integer >= 0 (never inferred)`);
+          errors.push(
+            `${where}.${key} must be a measured integer >= 0 (never inferred)`,
+          );
         }
       }
       if (!isNumber(run.elapsedMs) || run.elapsedMs < 0) {
         errors.push(`${where}.elapsedMs must be a measured number >= 0`);
       }
       if (typeof run.taskCorrect !== "boolean") {
-        errors.push(`${where}.taskCorrect must be a measured boolean (never guessed)`);
+        errors.push(
+          `${where}.taskCorrect must be a measured boolean (never guessed)`,
+        );
       }
       const key = `${run.task}|${run.condition}`;
       if (seen.has(key)) errors.push(`duplicate run for ${key}`);
@@ -166,7 +234,9 @@ export function validateReplayEvidence(doc) {
       for (const task of taskIds) {
         for (const condition of declared) {
           if (!seen.has(`${task}|${condition}`)) {
-            errors.push(`missing measured run for task ${task} under condition ${condition}`);
+            errors.push(
+              `missing measured run for task ${task} under condition ${condition}`,
+            );
           }
         }
       }
@@ -217,23 +287,42 @@ export function summarizeReplayEvidence(doc) {
         condition,
         {
           ...entry,
-          correctRate: entry.correct / entry.runs,
+          // Task-level rate: fraction of task x condition entries whose
+          // task-level boolean is true. This is not a per-sample correctness
+          // rate; successful-repeat counts are not recorded, so none are
+          // inferred here.
+          taskCorrectRate: entry.correct / entry.runs,
         },
       ]),
     ),
   };
-  const lexical = byCondition["lexical"] ?? byCondition["docs-code-lexical"];
-  const baseline = byCondition["curated-docs-rg"];
-  if (lexical && baseline) {
+  // Token fields are totals over sampleSize repeats (schema), so per-sample
+  // means divide by the summed sampleSize, never by the entry count.
+  const baselineCondition = "curated-docs-rg";
+  const candidateCondition =
+    "lexical" in byCondition ? "lexical" : "docs-code-lexical";
+  const baseline = byCondition[baselineCondition];
+  const candidate = byCondition[candidateCondition];
+  if (baseline && candidate) {
     // Derived at report time from measured totals; never imported as a claim.
-    const baselineMean = baseline.modelInputTokens / baseline.runs;
-    const lexicalMean = lexical.modelInputTokens / lexical.runs;
+    const baselineMean = baseline.modelInputTokens / baseline.sampleSize;
+    const candidateMean = candidate.modelInputTokens / candidate.sampleSize;
     summary.inputTokenReduction = {
-      baseline: "curated-docs-rg",
-      candidate: "lexical",
+      baseline: baselineCondition,
+      candidate: candidateCondition,
+      baselineSamples: baseline.sampleSize,
+      candidateSamples: candidate.sampleSize,
       baselineMeanInputTokens: baselineMean,
-      candidateMeanInputTokens: lexicalMean,
-      reductionFraction: baselineMean === 0 ? null : (baselineMean - lexicalMean) / baselineMean,
+      candidateMeanInputTokens: candidateMean,
+      reductionFraction:
+        baselineMean === 0
+          ? null
+          : (baselineMean - candidateMean) / baselineMean,
+      note:
+        "Descriptive mean of per-sample model input tokens over the imported repetitions. " +
+        "It does not establish the planned >= 20% median-reduction adoption gate (G5), " +
+        "which requires the owner-approved live pilot with measured medians and no " +
+        "task-correctness decrease.",
     };
   }
   return summary;

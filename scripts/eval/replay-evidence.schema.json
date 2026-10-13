@@ -5,7 +5,15 @@
   "description": "Machine-readable import format for real agent replay evidence (master plan section 11). Only directly measured quantities are accepted: every numeric field must come from an actual recorded run. Derived values (token savings, efficiency ratios, estimates) are forbidden: unknown properties are rejected at every level, so a fabricated or inferred field fails validation. The full task x condition matrix is required so results cannot be cherry-picked. Model names, task ids, revision and budgets are fixed for the whole run. Private pilot content stays out of this file: task entries carry only an id and the correctness criteria, never transcripts or repository payloads. Validation is implemented in scripts/eval/replay.mjs (no external schema engine dependency).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "runId", "recordedAt", "operator", "fixed", "conditions", "runs"],
+  "required": [
+    "schemaVersion",
+    "runId",
+    "recordedAt",
+    "operator",
+    "fixed",
+    "conditions",
+    "runs"
+  ],
   "properties": {
     "schemaVersion": {
       "description": "Import format version. Must be 1 for this build.",
