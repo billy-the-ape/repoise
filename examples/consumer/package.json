@@ -1,0 +1,11 @@
+{
+  "name": "repoise-consumer-example",
+  "private": true,
+  "description": "Example owner-invoked package scripts for an owned checkout. Not hooks; they run only when invoked. The CI example does not run these.",
+  "scripts": {
+    "repoise:init": "repoise init --preset docs-code-lexical",
+    "repoise:index": "repoise index",
+    "repoise:check": "repoise check --fresh",
+    "repoise:watch": "repoise watch"
+  }
+}

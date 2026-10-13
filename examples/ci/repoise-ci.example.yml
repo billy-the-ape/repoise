@@ -1,0 +1,59 @@
+# EXAMPLE ONLY — copy into .github/workflows/ after substituting a published version.
+# This file does not live in .github/workflows/ and is not executed by this repository.
+#
+# Minimal offline docs-code-lexical CI: pinned install, exact checkout SHA, credential
+# persistence disabled, an isolated per-run cache, and `index` then `check --fresh`.
+# No cache restore, no artifact upload, no consumer package scripts, no remote providers.
+name: Repoise index (example)
+
+on:
+  # push + pull_request only. Never pull_request_target: that would let untrusted PR
+  # content run with the base branch's privileges.
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only. Indexing neither posts comments, commits indexes nor publishes npm packages.
+permissions:
+  contents: read
+
+jobs:
+  index-check:
+    # A clean checkout rebuilds the index from scratch on each run.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Disable credential persistence so no checkout token is available to later
+          # steps. The offline index needs no remote access.
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install the pinned repoise launcher (registry)
+        # REPLACE_WITH_VALIDATED_RELEASE_VERSION is substituted by the publication
+        # runbook once a functional release is published. Do not run consumer
+        # package scripts (no `npm run ...`) here.
+        run: >-
+          npm install --ignore-scripts --no-audit --no-fund
+          repoise@REPLACE_WITH_VALIDATED_RELEASE_VERSION
+
+      - name: Report the exact checked-out revision
+        # Report the SHA as the checkout string, not a re-resolved ref. A default
+        # shallow checkout (depth 1) bounds any optional history lane to the available
+        # commits and reports explicit gaps; it never invents history.
+        run: echo "repoise is indexing revision ${GITHUB_SHA}"
+
+      - name: Build the offline index (isolated, from scratch)
+        # Isolate the generated cache to a per-run directory outside the workspace so
+        # it is never committed, restored, uploaded or shared.
+        env:
+          REPOISE_CACHE_DIR: ${{ runner.temp }}/repoise
+        run: npx repoise index
+
+      - name: Verify freshness (stops the build when missing/stale/unmet)
+        env:
+          REPOISE_CACHE_DIR: ${{ runner.temp }}/repoise
+        run: npx repoise check --fresh
