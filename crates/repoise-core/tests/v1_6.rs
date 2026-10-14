@@ -533,7 +533,8 @@ fn simulate_template_upgrade(repo: &DirRepo) {
     let manifest_path = repo.root.join(repoise_core::OVERLAY_FILENAME);
     let mut manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
-    let old_block = repoise_core::init::managed_block().replace("1.0.0", "0.9.0");
+    let old_block =
+        repoise_core::init::managed_block().replace(repoise_core::TEMPLATE_VERSION, "0.9.0");
     for entry in manifest["files"].as_array_mut().unwrap().iter_mut() {
         match entry["path"].as_str().unwrap() {
             repoise_core::CONFIG_FILENAME => {
@@ -737,7 +738,8 @@ fn adopt_managed_block_in_agents_md_keeps_managed_block_role() {
 
     // A template upgrade migrates the generic block; it must never be
     // replaced by the agents-snippet text.
-    let old_block = repoise_core::init::managed_block().replace("1.0.0", "0.9.0");
+    let old_block =
+        repoise_core::init::managed_block().replace(repoise_core::TEMPLATE_VERSION, "0.9.0");
     std::fs::write(repo.root.join("AGENTS.md"), format!("{old_block}\n")).unwrap();
     let mut manifest: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(repo.root.join(repoise_core::OVERLAY_FILENAME)).unwrap(),
@@ -778,7 +780,8 @@ fn overlay_update_re_pins_manifest_versions() {
     manifest["template_version"] = serde_json::json!("0.9.0");
     for entry in manifest["files"].as_array_mut().unwrap().iter_mut() {
         if entry["path"] == "README.md" {
-            let old_block = repoise_core::init::managed_block().replace("1.0.0", "0.9.0");
+            let old_block = repoise_core::init::managed_block()
+                .replace(repoise_core::TEMPLATE_VERSION, "0.9.0");
             entry["installed"] = serde_json::json!(&old_block);
         }
     }
@@ -786,7 +789,7 @@ fn overlay_update_re_pins_manifest_versions() {
         repo.root.join("README.md"),
         format!(
             "# Repo\n\nHello.\n{}\n",
-            repoise_core::init::managed_block().replace("1.0.0", "0.9.0")
+            repoise_core::init::managed_block().replace(repoise_core::TEMPLATE_VERSION, "0.9.0")
         ),
     )
     .unwrap();
@@ -873,7 +876,8 @@ fn init_upgrades_stale_manifest_and_update_can_migrate() {
     );
 
     // A later template upgrade now migrates through the 3-way merge.
-    let old_block = repoise_core::init::managed_block().replace("1.0.0", "0.9.0");
+    let old_block =
+        repoise_core::init::managed_block().replace(repoise_core::TEMPLATE_VERSION, "0.9.0");
     std::fs::write(
         repo.root.join("README.md"),
         format!("# Repo\n\nHello.\n{old_block}\n"),

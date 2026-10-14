@@ -2,6 +2,49 @@
 
 ## Unreleased (cards K4–K6)
 
+### Pre-v1 reliability — pilot follow-up
+
+- `doctor` now reports the invocation it actually used: the selected snapshot
+  mode (`--committed` for Git roots is honored) and the configuration paths
+  actually selected (repository defaults or external `--config` /
+  `--local-config` overrides), each with an existence status. Before, `doctor`
+  always reported the working-tree mode and only the in-repository config
+  paths, regardless of the flags used with the other commands.
+- Lexical search now enforces its documented match semantics: the FTS5
+  expression joined per-term field groups with top-level `AND` but left the
+  per-term `OR` groups unparenthesized, so FTS5 precedence (AND binds tighter
+  than OR) silently relaxed multi-term queries to a mostly-OR match. Each
+  per-term group is now parenthesized (the history lane already carried this
+  fix), so every whitespace query term must co-occur in one chunk again.
+  Query-time only: no reindex required, but broad queries may return fewer,
+  more precise results than before.
+- The in-tuning eval query Q-ACME-TEST-01 was relabeled
+  ("computeBatchId stable first second" → "computeBatchId first second"):
+  its "stable" term occurs only inside the camelCase identifier
+  `testBatchIdIsStable`, which the unicode61 tokenizer keeps as one token,
+  so under the strict all-terms semantics the old query could match no
+  chunk. Gold evidence and held-out set are unchanged; the adoption gates
+  are measured against held-out queries only. (Follow-up candidate:
+  query-side camelCase term splitting for identifier substrings.)
+- Copied fixture/test-data content (paths under `fixture(s)`, `testdata`,
+  `test-data`, `test_data`, `test_fixtures`, `__fixtures__`, `__snapshots__`)
+  stays fully searchable but no longer gains the current-document ranking
+  boost, so copied test input can no longer claim current-document authority
+  over real sources for ordinary queries. Classification is unchanged, and
+  explicit path filters targeting fixtures still work. Query-time only: no
+  reindex required.
+- Agent retrieval guidance is now shipped in the MCP tool descriptions, the
+  CLI help text and the managed `AGENTS.md` snippet (template version bumped
+  to 1.1.0): excerpts locate evidence and are not the source (use exact
+  reads of source ids); short excerpts do not mean the source is
+  unavailable; refine irrelevant results with discovered identifiers/symbols
+  and path/role filters; paginate with `cursor` when results are truncated;
+  empty `related` results do not establish missing evidence; fall back to
+  targeted filesystem reads only when indexed evidence is insufficient and
+  explain the limitation; keep attempts bounded. Existing overlays pick up
+  the new snippet with `repoise overlay update` (unchanged blocks migrate;
+  user-modified blocks report conflicts, user content is preserved).
+
 ### Card K6 — package release validation
 
 - The packed-consumer smoke now runs the same offline docs+code fixture (one Markdown doc

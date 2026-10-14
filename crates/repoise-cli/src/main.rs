@@ -132,6 +132,15 @@ SEARCH OPTIONS:
     --rrf-k <N>                 Reciprocal-rank-fusion k for hybrid mode (default from config)
     --lane <LANE>               Search lane: search (default, current docs/code) or history
 
+RETRIEVAL WORKFLOW:
+    Results carry short excerpts that locate evidence, not the full source; use
+    `read --source-id <ID>` to inspect the exact implementation. A short excerpt
+    is not evidence the indexed source is unavailable. Refine irrelevant results
+    with discovered identifiers/symbols and --path-filter/--role; use --cursor
+    when results are truncated. An empty `related` result does not establish
+    missing evidence. Fall back to targeted filesystem reads when indexed
+    evidence remains insufficient, and keep retrieval attempts bounded.
+
 READ OPTIONS:
     --source-id <ID>            Opaque source id from a search result
 
@@ -495,8 +504,8 @@ fn config_paths(opts: &CliOptions) -> ConfigPaths {
 fn run_doctor(opts: &CliOptions) -> Result<ExitCode, String> {
     let cli = cli_overrides(opts)?;
     let paths = config_paths(opts);
-    let report =
-        repoise_core::doctor::doctor(&opts.root, &cli, &paths).map_err(|err| err.to_string())?;
+    let report = repoise_core::doctor::doctor(&opts.root, &cli, &paths, opts.committed)
+        .map_err(|err| err.to_string())?;
     if opts.json {
         println!("{}", json(&report)?);
     } else {

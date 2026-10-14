@@ -29,19 +29,21 @@ pub fn print_doctor(report: &DoctorReport) {
         report.remote_identity.as_deref().unwrap_or("(none)")
     );
     println!(
-        "config: {}",
-        if report.config_file.is_some() {
-            "repoise.config.json (present)"
+        "config: {} ({})",
+        report.config_file.display(),
+        if report.config_file_exists {
+            "present"
         } else {
-            "repoise.config.json (absent)"
+            "absent"
         }
     );
     println!(
-        "local: {}",
-        if report.local_config_file.is_some() {
-            "repoise.local.json (present)"
+        "local: {} ({})",
+        report.local_config_file.display(),
+        if report.local_config_file_exists {
+            "present"
         } else {
-            "repoise.local.json (absent)"
+            "absent"
         }
     );
     println!("preset: {} ({:?})", eff.preset.name(), eff.preset_origin);

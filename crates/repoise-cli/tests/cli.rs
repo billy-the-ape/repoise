@@ -74,6 +74,166 @@ fn doctor_reports_effective_settings_for_a_plain_directory() {
 }
 
 #[test]
+fn doctor_reports_selected_config_paths_for_external_overrides() {
+    let root = temp_root("doctor-external-config");
+    // External config/local-config files outside the repository.
+    let external = std::env::temp_dir().join(format!(
+        "repoise-cli-ext-{}-{}",
+        std::process::id(),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&external);
+    std::fs::create_dir_all(&external).unwrap();
+    let external_config = external.join("ext.repoise.config.json");
+    let external_local = external.join("ext.repoise.local.json");
+    let missing_local = external.join("absent.repoise.local.json");
+    std::fs::write(
+        &external_config,
+        r#"{"schemaVersion":1,"preset":"docs-only","inheritGitIgnores":true}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &external_local,
+        r#"{"schemaVersion":1,"inheritGitIgnores":false}"#,
+    )
+    .unwrap();
+    let root_str = root.to_str().unwrap();
+
+    // Defaults (no overrides): the repository config paths are reported, absent.
+    let canonical_root = root.canonicalize().unwrap();
+    let default_json = cli(&["doctor", "--json", root_str]);
+    assert!(default_json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&default_json.stdout).unwrap();
+    assert_eq!(
+        value["config_file"],
+        canonical_root
+            .join("repoise.config.json")
+            .to_string_lossy()
+            .into_owned()
+    );
+    assert_eq!(value["config_file_exists"], false);
+    assert_eq!(
+        value["local_config_file"],
+        canonical_root
+            .join("repoise.local.json")
+            .to_string_lossy()
+            .into_owned()
+    );
+    assert_eq!(value["local_config_file_exists"], false);
+
+    // External overrides: the exact selected paths and their existence are
+    // reported, and the effective config reflects them.
+    let override_json = cli(&[
+        "doctor",
+        "--json",
+        "--config",
+        external_config.to_str().unwrap(),
+        "--local-config",
+        external_local.to_str().unwrap(),
+        root_str,
+    ]);
+    assert!(override_json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&override_json.stdout).unwrap();
+    assert_eq!(
+        value["config_file"],
+        external_config.to_string_lossy().into_owned()
+    );
+    assert_eq!(value["config_file_exists"], true);
+    assert_eq!(
+        value["local_config_file"],
+        external_local.to_string_lossy().into_owned()
+    );
+    assert_eq!(value["local_config_file_exists"], true);
+    // The external config actually drove the effective preset.
+    assert_eq!(value["effective"]["preset"], "docs-only");
+
+    // An external local path that does not exist is still reported.
+    let missing_json = cli(&[
+        "doctor",
+        "--json",
+        "--config",
+        external_config.to_str().unwrap(),
+        "--local-config",
+        missing_local.to_str().unwrap(),
+        root_str,
+    ]);
+    assert!(missing_json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&missing_json.stdout).unwrap();
+    assert_eq!(
+        value["local_config_file"],
+        missing_local.to_string_lossy().into_owned()
+    );
+    assert_eq!(value["local_config_file_exists"], false);
+
+    // Human output names the selected paths too.
+    let human = cli(&[
+        "doctor",
+        "--config",
+        external_config.to_str().unwrap(),
+        "--local-config",
+        external_local.to_str().unwrap(),
+        root_str,
+    ]);
+    assert!(human.status.success());
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(
+        text.contains(&format!("config: {} (present)", external_config.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("local: {} (present)", external_local.display())),
+        "{text}"
+    );
+}
+
+#[test]
+fn doctor_reports_committed_mode_for_git_roots() {
+    let root = std::env::temp_dir().join(format!("repoise-cli-doctor-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .expect("git should run");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    std::fs::write(root.join("README.md"), "hello\n").unwrap();
+    git(&["init", "--quiet"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "README.md"]);
+    git(&["commit", "--quiet", "-m", "initial"]);
+    let root_str = root.to_str().unwrap();
+
+    let default = cli(&["doctor", "--json", root_str]);
+    assert!(default.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&default.stdout).unwrap();
+    assert_eq!(value["mode"], "working_tree");
+
+    let committed = cli(&["doctor", "--json", "--committed", root_str]);
+    assert!(committed.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&committed.stdout).unwrap();
+    assert_eq!(value["mode"], "committed");
+
+    // Human output reports the same selection.
+    let human = cli(&["doctor", "--committed", root_str]);
+    assert!(human.status.success());
+    assert!(
+        String::from_utf8(human.stdout)
+            .unwrap()
+            .contains("mode: Committed"),
+        "human doctor output must name the committed mode"
+    );
+}
+
+#[test]
 fn explain_reports_decisions_for_paths() {
     let root = temp_root("explain");
     let ok = cli(&["explain", "--path", "README.md", root.to_str().unwrap()]);

@@ -394,7 +394,7 @@
       "kind": "conceptual",
       "heldOut": false,
       "category": "tests",
-      "query": "computeBatchId stable first second",
+      "query": "computeBatchId first second",
       "gold": [
         { "path": "tests/relay.test.ts", "line_start": 3, "line_end": 7 }
       ]
