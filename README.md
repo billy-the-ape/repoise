@@ -1,85 +1,124 @@
 # Repoise
 
-An offline-first repository knowledge indexer for coding agents, designed to help them find
-relevant code, documentation and history with compact, source-linked context.
+Offline-first repository knowledge for coding agents. Repoise indexes code and
+documentation, finds compact source-linked evidence, and reads indexed ranges
+back with content-hash validation.
 
-**Status: offline docs+code index with opt-in hybrid search and a stdio MCP server.** The
-native CLI supports
-`init`, `doctor`, `explain`, `index` (incremental chunking and persistent SQLite/FTS5
-publication), `status` (scope/snapshot/freshness), `search` (offline lexical search over
-docs and code chunks, plus hybrid search over an operator-configured OpenAI-compatible
-embedding provider) and `read` (exact read-back with hash validation), plus `purge` for
-generated cache data. `related` follows structural/section links from an indexed source
-(reference edges, referencers, parent/child chunks), `check` reports stable
-freshness/coverage exit codes for automation, and `watch` runs the incremental watch loop
-with safe Ctrl+C cancellation. `overlay uninstall`/`overlay update` manage the
-non-destructive overlay lifecycle (byte-level conflict reporting and three-way template
-migration). Code indexing covers TypeScript/TSX and JavaScript/JSX structural
-chunks with symbols and syntactic reference edges, and a line-window fallback for other
-code languages; embeddings apply to code only when the embedding scope includes it.
-An opt-in local history lane (bounded mainline commits with separate
-`search --lane history` retrieval and optional verified GitHub PR enrichment) is
-available. The stdio MCP server (`repoise mcp`) exposes
-`search_project_knowledge`, `read_project_knowledge`, `related_project_knowledge` and
-`project_knowledge_status` over the same shared services — read-only by default, with an
-explicitly opt-in `refresh_project_knowledge` tool (`mcp.refresh` or `--allow-refresh`);
-see the [MCP guide](docs/mcp.md). Native `0.1.0-alpha.0`
-archives are published, along with Linux/macOS npm binary packages. The main npm
-launcher and Windows npm package are pending a registry name review; `npx repoise`
-is not yet a usable installation path.
+**Pre-v1: the engine is implemented on main; a functional release is not yet
+published.** Published `0.1.0-alpha.0` archives and binary packages contain the
+older greeting/help/version scaffold. Use a source build for testing; do not use
+that alpha or `npx repoise` to follow this guide. See the
+[publishing status](docs/publish/alpha-0-status.md).
 
-- [v1 master plan](docs/plans/v1_master_plan.md) — design, implementation cards and benchmark gates.
-- [Code structure](docs/architecture.md) — crate responsibilities and portability boundaries.
-- [Persistent index and cache](docs/storage.md) — storage layout, generations and invariants.
-- [MCP server](docs/mcp.md) — stdio launch, tools and client registration.
-- [Build and CI integration](docs/build-ci.md) — consumer install/config, opt-in scripts, `index` then `check --fresh`, and a minimal GitHub Actions example.
-- [Development](docs/development.md) — toolchain, checks, build and installation.
-- [Publishing](docs/publish/README.md) — npm staging, approvals, native releases and current status.
-- [Evaluation runbook](scripts/eval/RUNBOOK.md) — offline lexical evaluation on frozen fixtures.
-- [Agent contributor guide](AGENTS.md) — navigation, Rust practices and documentation maintenance.
+## What works today
 
-The planned native tool works independently of Node, npm, any particular language/framework,
-or repository host. npm is the first package-manager distribution channel; Git and filesystem snapshots
-are the first source adapters. Embeddings and remote history enrichment are optional.
+- Offline lexical search over documentation and code; no model or credentials required.
+- Incremental SQLite/FTS5 indexing, scope/freshness checks, and exact source reads.
+- TypeScript/JavaScript structural chunks and symbols; line-window fallback for other languages.
+- Structural/section links, an explicit watch loop, and managed agent guidance.
+- CLI and stdio MCP interfaces over the same services; MCP is read-only by default.
+- Optional OpenAI-compatible embeddings and bounded Git history retrieval.
 
-MIT licensed. [Native `0.1.0-alpha.0` downloads](https://github.com/billy-the-ape/repoise/releases/tag/v0.1.0-alpha.0)
-are available for Linux x64 GNU, macOS ARM64 and Windows x64 MSVC.
-See the [alpha publishing record](docs/publish/alpha-0-status.md) for npm availability.
+Git working trees, committed snapshots, and plain directories are supported.
+Embeddings and remote history enrichment are opt-in. Fixture content remains
+searchable but receives no current-document ranking boost.
 
-With rustup installed:
+## Build and try it
+
+With [rustup](https://rustup.rs/) installed, build from a checkout of this repository.
+The toolchain is pinned to Rust 1.99.0; Git is required for Git repositories.
+The native executable needs no Node/npm.
 
 ```sh
-cargo run --package repoise-cli -- --help
-cargo run --package repoise-cli -- doctor            # effective settings and policy
-cargo run --package repoise-cli -- init             # idempotent, non-interactive setup
-cargo run --package repoise-cli -- explain --path README.md
-cargo run --package repoise-cli -- index            # build and publish the offline index
-cargo run --package repoise-cli -- status           # scope, snapshot and freshness
-cargo run --package repoise-cli -- search --query README
-cargo run --package repoise-cli -- related --source-id <ID>  # follow links from a result
-cargo run --package repoise-cli -- check                     # stable freshness/coverage exit codes
-cargo run --package repoise-cli -- watch                     # incremental watch loop (Ctrl+C)
-cargo run --package repoise-cli -- mcp                       # stdio MCP server (see docs/mcp.md)
+bash scripts/build.sh
+export PATH="$PWD/target/release:$PATH"
+repoise version
 ```
 
-Rust 1.99.0 is pinned. See the development guide for Unix/Windows scripts and CI artifacts.
+On Windows, use `./scripts/build.ps1` and the resulting
+`target/release/repoise.exe`. See [development.md](docs/development.md)
+for local installation and checks.
 
-## Evaluation (offline lexical)
-
-A reproducible offline evaluation harness runs the native CLI against frozen
-synthetic fixtures (docs, TypeScript/JavaScript, Python fallback, history and
-dirty/stale scenarios) with 60 labeled queries (12 held-out), validates
-provenance for every returned hit, and reports recall@5, exact-lookup success,
-policy failures, cold build and warm search timings, corpus/index sizes,
-hardware, versions and declared settings:
+From the repository you want to index:
 
 ```sh
-cargo build --package repoise-cli
-node scripts/eval/harness.mjs          # results in eval-results/ (git-ignored)
-node --test scripts/eval/*.test.mjs    # fixture, query, metric and replay-format tests
+repoise init --preset docs-code-lexical --agents-snippet --dry-run
+repoise init --preset docs-code-lexical --agents-snippet
+repoise doctor
+repoise explain --path .env
+repoise index
+repoise check --fresh
+repoise search --json --query "YourFunctionName" --role code --max-results 5
 ```
 
-Hybrid presets and the real agent pilot are explicitly unmeasured until an
-operator-configured embedding provider and the owner-approved replay evidence
-exist; the runbook documents the replay import format, acceptance targets and
-rollback. See [scripts/eval/RUNBOOK.md](scripts/eval/RUNBOOK.md).
+Review the generated configuration and managed AGENTS.md block. Keep
+`.repoise/` and `repoise.local.json` out of version control. The cache may
+contain source text; `REPOISE_CACHE_DIR` relocates it. Indexing respects
+configured policy and inherited Git ignores; use `explain` to inspect decisions.
+
+Copy a result's `source_id` into an exact read:
+
+```sh
+repoise read --json --source-id "SOURCE_ID_FROM_SEARCH" --max-output-tokens 2500
+repoise related --json --source-id "SOURCE_ID_FROM_SEARCH"
+```
+
+Lexical queries require every whitespace term to match the same chunk's
+searchable fields. Start with identifiers or short terms, refine with
+`--path-filter` and `--role`, and read relevant results. Excerpts are previews;
+zero results do not prove that evidence is absent. A response's `next_cursor`
+can be passed as the next search's `--cursor`.
+
+## Use with an agent
+
+**Terminal access plus AGENTS.md guidance is enough for CLI use.** The client
+does not need Repoise-specific code. The executable must be available to the
+agent, and commands must target its actual checkout. Whether a client loads
+AGENTS.md automatically depends on that client.
+
+Alternatively, register a stdio MCP server in your client's MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "repoise": {
+      "command": "/absolute/path/to/repoise",
+      "args": ["mcp", "/absolute/path/to/target-repository"]
+    }
+  }
+}
+```
+
+The server exposes search, read, related, and status tools. This is a generic
+configuration shape; client-specific setup varies. MCP is bound to the root
+and snapshot mode selected at launch. An agent in another worktree needs a
+server targeting that worktree. Detached HEAD itself is not the limitation.
+
+See [agent setup](docs/agents.md) for startup, refresh permissions, worktrees,
+and managed guidance upgrades; see [MCP](docs/mcp.md) for the protocol.
+
+## Keep the index fresh
+
+Run `repoise index` after relevant changes, or start `repoise watch` in a
+separate terminal. Watch stays running until Ctrl+C and retains the last
+complete generation on cancellation. It is not an installed background daemon.
+Use `repoise check --fresh` before relying on updated evidence.
+
+For a committed Git snapshot, use `--committed` consistently for indexing and
+retrieval. Uncommitted edits are outside that snapshot. For active coding,
+the default working-tree mode includes eligible edits.
+
+## Guides and validation
+
+- [Build/CI integration](docs/build-ci.md)
+- [Architecture](docs/architecture.md) and [storage](docs/storage.md)
+- [Development](docs/development.md) and [contributor instructions](AGENTS.md)
+- [Publishing](docs/publish/README.md) and [changelog](CHANGELOG.md)
+- [Evaluation runbook](scripts/eval/RUNBOOK.md) and [v1 plan](docs/plans/v1_master_plan.md)
+
+The offline evaluation harness uses 60 labeled synthetic queries, including
+12 held-out queries, and reports provenance, policy, retrieval, and timing
+measurements. Real agent token savings and hybrid gains are not established
+by the initial pilot. See the runbook for measured versus unmeasured gates.
+
+MIT licensed.

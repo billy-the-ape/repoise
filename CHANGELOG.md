@@ -23,8 +23,9 @@
   its "stable" term occurs only inside the camelCase identifier
   `testBatchIdIsStable`, which the unicode61 tokenizer keeps as one token,
   so under the strict all-terms semantics the old query could match no
-  chunk. Gold evidence and held-out set are unchanged; the adoption gates
-  are measured against held-out queries only. (Follow-up candidate:
+  chunk. Gold evidence and held-out set are unchanged. G3 recall uses held-out
+  conceptual queries; other gates use exact-lookup queries, policy/isolation
+  evidence, timings, or separately supplied agent/hybrid measurements. (Follow-up candidate:
   query-side camelCase term splitting for identifier substrings.)
 - Copied fixture/test-data content (paths under `fixture(s)`, `testdata`,
   `test-data`, `test_data`, `test_fixtures`, `__fixtures__`, `__snapshots__`)
