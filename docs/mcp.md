@@ -117,7 +117,7 @@ required.
 ## Configuration
 
 Standard Repoise configuration applies (`repoise.config.json`,
-`repoise.local.json`, `REPOISE_CACHE`); the MCP server reads the same effective
+`repoise.local.json`, `REPOISE_CACHE_DIR`); the MCP server reads the same effective
 config as the CLI. The optional `mcp` block (see
 `schemas/repoise.config.v1.schema.json`):
 
