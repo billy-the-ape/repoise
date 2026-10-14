@@ -67,6 +67,35 @@
   fixture bytes. Runbook at `scripts/eval/RUNBOOK.md` (commands, held-out separation,
   pilot evidence workflow, acceptance targets, rollback).
 
+### Card K6 — build/Actions integration examples
+
+- `docs/build-ci.md` consumer guide for the offline `docs-code-lexical` baseline: pinned
+  registry install using the explicitly labeled `REPLACE_WITH_VALIDATED_RELEASE_VERSION`
+  placeholder (no functional release is published yet; the scaffold `0.1.0-alpha.0` is not
+  a usable path), reviewed schema-version-1 config, a generated-cache ignore policy
+  (`.repoise/` and `repoise.local.json` stay out of version control), opt-in
+  owner-invoked package scripts, and the `index`-then-`check --fresh` sequence with stable
+  failure-stop exit codes. It separates the agent's startup refresh (one explicit
+  `repoise index` on the real checkout, then optional `watch`) from a separately started
+  `watch` loop.
+- `examples/ci/repoise-ci.example.yml`: a minimal GitHub Actions `push`/`pull_request`
+  example — pinned install, exact checked-out SHA (`${GITHUB_SHA}`),
+  `persist-credentials: false`, read-only `contents: read`, an isolated per-run cache
+  (`REPOISE_CACHE_DIR`), rebuild-from-scratch with no cache restore or artifact upload,
+  `index` then `check --fresh`, no `pull_request_target` and no consumer package scripts.
+  It reports the revision and the shallow-history limitation and is an example, not an
+  active workflow (it does not live in `.github/workflows/`). `examples/consumer/package.json`
+  shows the opt-in scripts; `examples/README.md` indexes both.
+- The guide documents that a CI index does not refresh an agent's local checkout and states
+  the future cache-compatibility and private-corpus isolation requirements without
+  implementing cache/artifact machinery.
+- Validated locally (not in GitHub): the documented command sequence was run in a
+  disposable synthetic consumer against the current packed package (installed npm launcher
+  and the native binary packed into the native archive, no Node on PATH), offline, with an
+  isolated cache; `check --fresh` exited `3` before indexing and `0` after. The GitHub
+  workflow was not executed and no workflow was activated. This is documentation/examples
+  only; it does not mean the live pilot or the master-plan section 11 adoption gates passed.
+
 ### Card K6 — stdio MCP server
 
 - `repoise mcp`: stdio MCP server (JSON-RPC 2.0 on stdin/stdout) exposing

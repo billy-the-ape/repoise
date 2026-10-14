@@ -19,8 +19,11 @@ uninstall`, `overlay update` three-way template migration) and the stdio MCP ser
 (lexical-first; refresh tool opt-in via `mcp.refresh` or `--allow-refresh`; see
 docs/mcp.md).
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
-The npm wrapper and Windows npm package remain pending a registry name review;
-build/Actions examples remain pending. The offline lexical evaluation harness
+The npm wrapper and Windows npm package remain pending a registry name review. The
+build/Actions integration examples are documented (consumer guide and a minimal GitHub
+Actions example under docs/build-ci.md and examples/; offline docs-code-lexical,
+explicitly invoked index/check, read-only, isolated cache, no active workflow and no
+registry install). The offline lexical evaluation harness
 (frozen synthetic fixtures, 60 labeled queries with 12 held-out, per-hit
 provenance validation, recall@5/exact/policy/timing metrics, replay-evidence
 import format and runbook under scripts/eval/) has landed; hybrid evaluation
@@ -46,6 +49,7 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | Intake, parsing and freshness planning             | Master plan sections 4–7                                                                                               |
 | Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
 | MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md)                                                                                             |
+| Build/CI integration and consumer guide            | [Build/CI guide](docs/build-ci.md)                                                                                   |
 | Agent interfaces and installation                  | Master plan sections 8–10                                                                                              |
 | Benchmarks, resource budgets and adoption gates    | Master plan section 11                                                                                                 |
 | Implementation sequence and rollout                | Master plan sections 12–14                                                                                             |

@@ -32,6 +32,7 @@ is not yet a usable installation path.
 - [Code structure](docs/architecture.md) — crate responsibilities and portability boundaries.
 - [Persistent index and cache](docs/storage.md) — storage layout, generations and invariants.
 - [MCP server](docs/mcp.md) — stdio launch, tools and client registration.
+- [Build and CI integration](docs/build-ci.md) — consumer install/config, opt-in scripts, `index` then `check --fresh`, and a minimal GitHub Actions example.
 - [Development](docs/development.md) — toolchain, checks, build and installation.
 - [Publishing](docs/publish/README.md) — npm staging, approvals, native releases and current status.
 - [Evaluation runbook](scripts/eval/RUNBOOK.md) — offline lexical evaluation on frozen fixtures.

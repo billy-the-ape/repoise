@@ -1,0 +1,94 @@
+# EXAMPLE ONLY — copy into .github/workflows/ after substituting a published version.
+# This file does not live in .github/workflows/ and is not executed by this repository.
+#
+# Minimal offline docs-code-lexical CI. The pinned launcher installs into a dedicated
+# tools dir under runner.temp (never into the consumer checkout), is invoked explicitly
+# with Node by absolute path (no npx), and runs against the checked-out GITHUB_WORKSPACE
+# using a committed, reviewed config. Credential persistence is disabled, permissions are
+# read-only, and the generated cache stays separate from both the tools dir and the
+# checkout. No cache restore, no artifact upload, no consumer package scripts, and no
+# remote embedding or history providers.
+name: Repoise index (example)
+
+on:
+  # push + pull_request only. Never pull_request_target: that would let untrusted PR
+  # content run with the base branch's privileges.
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only. Indexing neither posts comments, commits indexes nor publishes npm packages.
+permissions:
+  contents: read
+
+jobs:
+  index-check:
+    # A clean checkout rebuilds the index from scratch. Three locations stay separate:
+    # the tools dir and the generated cache live under runner.temp; the checkout is
+    # GITHUB_WORKSPACE.
+    runs-on: ubuntu-24.04
+    env:
+      REPOISE_TOOLS: ${{ runner.temp }}/repoise-tools
+      REPOISE_CACHE_DIR: ${{ runner.temp }}/repoise-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Disable credential persistence so no checkout token is available to later
+          # steps. The offline index needs no remote access.
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Verify the checked-out revision matches GITHUB_SHA
+        # Report the actual checked-out commit (git rev-parse HEAD), not a re-resolved
+        # ref, and fail if it diverges from the triggering SHA. A default shallow
+        # checkout (depth 1) bounds any optional history lane to the available commits;
+        # it never invents history.
+        run: |
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "repoise is indexing revision ${HEAD_SHA}"
+          if [ "${HEAD_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "checked-out HEAD (${HEAD_SHA}) does not match GITHUB_SHA (${GITHUB_SHA})" >&2
+            exit 1
+          fi
+
+      - name: Install the pinned repoise launcher into an isolated tools dir
+        # REPLACE_WITH_VALIDATED_RELEASE_VERSION is substituted by the publication
+        # runbook once a functional release is published. Install into a dedicated
+        # tools dir under runner.temp, outside the checkout, so the consumer
+        # package.json, lockfile and node_modules are never read or modified.
+        # --ignore-scripts runs no lifecycle scripts; no consumer package scripts
+        # (no `npm run ...`) are run.
+        run: |
+          mkdir -p "${REPOISE_TOOLS}"
+          npm install --ignore-scripts --no-audit --no-fund --prefix "${REPOISE_TOOLS}" repoise@REPLACE_WITH_VALIDATED_RELEASE_VERSION
+
+      - name: Build the offline index (docs-code-lexical, isolated, from scratch)
+        # Invoke the installed launcher explicitly with Node and its absolute path (no
+        # npx), passing GITHUB_WORKSPACE as the repository root. The committed,
+        # reviewed config selects docs-code-lexical; --preset states it explicitly.
+        # Optional embedding providers and history enrichment stay off for this offline
+        # example.
+        run: |
+          LAUNCHER="${REPOISE_TOOLS}/node_modules/repoise/bin/repoise.cjs"
+          node "${LAUNCHER}" index "${GITHUB_WORKSPACE}" --preset docs-code-lexical
+
+      - name: Verify freshness (stops the build when missing/stale/unmet)
+        # Same explicit launcher, root and preset. Stable exit codes: 0 ok, 1 error,
+        # 3 missing/stale, 4 coverage not met.
+        run: |
+          LAUNCHER="${REPOISE_TOOLS}/node_modules/repoise/bin/repoise.cjs"
+          node "${LAUNCHER}" check "${GITHUB_WORKSPACE}" --preset docs-code-lexical --fresh
+
+      - name: Verify tracked consumer files are unchanged
+        # The tools dir and cache are outside the checkout, so any git status output
+        # here would mean install/index unexpectedly wrote into the checkout.
+        run: |
+          STATUS="$(git status --porcelain)"
+          if [ -n "${STATUS}" ]; then
+            echo "tracked files changed after install+index:" >&2
+            printf '%s\n' "${STATUS}" >&2
+            exit 1
+          fi
