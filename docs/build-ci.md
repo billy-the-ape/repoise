@@ -28,6 +28,9 @@ explicitly labeled placeholder and are **not** a validated install path:
     npm install --ignore-scripts --no-audit --no-fund \
       repoise@REPLACE_WITH_VALIDATED_RELEASE_VERSION
 
+In CI the launcher installs into a dedicated tools dir under `runner.temp` (outside the
+checkout) and is invoked by absolute path with Node — see the example below.
+
 The publication runbook supplies the concrete pin. The native engine needs no Node/npm;
 npm is the first distribution channel. Before a functional release, use local
 development installation (`bash scripts/install.sh`) or the built native binary
@@ -133,15 +136,24 @@ live in `.github/workflows/` and is not executed by this repository's CI. It:
   later steps; the index needs no remote access.
 - Uses read-only `contents: read` permissions; indexing neither posts comments, commits
   indexes nor publishes npm packages.
-- Installs the pinned npm launcher (placeholder version) and invokes `npx repoise`
-  directly; it does not run any consumer `npm run` scripts.
-- Reports the exact checked-out SHA (`${GITHUB_SHA}`) and rebuilds the index from
-  scratch into a per-run isolated cache (`REPOISE_CACHE_DIR`); no cache restore and no
-  artifact upload.
-- Fails the run when `repoise check --fresh` is nonzero.
+- Installs the pinned launcher (placeholder version, `--ignore-scripts`) into a
+  dedicated tools dir under `runner.temp` — never into the consumer checkout — so the
+  checkout's `package.json`, lockfile and `node_modules` are never read or modified.
+- Invokes the installed launcher explicitly with Node and its absolute path (no
+  `npx`), passing `GITHUB_WORKSPACE` as the repository root; it does not run any
+  consumer `npm run` scripts.
+- Verifies that `git rev-parse HEAD` equals `GITHUB_SHA` (the actual checked-out
+  revision), then rebuilds the index from scratch into a per-run cache that is separate
+  from both the tools dir and the checkout (`REPOISE_CACHE_DIR`); no cache restore and
+  no artifact upload.
+- Uses the committed, reviewed consumer config and selects `docs-code-lexical`
+  explicitly (`--preset docs-code-lexical`) for both `index` and `check`. Optional
+  embedding providers and history enrichment stay **disabled** for this offline
+  example.
+- Fails the run when `repoise check --fresh` is nonzero, then confirms no tracked
+  consumer files changed after install and indexing.
 
-The checked-out revision is reported as the checkout SHA string, not re-resolved. A
-default shallow checkout (depth 1) means the optional history lane, if enabled, is
+A default shallow checkout (depth 1) means the optional history lane, if enabled, is
 bounded to the available commits and reports explicit gaps rather than inventing
 history. In this offline example the history lane is off, so there is no remote or
 history coverage to report.
@@ -170,17 +182,17 @@ layout.
 
 ## Validation status
 
-- **Local validation (performed).** The documented command sequence was run in a
-  disposable synthetic consumer against the current packed package — the installed npm
-  launcher (from the packed wrapper) and the native binary packed into the native
-  archive (no Node on PATH) — offline, with an isolated per-run cache
-  (`REPOISE_CACHE_DIR`). For both forms: `init` wrote the reviewed config,
-  `check --fresh` on a not-yet-indexed checkout exited `3` (missing index), `index`
-  published a fresh generation, `check --fresh` then exited `0`, `status` reported
-  `fresh`, and offline lexical search returned the expected doc and code hits —
-  confirming the failure-stop semantics. Full native-archive *extraction* is covered by
-  the CI packed-consumer smoke (a sandboxed host can restrict nested-file tar extraction).
-  The recorded run is in the PR description.
+- **Local validation (performed).** The corrected CI pattern was run in a disposable
+  Git consumer (committed reviewed config, `package.json`, `package-lock.json`, one
+  Markdown doc and one TypeScript source) against the current packed artifacts,
+  offline. The launcher + native package installed into a dedicated tools dir outside
+  the checkout (`--ignore-scripts`), the launcher was invoked explicitly with Node by
+  absolute path (no `npx`), and the checkout was passed as the repository root with an
+  isolated `REPOISE_CACHE_DIR` separate from both the tools dir and the checkout.
+  `git rev-parse HEAD` matched `GITHUB_SHA`; `index` then `check --fresh` (both with
+  `--preset docs-code-lexical`) exited `0`; and `git status --porcelain` stayed clean,
+  with `package.json`, `package-lock.json` and the config byte-identical. The recorded
+  run is in the PR description.
 - **GitHub workflow execution (not performed).** `examples/ci/repoise-ci.example.yml`
   is an example only; it was not executed against GitHub Actions and no workflow is
   activated by this change. Its registry-install line uses a placeholder version and is
