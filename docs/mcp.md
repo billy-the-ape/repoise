@@ -44,6 +44,36 @@ server's configured scope is rejected with a `scope mismatch` error. Opaque
 source ids are references, not authorization: every operation rechecks the
 configured scope, and ids from other scopes fail with a clean diagnostic.
 
+## Retrieval workflow
+
+The tool descriptions carry bounded guidance for agents; the CLI help text
+(`repoise help`) states the equivalent rules. Semantics:
+
+- **Excerpts locate evidence, they are not the source.** Search results
+  carry short excerpts (budgeted by `maxOutputTokens`). A short excerpt is
+  not evidence that the indexed source is unavailable; use
+  `read_project_knowledge` on a relevant `sourceId` to inspect the exact
+  implementation.
+- **Strict lexical matching.** In lexical mode every whitespace query term
+  must match the same chunk's searchable fields (FTS5 `AND` over per-field
+  matches). Broad natural-language queries whose terms are scattered across
+  chunks may therefore return zero results even when relevant evidence is
+  indexed; for empty or irrelevant results, try a shorter identifier/symbol
+  query and appropriate `pathFilter`/`role` filters before concluding the
+  indexed evidence is insufficient. Focused queries (one identifier, one
+  file) are the reliable pattern.
+- **Truncation has one meaning.** `truncated: true` on a `read` result means
+  the exact text exceeded `maxOutputTokens` and was cut at a line
+  boundary; `truncated: true` on a `search` result marks remaining results,
+  fetched by passing the response's `next_cursor` value as the next request's
+  `cursor`. Neither is a sign that indexed content is missing.
+- **Empty `related` results** mean no indexed relations exist for that
+  source; they do not establish that source evidence is missing.
+- **Bounded fallback.** When indexed evidence remains insufficient, fall
+  back to targeted filesystem reads and state the actual limitation. Keep
+  attempts bounded: do not repeat poor searches, and do not call Repoise
+  when sufficient evidence is already available.
+
 Errors follow the MCP conventions: protocol failures are JSON-RPC errors
 (parse `-32700`, method not found `-32601`), and tool-argument validation
 failures are JSON-RPC invalid-params errors (`-32602`). Tool arguments are

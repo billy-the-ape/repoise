@@ -18,6 +18,13 @@ the related-knowledge service, offline `check` with stable exit codes, the incre
 uninstall`, `overlay update` three-way template migration) and the stdio MCP server
 (lexical-first; refresh tool opt-in via `mcp.refresh` or `--allow-refresh`; see
 docs/mcp.md).
+Pre-v1 reliability fixes follow the first CLI/MCP pilot: doctor reports the
+selected snapshot mode and the actually selected config/local-config paths,
+lexical search enforces strict all-terms-in-one-chunk matching (parenthesized
+FTS groups), copied fixture/test-data paths no longer gain the current-document
+ranking boost, and retrieval-workflow guidance (including strict lexical
+matching and `next_cursor` pagination) is shipped in the MCP tool
+descriptions, CLI help and the managed AGENTS.md snippet (template 1.2.0).
 Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
 The npm wrapper and Windows npm package remain pending a registry name review. The
 build/Actions integration examples are documented (consumer guide and a minimal GitHub

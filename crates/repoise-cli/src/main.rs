@@ -132,6 +132,21 @@ SEARCH OPTIONS:
     --rrf-k <N>                 Reciprocal-rank-fusion k for hybrid mode (default from config)
     --lane <LANE>               Search lane: search (default, current docs/code) or history
 
+RETRIEVAL WORKFLOW:
+    Lexical matching is strict: every whitespace query term must match the
+    same chunk's searchable fields, so broad natural-language queries may
+    return zero results even when relevant evidence is indexed. For empty or
+    irrelevant results, try a shorter identifier/symbol query with
+    --path-filter/--role before concluding indexed evidence is insufficient.
+    Results carry short excerpts that locate evidence, not the full source;
+    use `read --source-id <ID>` to inspect the exact implementation. A short
+    excerpt is not evidence the indexed source is unavailable. When results
+    are truncated and more are useful, pass the response's next_cursor value
+    as the next request's --cursor. An empty `related` result does not
+    establish missing evidence. Fall back to targeted filesystem reads when
+    indexed evidence remains insufficient. Keep retries bounded; do not repeat
+    poor searches or call repoise when sufficient evidence is already available.
+
 READ OPTIONS:
     --source-id <ID>            Opaque source id from a search result
 
@@ -495,8 +510,8 @@ fn config_paths(opts: &CliOptions) -> ConfigPaths {
 fn run_doctor(opts: &CliOptions) -> Result<ExitCode, String> {
     let cli = cli_overrides(opts)?;
     let paths = config_paths(opts);
-    let report =
-        repoise_core::doctor::doctor(&opts.root, &cli, &paths).map_err(|err| err.to_string())?;
+    let report = repoise_core::doctor::doctor(&opts.root, &cli, &paths, opts.committed)
+        .map_err(|err| err.to_string())?;
     if opts.json {
         println!("{}", json(&report)?);
     } else {

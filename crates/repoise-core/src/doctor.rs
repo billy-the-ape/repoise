@@ -1,4 +1,9 @@
 //! `doctor`: explainable effective settings, capabilities, and policy summary.
+//!
+//! The report reflects the exact invocation: the selected snapshot mode
+//! (including `--committed`) and the configuration paths actually selected
+//! (repository defaults or external `--config`/`--local-config` overrides),
+//! together with their existence on disk.
 
 use std::path::{Path, PathBuf};
 
@@ -40,12 +45,19 @@ pub struct DoctorReport {
     pub adapter: SourceKind,
     /// Capabilities of the selected adapter.
     pub capabilities: Vec<Capability>,
-    /// Snapshot mode the default operation uses.
+    /// Snapshot mode the default operation uses (honors `--committed` for
+    /// Git roots).
     pub mode: SnapshotMode,
-    /// Committed config file when present.
-    pub config_file: Option<PathBuf>,
-    /// Local override file when present.
-    pub local_config_file: Option<PathBuf>,
+    /// Selected committed configuration path (repository default or an
+    /// external `--config` override).
+    pub config_file: PathBuf,
+    /// Selected local override path (repository default or an external
+    /// `--local-config` override).
+    pub local_config_file: PathBuf,
+    /// Whether the selected committed configuration path exists.
+    pub config_file_exists: bool,
+    /// Whether the selected local override path exists.
+    pub local_config_file_exists: bool,
     /// Sanitized remote identity for Git roots.
     pub remote_identity: Option<String>,
     /// Effective settings with origins.
@@ -60,14 +72,24 @@ pub struct DoctorReport {
     pub warnings: Vec<String>,
 }
 
-/// Runs doctor for the root directory.
-pub fn doctor(root: &Path, cli: &CliOverrides, paths: &ConfigPaths) -> Result<DoctorReport, Error> {
+/// Runs doctor for the root directory. `committed` mirrors the CLI
+/// `--committed` flag (Git roots only; plain directories stay plain).
+pub fn doctor(
+    root: &Path,
+    cli: &CliOverrides,
+    paths: &ConfigPaths,
+    committed: bool,
+) -> Result<DoctorReport, Error> {
     let root = root.canonicalize()?;
     let is_git = root.join(".git").exists();
     let (adapter, mode) = if is_git {
         (
             Box::new(GitAdapter::new(&root)?) as Box<dyn SourceAdapter>,
-            SnapshotMode::WorkingTree,
+            if committed {
+                SnapshotMode::Committed
+            } else {
+                SnapshotMode::WorkingTree
+            },
         )
     } else {
         (
@@ -101,19 +123,25 @@ pub fn doctor(root: &Path, cli: &CliOverrides, paths: &ConfigPaths) -> Result<Do
     native_ignore_sources.sort();
     native_ignore_sources.dedup();
     let warnings = embedding_endpoint_warnings(&effective);
+    // Report the configuration paths actually selected for this invocation
+    // (external overrides or repository defaults), with their existence.
+    let config_file = paths
+        .committed
+        .clone()
+        .unwrap_or_else(|| root.join(CONFIG_FILENAME));
+    let local_config_file = paths
+        .local
+        .clone()
+        .unwrap_or_else(|| root.join(LOCAL_CONFIG_FILENAME));
     Ok(DoctorReport {
         root: root.clone(),
         adapter: adapter.kind(),
         capabilities: adapter.capabilities().list(),
         mode,
-        config_file: root
-            .join(CONFIG_FILENAME)
-            .exists()
-            .then(|| root.join(CONFIG_FILENAME)),
-        local_config_file: root
-            .join(LOCAL_CONFIG_FILENAME)
-            .exists()
-            .then(|| root.join(LOCAL_CONFIG_FILENAME)),
+        config_file_exists: config_file.exists(),
+        local_config_file_exists: local_config_file.exists(),
+        config_file,
+        local_config_file,
         remote_identity: adapter.remote_identity()?,
         effective: effective.clone(),
         policy: PolicySummary {

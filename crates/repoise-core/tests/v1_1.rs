@@ -777,3 +777,193 @@ fn purge_removes_scope_directories_and_rejects_unsafe_ids() {
     );
     assert!(!h.cache.root.join("repos").exists());
 }
+
+// --- Fixture/test-data ranking (pilot follow-up) --------------------------
+//
+// Reproduction of the observed ranking problem: a copied fixture README
+// (e.g. test input under a `fixtures` directory) is classified as
+// current-doc by inference and previously gained the current-document
+// preference, letting copied content outrank the repository's own
+// documentation. Copied fixture content must stay fully searchable but must
+// not gain role authority.
+
+const FIXTURE_DOC: &str = "The PR reviewer model HTTP request timeout is configured through the environment variable PR_REVIEWER_MODEL_TIMEOUT_MS.\n";
+
+#[test]
+fn fixture_copies_do_not_gain_current_document_preference() {
+    // Identical content in a fixture copy and in the repository's own
+    // current documentation: with equal BM25, the fixture copy used to tie
+    // and win on path order after both received the current-doc boost.
+    let files: Vec<(&str, &str)> = vec![
+        ("fixtures/base/README.md", FIXTURE_DOC),
+        ("reference/guide.md", FIXTURE_DOC),
+    ];
+    let h = harness("fixture-ranking", &files);
+    build(&files, &h);
+    let response = search_files(
+        &files,
+        &h,
+        "pr reviewer model http request timeout environment variable",
+    );
+    assert_eq!(response.results.len(), 2);
+    // The repository's own documentation ranks first: it keeps the
+    // current-document preference, the fixture copy does not.
+    let top = &response.results[0];
+    assert_eq!(top.path, "reference/guide.md");
+    assert!(
+        top.explanation.contains("current-document preference"),
+        "ordinary docs must keep the preference: {}",
+        top.explanation
+    );
+    let fixture_hit = response
+        .results
+        .iter()
+        .find(|hit| hit.path == "fixtures/base/README.md")
+        .expect("fixture copy stays searchable");
+    assert!(
+        !fixture_hit
+            .explanation
+            .contains("current-document preference"),
+        "fixture copy must not claim current-document authority: {}",
+        fixture_hit.explanation
+    );
+    assert!(
+        fixture_hit.explanation.contains("copied fixture/test data"),
+        "the suppression must be explainable: {}",
+        fixture_hit.explanation
+    );
+    // Classification itself is unchanged: the copy is still current-doc and
+    // still answerable through a role filter.
+    assert_eq!(fixture_hit.role, "current-doc");
+    let adapter = fake_adapter(&h.root, &files);
+    let by_role = search::search(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &h.store,
+        &SearchRequest {
+            query: "timeout".to_string(),
+            path_filter: None,
+            role_filter: Some(repoise_core::classify::Role::CurrentDoc),
+            max_results: None,
+            max_output_tokens: None,
+            cursor: None,
+            mode: search::SearchMode::Lexical,
+            rrf_k: None,
+        },
+        None,
+    )
+    .unwrap();
+    let paths: Vec<String> = by_role.results.iter().map(|hit| hit.path.clone()).collect();
+    assert!(paths.contains(&"fixtures/base/README.md".to_string()));
+    assert!(paths.contains(&"reference/guide.md".to_string()));
+}
+
+#[test]
+fn fixture_targeted_path_filter_still_returns_fixture_content() {
+    let files: Vec<(&str, &str)> = vec![
+        ("fixtures/base/README.md", FIXTURE_DOC),
+        ("reference/guide.md", FIXTURE_DOC),
+    ];
+    let h = harness("fixture-filter", &files);
+    build(&files, &h);
+    let adapter = fake_adapter(&h.root, &files);
+    let response = search::search(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &h.store,
+        &SearchRequest {
+            query: "timeout".to_string(),
+            path_filter: Some("fixtures/*".to_string()),
+            role_filter: None,
+            max_results: None,
+            max_output_tokens: None,
+            cursor: None,
+            mode: search::SearchMode::Lexical,
+            rrf_k: None,
+        },
+        None,
+    )
+    .unwrap();
+    assert!(
+        !response.results.is_empty(),
+        "explicit fixture filter must match"
+    );
+    for hit in &response.results {
+        assert!(
+            hit.path.starts_with("fixtures/"),
+            "fixture filter leaked: {}",
+            hit.path
+        );
+    }
+}
+
+#[test]
+fn test_docs_outside_fixture_dirs_are_not_demoted() {
+    // A doc under a plain `tests` directory (not a fixture/test-data dir)
+    // must keep the ordinary current-document preference.
+    let files: Vec<(&str, &str)> = vec![
+        ("tests/README.md", FIXTURE_DOC),
+        ("reference/guide.md", FIXTURE_DOC),
+    ];
+    let h = harness("fixture-no-demote", &files);
+    build(&files, &h);
+    let response = search_files(
+        &files,
+        &h,
+        "pr reviewer model http request timeout environment variable",
+    );
+    let test_doc = response
+        .results
+        .iter()
+        .find(|hit| hit.path == "tests/README.md")
+        .expect("test doc stays searchable");
+    assert!(
+        test_doc.explanation.contains("current-document preference"),
+        "plain test docs must not be demoted: {}",
+        test_doc.explanation
+    );
+}
+
+#[test]
+fn is_fixture_path_detects_fixture_style_directories() {
+    use repoise_core::classify::is_fixture_path;
+    assert!(is_fixture_path(
+        "tests/fixtures/pr-reviewer-eval/contents/base/README.md"
+    ));
+    assert!(is_fixture_path("fixtures/base/README.md"));
+    assert!(is_fixture_path("src/App/Fixtures/sample.json"));
+    assert!(is_fixture_path("data/testdata/case.md"));
+    assert!(is_fixture_path("src/test_data/config.yaml"));
+    assert!(is_fixture_path("src/__snapshots__/app.snap"));
+    assert!(is_fixture_path("lib/__fixtures__/sample.txt"));
+    assert!(!is_fixture_path("tests/README.md"));
+    assert!(!is_fixture_path("docs/guide.md"));
+    assert!(!is_fixture_path("src/app/runtime.ts"));
+    assert!(!is_fixture_path("testnotes.md"));
+}
+
+#[test]
+fn broad_queries_require_all_terms_in_one_chunk() {
+    // Documents the current (intended) lexical match semantics: every
+    // whitespace term must co-occur in one chunk. A natural-language query
+    // whose terms are scattered across chunks yields no candidate, which is
+    // why broad queries can come back empty even though each term exists
+    // somewhere in the corpus. Follow-up candidate: a deterministic relaxed
+    // match when the strict query has no candidates.
+    let files: Vec<(&str, &str)> = vec![(
+        "docs/notes.md",
+        "# Notes\n\nThe timeout for the outbound request is configurable.\n\n## Environment\n\nThe environment variable is documented separately.\n",
+    )];
+    let h = harness("broad-query", &files);
+    build(&files, &h);
+    // "timeout" and "request" co-occur; "environment" does not.
+    let strict = search_files(&files, &h, "timeout environment variable request");
+    assert!(
+        strict.results.is_empty(),
+        "all terms must co-occur: {:?}",
+        strict.results
+    );
+    let relaxed = search_files(&files, &h, "timeout request");
+    assert_eq!(relaxed.results.len(), 1);
+    assert_eq!(relaxed.results[0].path, "docs/notes.md");
+}

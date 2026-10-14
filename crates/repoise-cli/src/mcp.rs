@@ -181,7 +181,7 @@ impl Server {
         let mut tools = vec![
             json!({
                 "name": "search_project_knowledge",
-                "description": "Offline lexical (or hybrid) search over the configured repository's index. Read-only. Scope is fixed by the server launch; optional repoId/worktreeId/snapshotMode arguments must match it.",
+                "description": "Offline lexical (or hybrid) search over the configured repository's index. Read-only. Scope is fixed by the server launch; optional repoId/worktreeId/snapshotMode arguments must match it. Lexical matching is strict: every whitespace query term must match the same chunk's searchable fields, so broad natural-language queries may return zero results even when relevant evidence is indexed. Results carry short excerpts that locate evidence, not the full source; a short excerpt is not evidence the indexed source is unavailable - use read_project_knowledge on a relevant sourceId to inspect the implementation. For empty or irrelevant results, try a shorter identifier/symbol query and appropriate pathFilter/role filters before concluding indexed evidence is insufficient. When results are truncated and more are useful, pass the response's next_cursor value as the next request's cursor. Keep retries bounded; do not repeat poor searches or call this tool when sufficient evidence is already available.",
                 "inputSchema": with_scope(json!({
                     "type": "object",
                     "properties": {
@@ -200,7 +200,7 @@ impl Server {
             }),
             json!({
                 "name": "read_project_knowledge",
-                "description": "Exact read-back of one opaque source id with expected-hash validation. Returns the validated exact text, truncated and marked when it exceeds maxOutputTokens (default 2500).",
+                "description": "Exact read-back of one opaque source id with expected-hash validation. Returns the validated exact text of the indexed range; truncated and marked only when it exceeds maxOutputTokens (default 2500), which is the only truncation this tool performs. Search excerpts are shortened previews, never proof that the source is unavailable.",
                 "inputSchema": with_scope(json!({
                     "type": "object",
                     "properties": {
@@ -213,7 +213,7 @@ impl Server {
             }),
             json!({
                 "name": "related_project_knowledge",
-                "description": "Follow structural/section links (reference edges, referencers, parent/child chunks) from one opaque source id.",
+                "description": "Follow structural/section links (reference edges, referencers, parent/child chunks) from one opaque source id. An empty result only means no indexed relations exist for that source; it does not establish that source evidence is missing. If indexed evidence remains insufficient, fall back to targeted filesystem reads and explain the actual limitation.",
                 "inputSchema": with_scope(json!({
                     "type": "object",
                     "properties": {

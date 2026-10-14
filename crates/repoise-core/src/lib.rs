@@ -48,8 +48,10 @@ pub const LOCAL_CONFIG_FILENAME: &str = "repoise.local.json";
 pub const OVERLAY_FILENAME: &str = "repoise.overlay.json";
 /// Default generated-data directory, always excluded from the corpus.
 pub const DEFAULT_CACHE_DIR: &str = ".repoise";
-/// Version of the files and blocks `repoise init` writes.
-pub const TEMPLATE_VERSION: &str = "1.0.0";
+/// Version of the files and blocks `repoise init` writes. 1.2.0 adds the
+/// strict lexical matching guidance to the managed `AGENTS.md` snippet
+/// block; 1.1.0 added the retrieval-workflow guidance.
+pub const TEMPLATE_VERSION: &str = "1.2.0";
 /// Default maximum file size accepted into the corpus (1 MiB).
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// Versioned JSON schema file published alongside the package.

@@ -247,3 +247,27 @@ pub fn infer_role(relative: &Path) -> (Role, Lifecycle) {
     }
     (Role::CurrentDoc, Lifecycle::Unknown)
 }
+
+/// Path components that mark copied test/fixture data: content recorded for
+/// tests (fixtures, snapshots, test data), not the repository's own current
+/// documentation or instructions.
+pub const FIXTURE_PATH_COMPONENTS: &[&str] = &[
+    "fixture",
+    "fixtures",
+    "testdata",
+    "test-data",
+    "test_data",
+    "test_fixtures",
+    "__fixtures__",
+    "__snapshots__",
+];
+
+/// True when a repository-relative path (forward-slash form) lives under a
+/// fixture/test-data directory component. Such copied content stays fully
+/// searchable but must not gain current-document ranking authority (the
+/// search service suppresses role boosts for these paths).
+pub fn is_fixture_path(relative: &str) -> bool {
+    relative
+        .split('/')
+        .any(|component| FIXTURE_PATH_COMPONENTS.contains(&component.to_lowercase().as_str()))
+}

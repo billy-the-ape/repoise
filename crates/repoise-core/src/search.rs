@@ -5,10 +5,14 @@
 //! declared scope using SQLite FTS5. Ranking is BM25 plus explainable boosts:
 //! exact path/symbol precedence for identifier queries and a modest
 //! current-document preference (history/plan/decision roles win only for
-//! history-oriented queries). Results carry exact provenance and, for GitHub
-//! remotes with Git revisions, a validated permalink. No matches yield a
-//! lexical/filesystem fallback suggestion. Cursored pagination binds the
-//! cursor to the generation, query and filters, with an expiry.
+//! history-oriented queries). Copied fixture/test-data content (paths under
+//! fixture-style directories, see `classify::is_fixture_path`) stays fully
+//! searchable but never gains a role boost, so it cannot claim
+//! current-document authority over real sources. Results carry exact
+//! provenance and, for GitHub remotes with Git revisions, a validated
+//! permalink. No matches yield a lexical/filesystem fallback suggestion.
+//! Cursored pagination binds the cursor to the generation, query and filters,
+//! with an expiry.
 //!
 //! When the served generation stores vectors for one profile, hybrid mode
 //! embeds the query once (provider failure degrades to lexical) and fuses the
@@ -346,8 +350,12 @@ pub fn fts_match_expression(query: &str) -> Option<String> {
             continue;
         }
         let quoted = format!("\"{}\"", term.replace('"', "\"\""));
+        // Parenthesize each per-term OR group: without them the top-level
+        // AND binds only the last group's first field (FTS5 precedence:
+        // AND binds tighter than OR), silently relaxing the query to a
+        // mostly-OR match.
         parts.push(format!(
-            "path :{quoted} OR heading :{quoted} OR symbol :{quoted} OR body :{quoted}"
+            "(path :{quoted} OR heading :{quoted} OR symbol :{quoted} OR body :{quoted})"
         ));
     }
     if parts.is_empty() {
@@ -633,6 +641,11 @@ pub fn search(
         } else {
             matches!(candidate.role.as_str(), "current-doc" | "instruction")
         };
+        // Copied fixture/test-data content (paths under fixture-style
+        // directories) never gains role authority: it stays fully
+        // searchable but is ranked by BM25/precedence alone.
+        let fixture_path = crate::classify::is_fixture_path(&candidate.path);
+        let role_boosted = role_boosted && !fixture_path;
         if role_boosted {
             score -= 2.0;
             reasons.push(
@@ -643,6 +656,8 @@ pub fn search(
                 }
                 .to_string(),
             );
+        } else if fixture_path {
+            reasons.push("copied fixture/test data (no role boost)".to_string());
         }
         ranked.push((score, reasons.join("; "), candidate));
     }
