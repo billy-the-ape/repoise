@@ -55,16 +55,18 @@ The tool descriptions carry bounded guidance for agents; the CLI help text
   `read_project_knowledge` on a relevant `sourceId` to inspect the exact
   implementation.
 - **Strict lexical matching.** In lexical mode every whitespace query term
-  must co-occur in one chunk (FTS5 `AND` over per-field matches). Broad
-  natural-language queries whose terms are scattered across chunks return
-  no matches; refine such queries using identifiers or symbols found in
-  earlier results, and narrow with `pathFilter`/`role`. Focused queries
-  (one identifier, one file) are the reliable pattern.
+  must match the same chunk's searchable fields (FTS5 `AND` over per-field
+  matches). Broad natural-language queries whose terms are scattered across
+  chunks may therefore return zero results even when relevant evidence is
+  indexed; for empty or irrelevant results, try a shorter identifier/symbol
+  query and appropriate `pathFilter`/`role` filters before concluding the
+  indexed evidence is insufficient. Focused queries (one identifier, one
+  file) are the reliable pattern.
 - **Truncation has one meaning.** `truncated: true` on a `read` result means
   the exact text exceeded `maxOutputTokens` and was cut at a line
   boundary; `truncated: true` on a `search` result marks remaining results,
-  fetched by passing the returned `cursor`. Neither is a sign that indexed
-  content is missing.
+  fetched by passing the response's `next_cursor` value as the next request's
+  `cursor`. Neither is a sign that indexed content is missing.
 - **Empty `related` results** mean no indexed relations exist for that
   source; they do not establish that source evidence is missing.
 - **Bounded fallback.** When indexed evidence remains insufficient, fall

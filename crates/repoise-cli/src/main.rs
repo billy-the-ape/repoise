@@ -133,13 +133,19 @@ SEARCH OPTIONS:
     --lane <LANE>               Search lane: search (default, current docs/code) or history
 
 RETRIEVAL WORKFLOW:
-    Results carry short excerpts that locate evidence, not the full source; use
-    `read --source-id <ID>` to inspect the exact implementation. A short excerpt
-    is not evidence the indexed source is unavailable. Refine irrelevant results
-    with discovered identifiers/symbols and --path-filter/--role; use --cursor
-    when results are truncated. An empty `related` result does not establish
-    missing evidence. Fall back to targeted filesystem reads when indexed
-    evidence remains insufficient, and keep retrieval attempts bounded.
+    Lexical matching is strict: every whitespace query term must match the
+    same chunk's searchable fields, so broad natural-language queries may
+    return zero results even when relevant evidence is indexed. For empty or
+    irrelevant results, try a shorter identifier/symbol query with
+    --path-filter/--role before concluding indexed evidence is insufficient.
+    Results carry short excerpts that locate evidence, not the full source;
+    use `read --source-id <ID>` to inspect the exact implementation. A short
+    excerpt is not evidence the indexed source is unavailable. When results
+    are truncated and more are useful, pass the response's next_cursor value
+    as the next request's --cursor. An empty `related` result does not
+    establish missing evidence. Fall back to targeted filesystem reads when
+    indexed evidence remains insufficient. Keep retries bounded; do not repeat
+    poor searches or call repoise when sufficient evidence is already available.
 
 READ OPTIONS:
     --source-id <ID>            Opaque source id from a search result

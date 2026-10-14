@@ -35,15 +35,19 @@
   reindex required.
 - Agent retrieval guidance is now shipped in the MCP tool descriptions, the
   CLI help text and the managed `AGENTS.md` snippet (template version bumped
-  to 1.1.0): excerpts locate evidence and are not the source (use exact
+  to 1.2.0): strict lexical matching (every whitespace query term must
+  match the same chunk's searchable fields, so broad natural-language
+  queries may return zero results even when relevant evidence is indexed —
+  retry with shorter identifier/symbol queries and path/role filters,
+  bounded), excerpts locate evidence and are not the source (use exact
   reads of source ids); short excerpts do not mean the source is
-  unavailable; refine irrelevant results with discovered identifiers/symbols
-  and path/role filters; paginate with `cursor` when results are truncated;
-  empty `related` results do not establish missing evidence; fall back to
-  targeted filesystem reads only when indexed evidence is insufficient and
-  explain the limitation; keep attempts bounded. Existing overlays pick up
-  the new snippet with `repoise overlay update` (unchanged blocks migrate;
-  user-modified blocks report conflicts, user content is preserved).
+  unavailable; paginate by passing the response's `next_cursor` value as
+  the next request's cursor; empty `related` results do not establish
+  missing evidence; fall back to targeted filesystem reads only when
+  indexed evidence is insufficient and explain the limitation; keep
+  retries bounded. Existing overlays pick up the new snippet with
+  `repoise overlay update` (unchanged blocks migrate; user-modified blocks
+  report conflicts, user content is preserved).
 
 ### Card K6 — package release validation
 
