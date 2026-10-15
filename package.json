@@ -7,7 +7,9 @@
     "format": "prettier --write \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
     "format:check": "prettier --check \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
     "test": "node --test scripts/release/*.test.mjs scripts/eval/*.test.mjs",
-    "release:claim": "node scripts/release/claim.mjs"
+    "release:claim": "node scripts/release/claim.mjs",
+    "build-sh": "./scripts/build.sh",
+    "build-win": "./scripts/build.ps1"
   },
   "devDependencies": {
     "prettier": "3.9.9"
