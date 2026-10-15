@@ -4,6 +4,21 @@ Snapshot: October 4, 2026 (America/Denver); operations continued into October 5 
 Update after verified registry changes. This execution record is not an instruction to replay
 completed operations. `0.1.0-alpha.0` is a greeting/help/version CLI scaffold only.
 
+## October 15 follow-up — Windows name clearance
+
+The maintainer supplied npm support's confirmation that support published the
+Windows package and transferred write access to the maintainer account.
+A maintainer registry lookup returned `repoise-win32-x64@0.0.1-security`
+with `billytheape` as maintainer. This is a support-created placeholder,
+not a functional Repoise build. npm login was restored successfully.
+
+The earlier Windows name-blocker status below is historical. Windows trusted
+publisher/access settings still need verification; support clearance alone
+is not proof of configured OIDC trust or successful staging.
+Proceed with the new functional 0.1.0-alpha.1 candidate rather than replaying
+the scaffold-alpha completion steps. Existing public versions remain intact.
+See [preview readiness](alpha-1-readiness.md).
+
 ## Build and native publication evidence
 
 - Publishing infrastructure [PR #3](https://github.com/billy-the-ape/repoise/pull/3) merged.
