@@ -23,7 +23,7 @@ const response = await fetch(
       name: `Repoise ${release.version}`,
       draft: true,
       prerelease: release.version.includes("-"),
-      body: "Early CLI scaffold: greeting/help/version only. Indexing is not implemented. MIT licensed. Native archives and SHA256SUMS attached; npm packages require separate staged approvals. See docs/releases.md for platform and installation requirements.",
+      body: "Functional preview: offline docs/code indexing, lexical search, hash-validated exact reads, related links, freshness checks, watch, managed agent guidance and stdio MCP. Embeddings and history are opt-in. Not stable v1; agent speed/token savings are unproven and identifier ranking remains follow-up work. MIT licensed. Native archives and SHA256SUMS attached; npm packages require separate staged approvals. See docs/publish/alpha-1-readiness.md for readiness, platform requirements and verification.",
     }),
   },
 );

@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased (cards K4–K6)
+## 0.1.0-alpha.1 — preview candidate (not yet published)
+
+First functional preview of the offline repository knowledge engine. Includes
+incremental docs/code indexing, lexical search, hash-validated exact reads,
+related links, freshness checks, watch, managed agent guidance, stdio MCP,
+and opt-in embeddings/history. See [preview readiness](docs/publish/alpha-1-readiness.md).
+
+This is not a stable v1 release. Pilot runs verify basic operation but do not
+establish consistent agent speed or token savings. Exact-identifier ranking
+and agent retrieval strategy remain follow-up work. Registry installation
+must be validated after publication; Cargo registry publication stays disabled.
 
 ### Pre-v1 reliability — pilot follow-up
 

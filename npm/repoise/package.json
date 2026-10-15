@@ -1,6 +1,6 @@
 {
   "name": "repoise",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Offline-first repository knowledge for coding agents (offline docs+code lexical index, exact reads and stdio MCP)",
   "license": "MIT",
   "repository": {
@@ -23,9 +23,9 @@
     "node": ">=22.14.0"
   },
   "optionalDependencies": {
-    "repoise-linux-x64-gnu": "0.1.0-alpha.0",
-    "repoise-darwin-arm64": "0.1.0-alpha.0",
-    "repoise-win32-x64": "0.1.0-alpha.0"
+    "repoise-linux-x64-gnu": "0.1.0-alpha.1",
+    "repoise-darwin-arm64": "0.1.0-alpha.1",
+    "repoise-win32-x64": "0.1.0-alpha.1"
   },
   "publishConfig": {
     "access": "public",

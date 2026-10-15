@@ -1,7 +1,7 @@
 {
   "name": "repoise-development",
   "private": true,
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "type": "module",
   "scripts": {
     "format": "prettier --write \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
