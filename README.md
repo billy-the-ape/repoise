@@ -4,11 +4,11 @@ Offline-first repository knowledge for coding agents. Repoise indexes code and
 documentation, finds compact source-linked evidence, and reads indexed ranges
 back with content-hash validation.
 
-**Pre-v1: the engine is implemented on main; a functional release is not yet
-published.** Published `0.1.0-alpha.0` archives and binary packages contain the
-older greeting/help/version scaffold. Use a source build for testing; do not use
-that alpha or `npx repoise` to follow this guide. See the
-[publishing status](docs/publish/alpha-0-status.md).
+**Functional preview: 0.1.0-alpha.1 is available on npm under `next` and as
+[native prerelease archives](https://github.com/billy-the-ape/repoise/releases/tag/v0.1.0-alpha.1).**
+This is not stable v1. Pin the exact version: npm `latest` still points to a
+nonfunctional placeholder. The older 0.1.0-alpha.0 release is the CLI scaffold.
+See the [publication record](docs/publish/alpha-1-status.md) for verification and limits.
 
 ## What works today
 
@@ -23,7 +23,22 @@ Git working trees, committed snapshots, and plain directories are supported.
 Embeddings and remote history enrichment are opt-in. Fixture content remains
 searchable but receives no current-document ranking boost.
 
-## Build and try it
+## Install the preview
+
+For a project-local installation (Node >=22.14.0):
+
+```sh
+npm install --save-dev --save-exact --ignore-scripts repoise@0.1.0-alpha.1
+npx --no-install repoise version
+```
+
+Do not omit optional dependencies: they contain the platform executable.
+Examples below use `repoise` as shorthand; with a project-local installation,
+invoke it as `npx --no-install repoise`. Native archives require no Node/npm.
+Fresh public-registry CLI and MCP checks passed on macOS ARM64; all three
+targets passed the offline packaged-consumer smoke in the release workflow.
+
+## Build from source
 
 With [rustup](https://rustup.rs/) installed, build from a checkout of this repository.
 The toolchain is pinned to Rust 1.99.0; Git is required for Git repositories.

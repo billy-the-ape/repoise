@@ -1,16 +1,18 @@
 # Changelog
 
-## 0.1.0-alpha.1 — preview candidate (not yet published)
+## 0.1.0-alpha.1 — 2026-10-15 (functional preview)
 
 First functional preview of the offline repository knowledge engine. Includes
 incremental docs/code indexing, lexical search, hash-validated exact reads,
 related links, freshness checks, watch, managed agent guidance, stdio MCP,
 and opt-in embeddings/history. See [preview readiness](docs/publish/alpha-1-readiness.md).
 
-This is not a stable v1 release. Pilot runs verify basic operation but do not
+Published under npm `next` with native prerelease archives; see the
+[publication record](docs/publish/alpha-1-status.md). This is not a stable v1 release. Pilot runs verify basic operation but do not
 establish consistent agent speed or token savings. Exact-identifier ranking
-and agent retrieval strategy remain follow-up work. Registry installation
-must be validated after publication; Cargo registry publication stays disabled.
+and agent retrieval strategy remain follow-up work. Fresh registry installation and CLI/MCP checks passed on macOS ARM64;
+Linux/Windows public-install checks remain unmeasured. Cargo registry
+publication stays disabled.
 
 ### Pre-v1 reliability — pilot follow-up
 

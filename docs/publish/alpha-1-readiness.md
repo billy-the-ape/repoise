@@ -1,7 +1,8 @@
 # 0.1.0-alpha.1 preview readiness
 
-Status: candidate preparation only; not tagged, staged, or published by this PR.
-This is the first functional engine preview, not stable v1.
+Status: published on October 15, 2026 under npm `next` and as native prerelease
+archives. See the [execution record](alpha-1-status.md) for checks, checksums,
+manual staging, and remaining limits. This is a functional preview, not stable v1.
 
 ## Included
 
@@ -31,7 +32,7 @@ Cargo crates remain publish=false; this release does not publish to crates.io.
 - Source-build pilot evidence does not substitute for candidate artifact smoke
   or fresh registry-install verification.
 
-## Release sequence
+## Release procedure
 
 Follow [npm.md](npm.md) and [native.md](native.md), using the reviewed
 0.1.0-alpha.1 commit. Never reuse or move v0.1.0-alpha.0.
@@ -55,7 +56,9 @@ Follow [npm.md](npm.md) and [native.md](native.md), using the reviewed
 
 No runtime secrets are needed for lexical operation. Do not add registry tokens
 to the repository. npm login/2FA and protected-environment approvals remain on
-the maintainer's account. OIDC staging is not yet proven end to end.
+the maintainer's account. OIDC staging failed authentication on the first package; this preview was
+staged locally and approved with maintainer authentication. CI-generated npm
+provenance was not produced. OIDC recovery remains a follow-up.
 
 ## Consumer verification after publication
 

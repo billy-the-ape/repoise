@@ -10,7 +10,10 @@ not complete the v1 indexing acceptance criteria.
 | [Native releases](native.md)              | Build artifacts, checksums, draft review and publication         |
 | [Initial alpha status](alpha-0-status.md) | Completed operations, evidence and remaining bootstrap steps     |
 
-Read the status record before continuing `0.1.0-alpha.0`; do not replay completed operations.
+The functional [0.1.0-alpha.1 preview](alpha-1-status.md) is published under npm
+`next` and as native prerelease archives. Read execution records before any
+recovery operation; do not replay completed publications. The alpha.0 record
+is historical.
 Update it after verified registry changes. For later versions, follow the repeatable runbooks.
 
 ## Targets and readiness
@@ -32,8 +35,7 @@ managers remain future work. Rust is the engine boundary; npm/GitHub are distrib
 The native engine provides the offline docs+code lexical index (init, doctor, explain,
 index, status, search, read, related, check, watch, overlay, purge) and the stdio MCP server;
 embeddings and remote history enrichment are opt-in. The published `0.1.0-alpha.0` archives
-predate that engine work and remain greeting/help/version only; the next tagged release ships
-the functional engine.
+predate that engine work and remain greeting/help/version only; 0.1.0-alpha.1 ships the functional engine as a preview.
 
 ## Workflow and validation
 
@@ -66,8 +68,8 @@ no Node/npm on PATH; the generated cache is isolated per install; every subproce
 by timeouts and the temporary tree is removed on exit, so broken MCP behavior cannot hang the
 run. The versioned config schema (`schemas/repoise.config.v1.schema.json`) ships in both
 installed forms and must match the committed source; tree-sitter parser grammars are compiled
-into the native binary, so no parser asset resolves from the source checkout. The public
-registry install path remains unvalidated (pending registry name review).
+into the native binary, so no parser asset resolves from the source checkout. Fresh public-registry installation and CLI/MCP checks passed on macOS ARM64
+for alpha.1. Linux/Windows public-registry installs remain unmeasured.
 
 The `release-bundle` Actions artifact retains for 14 days. It contains four npm tarballs,
 three native archives, SHA256SUMS and release.json. Metadata records source SHA/version,
@@ -111,13 +113,16 @@ artifact workflow is separate from the release pipeline. Runtime secrets are not
 
 ## Limitations and rollback
 
-- The smoke validates locally packed tarballs, not the public npm registry install
-  path (the Windows npm package and the main launcher remain pending the registry
-  name review, tracked in [alpha-0-status.md](alpha-0-status.md)).
+- Offline smoke validates packed artifacts. Alpha.1 additionally passed fresh
+  registry-install checks on macOS ARM64; see [execution evidence](alpha-1-status.md).
+- Windows name clearance is complete. CI OIDC staging failed authentication;
+  alpha.1 used maintainer-local staging and approval without npm CI provenance.
 - Runner baselines are the pinned labels in the targets table; other OS/arch/libc
   combinations are unsupported and the launcher reports a clear error for them.
-- CI/release runs never publish, stage, tag or change versions; the only artifacts
-  are temporary build outputs and the 14-day `release-bundle` Actions artifact.
-- Rollback: revert the release-tooling changes (no registry or tag state to unwind);
-  generated cache data from smoke fixtures is disposable and removed with the
-  temporary tree.
+- Artifact-only runs do not stage or create releases. Explicitly enabled
+  staging/draft jobs write npm stages and an unpublished native draft; they do
+  not approve stages, publish the draft, tag commits, or change versions.
+- Public versions and tags are immutable release history. Pin a verified
+  functional version or stop using the preview; the scaffold alpha is not a
+  functional fallback. Publish corrections as a new version. Smoke caches are
+  disposable and removed with the temporary fixture.

@@ -25,8 +25,11 @@ FTS groups), copied fixture/test-data paths no longer gain the current-document
 ranking boost, and retrieval-workflow guidance (including strict lexical
 matching and `next_cursor` pagination) is shipped in the MCP tool
 descriptions, CLI help and the managed AGENTS.md snippet (template 1.2.0).
-Native 0.1.0-alpha.0 archives and Linux/macOS npm binary packages are published.
-The npm wrapper and Windows npm package remain pending a registry name review. The
+The functional 0.1.0-alpha.1 preview is published as native archives and all four
+npm packages under next; latest remains a placeholder. Public-registry CLI/MCP
+checks passed on macOS ARM64; Linux/Windows registry-install checks remain
+unmeasured. OIDC staging failed; maintainer-local staging/approval completed
+publication without CI-generated npm provenance. See docs/publish/alpha-1-status.md. The
 build/Actions integration examples are documented (consumer guide and a minimal GitHub
 Actions example under docs/build-ci.md and examples/; offline docs-code-lexical,
 explicitly invoked index/check, read-only, isolated cache, no active workflow and no
@@ -34,13 +37,14 @@ registry install). The offline lexical evaluation harness
 (frozen synthetic fixtures, 60 labeled queries with 12 held-out, per-hit
 provenance validation, recall@5/exact/policy/timing metrics, replay-evidence
 import format and runbook under scripts/eval/) has landed; hybrid evaluation
-and the owner-approved live agent pilot remain pending. Package release
+remain unmeasured; an initial live lexical pilot verified functionality but did
+not establish consistent agent speed/token gains. Package release
 validation ships in the CI/release matrices: the packed-consumer smoke runs the
 same offline docs+code fixture (init, index, search, read, status, check, stdio MCP
 with read-only refresh refusal, bundled schema assets, no-Node native runs) against
 both the installed launcher and the extracted native archive on Linux, macOS and
 Windows. The local inference embedding preset is evaluated, not shipped; OIDC staging
-is configured but unverified.
+requires authentication diagnosis.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
 ## Read only the context relevant to the task

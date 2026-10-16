@@ -2,8 +2,9 @@
 
 Repoise provides repository evidence through a native CLI or a stdio MCP
 server. Both use the same indexing, search, exact-read, and scope services.
-Use the current source build until a functional release is published; the
-published 0.1.0-alpha.0 scaffold does not implement this workflow.
+Use the published 0.1.0-alpha.1 preview (pin the version) or a source build;
+the older 0.1.0-alpha.0 scaffold does not implement this workflow. See the
+[installation guide](../README.md#install-the-preview).
 
 ## Terminal agents and AGENTS.md
 
