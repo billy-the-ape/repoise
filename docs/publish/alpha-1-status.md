@@ -70,6 +70,13 @@ Verified using the installed local executable, not the source build:
 Linux/Windows passed offline packaged-consumer CI smoke. Fresh public-registry
 functional installs on those operating systems remain unmeasured.
 
+## Bootstrap cleanup
+
+The maintainer verified that stage 45192162-f09a-4790-9fa7-4be3db7e0060
+was repoise@0.0.0-bootstrap.0, rejected it, and confirmed that a subsequent
+repoise stage listing returned []. The nonfunctional bootstrap was never
+approved. The published 0.1.0-alpha.1 preview remains unchanged.
+
 ## Authentication and remaining work
 
 OIDC staging failed on the first Linux package with ENEEDAUTH. The maintainer's
@@ -80,8 +87,6 @@ unresolved. Local staged publishing succeeded. This release has no CI-generated
 npm provenance; checksums and source metadata are integrity evidence, not signing.
 
 - Diagnose OIDC failure without adding registry bypass tokens.
-- Reject the unused nonfunctional main bootstrap stage after checking its identity:
-  45192162-f09a-4790-9fa7-4be3db7e0060 (not approved for publication).
 - Verify public-registry functional installs on Linux and Windows.
 - Continue identifier-ranking and agent-workflow investigations separately.
   Initial trials do not establish consistent speed/token gains.
