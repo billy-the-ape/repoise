@@ -56,7 +56,7 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | Per-PR implementation specs (cards K1–K6 + consumer) | [PR documents](docs/plans/): completed cards K1–K5 in [complete/](docs/plans/complete/), K6/consumer in `v1-5.md`/`v1-6.md` |
 | Current code structure and portability boundaries  | [Architecture](docs/architecture.md); master plan section 3                                                            |
 | Toolchain, checks, build and local installation    | [Development](docs/development.md)                                                                                     |
-| npm ownership, release controls and distribution   | [Publishing guides](docs/publish/README.md); [alpha status](docs/publish/alpha-0-status.md); [Changelog](CHANGELOG.md) |
+| npm ownership, release control and distribution      | [Publishing guides](docs/publish/README.md); [alpha status](docs/publish/alpha-0-status.md); [alpha-1 readiness](docs/publish/alpha-1-readiness.md); [alpha-1 status](docs/publish/alpha-1-status.md); [Changelog](CHANGELOG.md) |
 | Intake, parsing and freshness planning             | Master plan sections 4–7                                                                                               |
 | Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
 | MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md)                                                                                             |
