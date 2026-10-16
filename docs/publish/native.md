@@ -25,7 +25,8 @@ LICENSE and readiness README; no Node/npm runtime is needed. See the [target mat
    Unlike the engineering bundle, public checksums/metadata list native archives only.
    npm payloads stay in the engineering bundle until separately approved. Compare metadata
    with the resolved tag, download/verify checksums and run extracted `repoise --version`
-   and `--help` (Windows: `repoise.exe`) on the relevant platform. Current CLI has no indexing.
+   and `--help` (Windows: `repoise.exe`) on the relevant platform. Functional
+   previews also require index/search/exact-read/freshness and MCP smoke checks.
 
 5. In the editor, keep **Set as a pre-release** checked for alpha/beta versions, do not designate
    as latest stable, and select **Publish release**. Verify the public assets; update

@@ -35,8 +35,9 @@ native packages. See [alpha status](alpha-0-status.md) for completed setup.
 
 OIDC uses hosted runners and `id-token: write`; the staging job has read-only repository
 content access. Do not add `NPM_TOKEN`, `NODE_AUTH_TOKEN` or bypass-2FA secrets. Environment
-approval authorizes staging, not npm publication. The configured OIDC path has not yet
-been exercised end to end for Repoise.
+approval authorizes staging, not npm publication. The alpha.1 OIDC attempt failed with ENEEDAUTH on the first package despite a
+matching Linux trust configuration. Maintainer-local staging completed the
+release; OIDC remains unresolved. See [alpha.1 execution](alpha-1-status.md).
 
 ## One-time name claims
 
@@ -119,7 +120,7 @@ npx --no-install repoise --help
 
 Expect `repoise <version>` and successful help; verify invalid arguments return nonzero.
 Record online registry-install results separately from offline tarball smoke. Index/search/MCP
-checks are added when those commands exist. Never use unversioned npx as a release test or
+checks are required for functional engine releases. Never use unversioned npx as a release test or
 promote this scaffold alpha to latest. During bootstrap latest may point at `0.0.0-stage`.
 
 ## Complete the initial alpha after Windows clearance

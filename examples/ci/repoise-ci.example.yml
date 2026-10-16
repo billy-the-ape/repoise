@@ -55,8 +55,8 @@ jobs:
           fi
 
       - name: Install the pinned repoise launcher into an isolated tools dir
-        # REPLACE_WITH_VALIDATED_RELEASE_VERSION is substituted by the publication
-        # runbook once a functional release is published. Install into a dedicated
+        # REPLACE_WITH_VALIDATED_RELEASE_VERSION is replaced with a published pin;
+        # docs/build-ci.md documents the current pin. Install into a dedicated
         # tools dir under runner.temp, outside the checkout, so the consumer
         # package.json, lockfile and node_modules are never read or modified.
         # --ignore-scripts runs no lifecycle scripts; no consumer package scripts

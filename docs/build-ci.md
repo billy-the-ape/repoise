@@ -19,20 +19,22 @@ or the master-plan section 11 adoption gates have passed.
 
 ## Pinned installation
 
-No functional release is published yet. Registry-install examples therefore use an
-explicitly labeled placeholder and are **not** a validated install path:
+The functional 0.1.0-alpha.1 preview is published. Pin it explicitly; npm
+`latest` remains a placeholder. Do not use the scaffold 0.1.0-alpha.0.
 
-    # Substitute REPLACE_WITH_VALIDATED_RELEASE_VERSION with a published version.
-    # Do NOT use 0.1.0-alpha.0 (the scaffold alpha): it predates the engine and
-    # provides greeting/help/version only.
     npm install --ignore-scripts --no-audit --no-fund \
-      repoise@REPLACE_WITH_VALIDATED_RELEASE_VERSION
+      repoise@0.1.0-alpha.1
+
+The example workflow retains its clearly labeled version placeholder; replace
+it with this exact preview pin when evaluating the integration. Fresh registry
+installation is verified on macOS ARM64; Linux/Windows are covered by offline
+packaged smoke but not yet fresh public-registry installation.
 
 In CI the launcher installs into a dedicated tools dir under `runner.temp` (outside the
 checkout) and is invoked by absolute path with Node — see the example below.
 
 The publication runbook supplies the concrete pin. The native engine needs no Node/npm;
-npm is the first distribution channel. Before a functional release, use local
+npm is the first distribution channel. For source builds, use local
 development installation (`bash scripts/install.sh`) or the built native binary
 (`./target/release/repoise`); see [development.md](development.md).
 
