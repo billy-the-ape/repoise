@@ -9,6 +9,8 @@ not complete the v1 indexing acceptance criteria.
 | [npm publication](npm.md)                 | Account setup, name claims, OIDC staging, approvals and recovery |
 | [Native releases](native.md)              | Build artifacts, checksums, draft review and publication         |
 | [Initial alpha status](alpha-0-status.md) | Completed operations, evidence and remaining bootstrap steps     |
+| [Alpha-1 status](alpha-1-status.md)       | Alpha.1 publication execution record and verified checks         |
+| [Alpha-1 readiness](alpha-1-readiness.md) | Preview readiness verification and registry-install status       |
 
 The functional [0.1.0-alpha.1 preview](alpha-1-status.md) is published under npm
 `next` and as native prerelease archives. Read execution records before any
