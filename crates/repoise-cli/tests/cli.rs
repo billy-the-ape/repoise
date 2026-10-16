@@ -420,15 +420,23 @@ fn check_exit_codes_and_json_category() {
             .contains("check: Ok")
     );
 
-    // Live change: exit code 3 (stale).
+    // Live change: exit code 3 (stale) with --fresh.
     std::fs::write(root.join("README.md"), "hello again\n").unwrap();
-    let stale = cli(&["check", root.to_str().unwrap()]);
+    let stale = cli(&["check", "--fresh", root.to_str().unwrap()]);
     assert_eq!(stale.status.code(), Some(3));
     assert!(
         String::from_utf8(stale.stdout)
             .unwrap()
             .contains("check: Stale")
     );
+
+    // Without --fresh the stale index is reported but not a failure.
+    let stale_soft = cli(&["check", "--json", root.to_str().unwrap()]);
+    assert!(stale_soft.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&stale_soft.stdout).expect("check --json is valid JSON");
+    assert_eq!(value["category"], "ok");
+    assert_eq!(value["fresh"], false);
 }
 
 #[test]

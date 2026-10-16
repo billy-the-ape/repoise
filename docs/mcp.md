@@ -22,8 +22,10 @@ repoise mcp --allow-refresh [ROOT]  # additionally expose refresh_project_knowle
 ```
 
 `ROOT` defaults to the current directory; the server binds at startup to that
-configured scope (repository root + snapshot mode) and never reads credentials
-from the environment. All diagnostics (startup line, parse errors, shutdown) go
+configured scope (repository root + snapshot mode). It reads no credentials by
+itself; opt-in embedding/enrichment settings may reference environment variables
+(see [Configuration](#configuration)) and are honored only when configured.
+All diagnostics (startup line, parse errors, shutdown) go
 to **stderr**; stdout carries MCP protocol traffic only (newline-delimited
 JSON-RPC 2.0 messages). When the client closes stdin, the server flushes and
 exits with code 0.
@@ -34,7 +36,7 @@ exits with code 0.
 | --- | --- | --- |
 | `search_project_knowledge` | lexical (or hybrid) search | `query` required; optional `pathFilter`, `role`, `maxResults` (default 5, cap 20), `maxOutputTokens` (estimated, default 1200), `cursor`, `mode` (`lexical` default, `hybrid`, `vectors-only`), `rrfK` |
 | `read_project_knowledge` | exact read-back | `sourceId` required; expected-hash validation against the live snapshot; `maxOutputTokens` (estimated, default 2500) truncates at a line boundary and marks the result `truncated` |
-| `related_project_knowledge` | structural/section links | `sourceId` required; optional `relations` (`references`, `referenced-by`, `children`, `parent`), `limit`, `maxOutputTokens` |
+| `related_project_knowledge` | reference and parent/child-chunk links | `sourceId` required; optional `relations` (`references`, `referenced-by`, `children`, `parent`), `limit`, `maxOutputTokens` |
 | `project_knowledge_status` | operator status | published index, live snapshot, freshness, coverage, cache, last error |
 | `refresh_project_knowledge` | incremental index publication | opt-in only; identical outcome to `repoise index` |
 

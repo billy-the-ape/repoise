@@ -15,7 +15,7 @@ that alpha or `npx repoise` to follow this guide. See the
 - Offline lexical search over documentation and code; no model or credentials required.
 - Incremental SQLite/FTS5 indexing, scope/freshness checks, and exact source reads.
 - TypeScript/JavaScript structural chunks and symbols; line-window fallback for other languages.
-- Structural/section links, an explicit watch loop, and managed agent guidance.
+- Structural links (references, referenced-by, parent, children), an explicit watch loop, and managed agent guidance.
 - CLI and stdio MCP interfaces over the same services; MCP is read-only by default.
 - Optional OpenAI-compatible embeddings and bounded Git history retrieval.
 

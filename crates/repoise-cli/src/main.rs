@@ -104,8 +104,8 @@ COMMANDS:
     status [ROOT]                 Show scope, snapshot, index and freshness
     search --query <Q> [ROOT]     Offline lexical search over the current index
     read --source-id <ID> [ROOT]  Exact read-back of a search result
-    related --source-id <ID> [ROOT]  Follow structural/section links from a source
-    check [ROOT]                  Offline freshness and coverage check (automation)
+    related --source-id <ID> [ROOT]  Follow structural links from a source
+    check [ROOT]                  Offline coverage check; --fresh also gates on staleness
     watch [ROOT]                  Incremental watch loop (Ctrl+C cancels safely)
     mcp [ROOT]                    stdio MCP server (JSON-RPC 2.0 on stdin/stdout)
     overlay uninstall [ROOT]      Remove only the managed overlay (dry-run capable)
@@ -163,8 +163,9 @@ RELATED OPTIONS:
     --relation <KIND>           references | referenced-by | children | parent (repeatable; all when omitted)
 
 CHECK OPTIONS:
-    --fresh                     Require a fresh index (stable exit codes: 0 ok,
-                                1 error, 2 usage, 3 missing/stale, 4 coverage not met)
+    --fresh                     Also fail when the index is stale; without it, check
+                                classifies missing/coverage only (stable exit codes:
+                                0 ok, 1 error, 2 usage, 3 missing/stale, 4 coverage not met)
 
 WATCH OPTIONS:
     --interval <MS>             Poll interval (default 500)
@@ -209,7 +210,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         rrf_k: None,
         lane: None,
         relations: Vec::new(),
-        fresh: true,
+        fresh: false,
         agents_snippet: false,
         watch_interval_ms: None,
         watch_debounce_ms: None,
@@ -341,28 +342,17 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "--interval" => {
                 i += 1;
                 let value = require_value(args, i, "--interval")?;
-                opts.watch_interval_ms = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| format!("--interval must be a positive integer: {value}"))?,
-                );
+                opts.watch_interval_ms = Some(parse_positive_u64("--interval", &value)?);
             }
             "--debounce" => {
                 i += 1;
                 let value = require_value(args, i, "--debounce")?;
-                opts.watch_debounce_ms = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| format!("--debounce must be a positive integer: {value}"))?,
-                );
+                opts.watch_debounce_ms = Some(parse_positive_u64("--debounce", &value)?);
             }
             "--max-pending" => {
                 i += 1;
                 let value = require_value(args, i, "--max-pending")?;
-                opts.watch_max_pending =
-                    Some(value.parse::<u64>().map_err(|_| {
-                        format!("--max-pending must be a positive integer: {value}")
-                    })?);
+                opts.watch_max_pending = Some(parse_positive_u64("--max-pending", &value)?);
             }
             "--all" => opts.purge_all = true,
             "--allow-refresh" => opts.allow_refresh = true,
@@ -429,6 +419,16 @@ fn require_value(args: &[String], index: usize, flag: &str) -> Result<String, St
     args.get(index)
         .cloned()
         .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+fn parse_positive_u64(flag: &str, value: &str) -> Result<u64, String> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| format!("{flag} must be a positive integer: {value}"))?;
+    if parsed == 0 {
+        return Err(format!("{flag} must be a positive integer: {value}"));
+    }
+    Ok(parsed)
 }
 
 fn main() -> ExitCode {

@@ -145,11 +145,15 @@ when Cargo permits it; explicitly pass `--force` when replacement is intended.
 Uninstall with `cargo uninstall repoise-cli`, using the same `--root` if customized.
 This is local development installation, not a registry release.
 
-Rust-native checks/builds need no Node. Release tooling additionally uses Node 24 in CI,
-with npm and a pinned Prettier dev dependency; install using npm ci --ignore-scripts.
-Run npm run format before committing release JS/JSON/workflow changes, then
-npm run format:check and npm test. These development dependencies are not installed by
-consumers of the published launcher.
+Rust-native checks/builds need no Node. Release and evaluation tooling additionally use
+Node 24 in CI, with npm and a pinned Prettier dev dependency; install using
+npm ci --ignore-scripts. The Prettier globs and npm test (node --test) cover both
+scripts/release and scripts/eval, plus the npm wrapper sources and workflow YAML.
+Run npm run format before committing those changes, then npm run format:check and
+npm test. The offline lexical evaluation harness runs separately:
+cargo build --package repoise-cli, then node scripts/eval/harness.mjs (results in the
+git-ignored eval-results/ directory); see the [eval runbook](../scripts/eval/RUNBOOK.md).
+These development dependencies are not installed by consumers of the published launcher.
 Git attributes keep text checkouts at LF on every platform, including Windows.
 
 CI checks/tests/builds/smokes Linux, macOS and Windows. The manually dispatched

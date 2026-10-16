@@ -70,4 +70,4 @@ Commands: `repoise index` (build/publish), `repoise status` (scope/snapshot/fres
 exit 3 when the index is missing or stale), `repoise search`/`repoise read` (offline
 lexical search and exact read-back), `repoise purge` (remove one scope or the whole
 generated layout; source files are never touched). See
-[development](development.md) for examples and [v1-1.md](plans/v1-1.md) for the card.
+[development](development.md) for examples and [v1-1.md](plans/complete/v1-1.md) for the card.

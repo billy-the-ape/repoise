@@ -115,7 +115,9 @@ export function evaluateGates(metrics, replaySummary) {
     status: exactOk ? "measured-passed" : "measured-failed",
     measured: `${metrics.exact.passed}/${metrics.exact.total} exact queries; ${metrics.provenance.validatedHits} hits provenance-validated; ${metrics.provenance.violations.length} violations`,
   });
-  const isolationViolations = metrics.isolation?.violations.length ?? 0;
+  const isolation = metrics.isolation;
+  const isolationMeasured = isolation !== undefined;
+  const isolationViolations = isolation?.violations.length ?? 0;
   const policyFailures =
     metrics.policy.secretLeaks.length +
     metrics.policy.crossScopeLeaks.length +
@@ -126,8 +128,17 @@ export function evaluateGates(metrics, replaySummary) {
     id: "G2-policy",
     name: "Zero cross-scope / stale-text / secret-policy fixture leaks, including shared-cache scope isolation and stale exact reads",
     target: "0 leaks",
-    status: policyFailures === 0 ? "measured-passed" : "measured-failed",
-    measured: `${policyFailures} leaks (secret ${metrics.policy.secretLeaks.length}, cross-scope ${metrics.policy.crossScopeLeaks.length}, stale ${metrics.policy.staleLeaks.length}, must-not ${metrics.policy.mustNotViolations.length}, shared-cache isolation ${isolationViolations})`,
+    // The policy gate includes the shared-cache isolation phase; when that
+    // phase did not run, the gate is explicitly unmeasured rather than
+    // claimed passed on the policy queries alone.
+    status: !isolationMeasured
+      ? "unmeasured"
+      : policyFailures === 0
+        ? "measured-passed"
+        : "measured-failed",
+    measured: isolationMeasured
+      ? `${policyFailures} leaks (secret ${metrics.policy.secretLeaks.length}, cross-scope ${metrics.policy.crossScopeLeaks.length}, stale ${metrics.policy.staleLeaks.length}, must-not ${metrics.policy.mustNotViolations.length}, shared-cache isolation ${isolationViolations})`
+      : `${policyFailures - isolationViolations} policy-query leaks, but the shared-cache isolation phase was not run`,
   });
   gates.push({
     id: "G3-recall",
@@ -398,6 +409,24 @@ function validateHistoryHits(response, workspace) {
 }
 
 // ---------------------------------------------------------------------------
+/// Returns the ids of entries whose returned hit text (excerpt or title)
+/// contains the fixture's secret sentinel. The secret policy normally denies
+/// the material at indexing time, so the sentinel is an independent leak
+/// detector for the results of every query, not just the secret-policy ones.
+export function secretMarkerLeakEntryIds(entries) {
+  const leaked = new Set();
+  for (const entry of entries) {
+    for (const hit of entry.results ?? []) {
+      const text = `${hit.excerpt ?? ""} ${hit.title ?? ""}`;
+      if (text.includes(SECRET_MARKER)) {
+        leaked.add(entry.id);
+        break;
+      }
+    }
+  }
+  return [...leaked];
+}
+
 // Shared-cache isolation phase (scope isolation + stale exact reads).
 //
 // Indexes two corpora into ONE shared cache root, then verifies, inspecting
@@ -922,7 +951,10 @@ function assembleMetrics(runs, queries) {
           if (foundHit) recall.found += 1;
           recall.queries.push({ id: entry.id, found: foundHit });
         }
-        if (query.category === "secret-policy" && entry.results.length > 0) {
+        if (
+          (query.category === "secret-policy" && entry.results.length > 0) ||
+          secretMarkerLeakEntryIds([entry]).length > 0
+        ) {
           policy.secretLeaks.push(entry.id);
         }
         if (query.category === "cross-scope" && entry.results.length > 0) {

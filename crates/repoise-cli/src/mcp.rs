@@ -213,7 +213,7 @@ impl Server {
             }),
             json!({
                 "name": "related_project_knowledge",
-                "description": "Follow structural/section links (reference edges, referencers, parent/child chunks) from one opaque source id. An empty result only means no indexed relations exist for that source; it does not establish that source evidence is missing. If indexed evidence remains insufficient, fall back to targeted filesystem reads and explain the actual limitation.",
+                "description": "Follow structural links (reference edges, referencers, parent/child chunks) from one opaque source id. An empty result only means no indexed relations exist for that source; it does not establish that source evidence is missing. If indexed evidence remains insufficient, fall back to targeted filesystem reads and explain the actual limitation.",
                 "inputSchema": with_scope(json!({
                     "type": "object",
                     "properties": {

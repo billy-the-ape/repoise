@@ -1,4 +1,5 @@
-//! Offline freshness and coverage check (card K6, master plan section 8).
+//! Offline coverage check with an opt-in freshness gate (card K6, master
+//! plan section 8).
 //!
 //! `check` reuses the operator status view (metadata only, no provider
 //! calls) and adds a stable outcome category for automation:
@@ -6,7 +7,9 @@
 //! configured embedding requirement: the hybrid preset requires vectors in
 //! the served generation, and any configured embedding scope must not leave
 //! pending vectors after a build. Freshness uses the same honest judgment as
-//! `status` (manifest, config fingerprint, working-tree dirt).
+//! `status` (manifest, config fingerprint, working-tree dirt); a stale index
+//! is only a failing outcome when `CheckOptions::require_fresh` is set
+//! (`check --fresh`).
 
 use std::path::Path;
 
@@ -70,14 +73,14 @@ pub fn check(
     config_file: Option<&Path>,
     store: &Store,
     cache: &CachePaths,
-    _options: &CheckOptions,
+    options: &CheckOptions,
 ) -> Result<CheckResult> {
     let status = crate::status::status(adapter, mode, eff, config_file, store, cache)?;
     let mut reasons: Vec<String> = Vec::new();
 
     let freshness = status.freshness.status.as_str();
     let fresh = freshness == "fresh";
-    if !fresh {
+    if !fresh && options.require_fresh {
         reasons.extend(status.freshness.reasons.iter().cloned());
     }
 
@@ -103,12 +106,10 @@ pub fn check(
         None => true,
     };
 
-    let category = if !fresh {
-        if status.index.is_none() {
-            CheckCategory::Missing
-        } else {
-            CheckCategory::Stale
-        }
+    let category = if status.index.is_none() {
+        CheckCategory::Missing
+    } else if !fresh && options.require_fresh {
+        CheckCategory::Stale
     } else if !coverage_met {
         CheckCategory::CoverageNotMet
     } else {

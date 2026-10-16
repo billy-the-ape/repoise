@@ -57,7 +57,11 @@ repoise watch /absolute/path/to/checkout
 
 Watch is a long-running process: stop it with Ctrl+C. It is not installed as
 a daemon by init or MCP. Without a healthy watch loop, run index after changes.
-Check freshness after publication before relying on changed evidence.
+Check freshness after publication before relying on changed evidence. Watch
+publishes through the shared incremental index operation without an embedding
+session: a watch-published generation carries no vectors, so in an
+embedding-configured scope search degrades to lexical and `check` reports
+coverage-not-met until an explicit `repoise index` restores vectors.
 
 Default Git mode indexes the working tree. Use `--committed` consistently
 for index, check, search, read, and MCP when testing a committed snapshot.

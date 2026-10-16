@@ -24,6 +24,7 @@ import {
   historyEvidenceInTop5,
   judgeIsolation,
   percentile,
+  secretMarkerLeakEntryIds,
 } from "./harness.mjs";
 import { summarizeReplayEvidence, validateReplayEvidence } from "./replay.mjs";
 
@@ -236,6 +237,7 @@ test("gates are measured or explicitly unmeasured, never invented", () => {
       mustNotViolations: [],
     },
     provenance: { validatedHits: 5, violations: [] },
+    isolation: { passed: true, violations: [] },
     warmP95Ms: 120,
   };
   const gates = evaluateGates(passing, null);
@@ -255,6 +257,69 @@ test("gates are measured or explicitly unmeasured, never invented", () => {
     failing.find((g) => g.id === "G3-recall").status,
     "measured-failed",
   );
+});
+
+test("the policy gate is unmeasured when the isolation phase did not run", () => {
+  const { isolation, ...passing } = {
+    exact: { total: 2, passed: 2, failed: [] },
+    recall: { eligible: 10, found: 9, recallAt5: 0.9 },
+    policy: {
+      secretLeaks: [],
+      crossScopeLeaks: [],
+      staleLeaks: [],
+      mustNotViolations: [],
+    },
+    provenance: { validatedHits: 5, violations: [] },
+    isolation: { passed: true, violations: [] },
+    warmP95Ms: 120,
+  };
+  const gates = evaluateGates(passing, null);
+  const gate = gates.find((g) => g.id === "G2-policy");
+  assert.equal(gate.status, "unmeasured");
+  assert.ok(gate.measured.includes("shared-cache isolation phase was not run"));
+  // With isolation present but a violation injected, the gate fails.
+  const violated = evaluateGates(
+    {
+      ...passing,
+      isolation: {
+        passed: false,
+        violations: ["foreign source id was accepted"],
+      },
+    },
+    null,
+  );
+  assert.equal(
+    violated.find((g) => g.id === "G2-policy").status,
+    "measured-failed",
+  );
+});
+
+test("the secret sentinel scan detects leaked hit text for any query", () => {
+  const clean = [
+    {
+      id: "q1",
+      results: [{ path: "a.md", title: "Guide", excerpt: "setup text" }],
+    },
+    { id: "q2", results: [] },
+  ];
+  assert.deepEqual(secretMarkerLeakEntryIds(clean), []);
+  const leaked = [
+    {
+      id: "q1",
+      results: [{ path: "a.md", title: "Guide", excerpt: "setup text" }],
+    },
+    {
+      id: "q3",
+      results: [
+        {
+          path: "b.md",
+          title: "Notes",
+          excerpt: "contains REPOISE-FAKE-SECRET-0001 inside",
+        },
+      ],
+    },
+  ];
+  assert.deepEqual(secretMarkerLeakEntryIds(leaked), ["q3"]);
 });
 
 function sampleReplay() {

@@ -27,7 +27,7 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/read.rs` | Exact read-back with file/content-hash and chunk-text-hash validation; optional output-token budget with line-boundary truncation (`truncated`/`output_tokens`); `Stale` diagnostics |
 | `crates/repoise-core/src/status.rs` | Scope/snapshot/index/freshness view with config and cache diagnostics |
 | `crates/repoise-core/src/check.rs` | Offline freshness/coverage check over the status view with stable categories for automation (no provider calls) |
-| `crates/repoise-core/src/related.rs` | Bounded related-knowledge service: reference-edge, reverse-reference, parent/child-chunk and heading-structure links from a source chunk |
+| `crates/repoise-core/src/related.rs` | Bounded related-knowledge service: syntactic reference edges, reverse references and parent/child links over labeled chunk splits from a source chunk |
 | `crates/repoise-core/src/watch.rs` | Incremental watch loop: debounced scanning, coalesced per-path content, bounded pending-path publication through the shared index operation, branch-switch rescan and safe cancellation |
 | `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |
 | `crates/repoise-core/src/purge.rs` | Removal of generated cache data only, with scope-id validation |

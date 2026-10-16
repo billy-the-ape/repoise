@@ -111,7 +111,9 @@ process always sees the latest source.
   one generation per step and rescans after branch switches. It is not installed as a
   system daemon and cancels safely on SIGINT. If `watch` is unavailable or unhealthy,
   invoke the incremental `repoise index` for the affected paths and reconcile before
-  declaring fresh.
+  declaring fresh. Watch publications carry no embedding session, so in an
+  embedding-configured scope search degrades to lexical and `check` reports unmet
+  coverage until an explicit `repoise index` runs.
 
 See the [MCP guide](mcp.md) for the opt-in refresh tool and [storage.md](storage.md)
 for the generation/freshness model.

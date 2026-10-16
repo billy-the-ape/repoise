@@ -1,7 +1,9 @@
 # Repoise v1 — master implementation plan
 
-Status: v1 design proposed; native CLI scaffold released as 0.1.0-alpha.0; npm rollout partial.
-Progress snapshot: October 5, 2026 (America/Denver); indexing not yet implemented.
+Status: v1 engine implemented; 0.1.0-alpha.1 is the first functional preview candidate.
+Progress snapshot: October 16, 2026 (America/Denver); offline docs+code indexing,
+search, reads, the opt-in history lane, MCP and watch are implemented and tested;
+hybrid evaluation and the owner-approved live agent pilot remain pending.
 Project: [billy-the-ape/repoise](https://github.com/billy-the-ape/repoise).
 Target: a standalone Rust engine/native CLI, initially distributed through npm.
 Canonical planning location: `docs/plans/v1_master_plan.md` in this repository.
@@ -10,10 +12,13 @@ migrated from commit `d235d9da50087217d94a2fe8188195e8a87e1779`.
 Pilot baseline inspected: ai-gateway main `4be9f83dba57f79f6c0f6086cefef90c5eca71e1`.
 The separate [documentation PR #220](https://github.com/billy-the-ape/ai-gateway/pull/220)
 is pilot context, not a dependency of Repoise. At intake the repository contained documentation
-and a Rust .gitignore. It now has the native CLI, tested packaging and a public
-native prerelease. Linux/macOS npm binaries are published; Windows npm name review and
-main wrapper publication remain pending. Indexes and benchmarks do not exist.
-See the [publishing guides](../publish/README.md) and [alpha execution record](../publish/alpha-0-status.md).
+and a Rust .gitignore. It now has the native CLI, tested packaging, the functional
+engine and the published 0.1.0-alpha.0 scaffold. Windows npm name clearance is
+complete (trusted-publisher verification remains); the 0.1.0-alpha.1 functional
+preview is the current publication candidate, and npm `latest` is still a
+placeholder. Measured adoption benchmarks are not yet available.
+See the [publishing guides](../publish/README.md), the [alpha execution record](../publish/alpha-0-status.md)
+(historical) and [preview readiness](../publish/alpha-1-readiness.md).
 Read [AGENTS.md](../../AGENTS.md) for repository working rules.
 
 ## 1. Outcome and boundaries
@@ -37,7 +42,8 @@ the installed package rather than copying implementation into consuming reposito
 Product, CLI and repository name: Repoise (`repoise`); owner: `billy-the-ape`.
 Use `repoise.config.json` and a `repoise` cache namespace in proposed contracts.
 MIT is selected. npm repoise is claimed under billytheape via an unapproved bootstrap;
-Linux/macOS native npm names are owned and published, while Windows name review is pending.
+Linux/macOS native npm names are owned and published, while Windows name clearance is
+complete (trusted-publisher verification remains).
 Cargo registry names and stable public release timing remain open.
 The naming check found no exact package listings, but reserves nothing. Repowise is a similarly
 named existing developer tool; retain clear product descriptions and perform release naming checks.
@@ -791,15 +797,16 @@ The first implementation slice establishes a Rust 2024/resolver 3 workspace with
 greeting/help/version behavior, local check/build/install scripts and three-OS CI.
 Manual native artifact builds are engineering artifacts, not a release pipeline.
 See [architecture](../architecture.md) and [development](../development.md) for actual structure
-and commands. These choices establish part of K1 only; discovery/config/init/doctor,
-adapter contracts and all index functionality remain pending. The thin npm launcher and
-three target binary packages are now scaffolded, with packed-consumer smoke and manual
-OIDC staging/native draft workflows. First distribution is 0.1.0-alpha.0 (CLI scaffold only),
-with no install-time downloads, models or indexing. Checksums accompany native archives.
-Both Cargo crates remain non-publishable; MIT is selected. npm packaging/release controls
-are documented in [publishing guides](../publish/README.md). Native 0.1.0-alpha.0 and
-Linux/macOS npm binaries are published; Windows npm name review and wrapper publication
-remain pending. OIDC trust is configured for three packages but has not been exercised.
+and commands. K1 is complete (see the card table below); the thin npm launcher and
+three target binary packages ship with packed-consumer smoke and manual
+OIDC staging/native draft workflows. First distribution was 0.1.0-alpha.0 (CLI scaffold
+only), with no install-time downloads, models or indexing. Checksums accompany native
+archives. Both Cargo crates remain non-publishable; MIT is selected. npm packaging/release
+controls are documented in [publishing guides](../publish/README.md). Native 0.1.0-alpha.0
+and Linux/macOS npm binaries are published; Windows name clearance is complete and the
+0.1.0-alpha.1 functional preview is the current candidate
+([preview readiness](../publish/alpha-1-readiness.md)). OIDC trust is configured for three
+packages but has not been exercised.
 Future subsystems gain crates only when real boundaries justify them.
 
 ### Implementation status by card
@@ -823,7 +830,8 @@ bounded local history lane with optional verified GitHub enrichment. Packed-inst
 release acceptance (offline functional fixture, MCP, platform matrix) now runs in the
 CI/release matrices. Measured adoption gates (benchmarks), the evaluation harness and
 the pilot remain pending. Initial build evidence is linked in the
-[alpha execution record](../publish/alpha-0-status.md); no agent task/token gains are measured.
+[alpha execution record](../publish/alpha-0-status.md) (historical) and
+[preview readiness](../publish/alpha-1-readiness.md); no agent task/token gains are measured.
 
 Target 6 core PRs in this repository, plus a separate ai-gateway consumer integration PR;
 split a card only if implementation/test scope exceeds the local agent's practical context.
@@ -832,11 +840,11 @@ relevant plan sections, acceptance criteria, fixture contracts and verification 
 
 | PR document            | Card / scope                                                                                                                    | Repository               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------ |
-| [v1-0.md](v1-0.md)     | K1: adapter/provenance contracts, config/init/discovery/doctor                                                                 | billy-the-ape/repoise    |
-| [v1-1.md](v1-1.md)     | K2: offline prose index/search/exact read, SQLite/FTS generations, incremental reconciliation, freshness                        | billy-the-ape/repoise    |
-| [v1-2.md](v1-2.md)     | K3: embedding adapters/cache, compatible profiles, incremental hybrid search and budgets                                        | billy-the-ape/repoise    |
-| [v1-3.md](v1-3.md)     | K4: optional code grammars, symbols, structural chunks and related references                                                   | billy-the-ape/repoise    |
-| [v1-4.md](v1-4.md)     | K5: bounded local history and optional verified GitHub PR enrichment                                                            | billy-the-ape/repoise    |
+| [v1-0.md](complete/v1-0.md)     | K1: adapter/provenance contracts, config/init/discovery/doctor                                                                 | billy-the-ape/repoise    |
+| [v1-1.md](complete/v1-1.md)     | K2: offline prose index/search/exact read, SQLite/FTS generations, incremental reconciliation, freshness                        | billy-the-ape/repoise    |
+| [v1-2.md](complete/v1-2.md)     | K3: embedding adapters/cache, compatible profiles, incremental hybrid search and budgets                                        | billy-the-ape/repoise    |
+| [v1-3.md](complete/v1-3.md)     | K4: optional code grammars, symbols, structural chunks and related references                                                   | billy-the-ape/repoise    |
+| [v1-4.md](complete/v1-4.md)     | K5: bounded local history and optional verified GitHub PR enrichment                                                            | billy-the-ape/repoise    |
 | [v1-5.md](v1-5.md)     | K6: MCP/read and opt-in refresh, watch, overlay lifecycle, build/Actions examples, package release validation, evaluation/runbooks | billy-the-ape/repoise |
 | [v1-6.md](v1-6.md)     | ai-gateway consumer integration (pinned release, pilot)                                                                          | billy-the-ape/ai-gateway |
 
@@ -901,7 +909,8 @@ Settled: Repoise name, billy-the-ape/repoise repository, Rust core and npm-first
 Settled distribution choices: MIT license; intended npm repoise under billytheape;
 initial npm/native prerelease 0.1.0-alpha.0; staged npm approval and native draft release.
 See [publishing guides](../publish/README.md) for targets/procedures and
-[alpha status](../publish/alpha-0-status.md) for completed and blocked operations.
+[alpha status](../publish/alpha-0-status.md) (historical) and
+[preview readiness](../publish/alpha-1-readiness.md) for completed and blocked operations.
 Remaining owner decisions: Cargo registry package/crate names, stable public release timing,
 approved pilot corpus, actual embedding artifact,
 target client versions, maximum local cache/storage cost, and optional remote history scope.

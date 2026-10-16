@@ -49,16 +49,17 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Project overview and current readiness             | [README.md](README.md)                                                                                                 |
 | v1 scope, contracts, cards and acceptance criteria | [Master plan](docs/plans/v1_master_plan.md)                                                                            |
-| Per-PR implementation specs (cards K1–K6 + consumer) | [PR documents](docs/plans/v1-0.md) (`v1-0.md` through `v1-6.md`)                                                     |
+| Per-PR implementation specs (cards K1–K6 + consumer) | [PR documents](docs/plans/): completed cards K1–K5 in [complete/](docs/plans/complete/), K6/consumer in `v1-5.md`/`v1-6.md` |
 | Current code structure and portability boundaries  | [Architecture](docs/architecture.md); master plan section 3                                                            |
 | Toolchain, checks, build and local installation    | [Development](docs/development.md)                                                                                     |
 | npm ownership, release controls and distribution   | [Publishing guides](docs/publish/README.md); [alpha status](docs/publish/alpha-0-status.md); [Changelog](CHANGELOG.md) |
 | Intake, parsing and freshness planning             | Master plan sections 4–7                                                                                               |
 | Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
 | MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md)                                                                                             |
+| Agent setup, CLI/MCP retrieval workflow and worktrees | [Agent setup](docs/agents.md)                                                                                     |
 | Build/CI integration and consumer guide            | [Build/CI guide](docs/build-ci.md)                                                                                   |
 | Agent interfaces and installation                  | Master plan sections 8–10                                                                                              |
-| Benchmarks, resource budgets and adoption gates    | Master plan section 11                                                                                                 |
+| Benchmarks, resource budgets and adoption gates    | Master plan section 11; [evaluation runbook](scripts/eval/RUNBOOK.md) |
 | Implementation sequence and rollout                | Master plan sections 12–14                                                                                             |
 
 Read the assigned card and relevant plan sections, then inspect exact source and callers.
