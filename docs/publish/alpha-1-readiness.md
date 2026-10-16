@@ -6,7 +6,7 @@ This is the first functional engine preview, not stable v1.
 ## Included
 
 Offline docs/code lexical indexing, incremental publication, exact source reads
-with hash validation, structural/section links, freshness/coverage checks, watch,
+with hash validation, structural links, freshness/coverage checks, watch,
 managed AGENTS.md guidance (template 1.2.0), and read-only-by-default stdio MCP.
 Embeddings and bounded Git history/enrichment are opt-in.
 
