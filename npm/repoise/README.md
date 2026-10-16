@@ -11,7 +11,8 @@ wrapper; build Rust source instead. Node >=22.14.0 is required for the launcher.
 Do not omit optional dependencies: they deliver the matching executable.
 Installation does not run scripts, index repositories, or download models.
 
-After this version is published and verified, install an exact pin:
+Alpha.1 is published with frozen tarball bytes; install an exact pin of it
+(future prereleases will pin their own versions):
 
 ```sh
 npm install --save-dev --save-exact --ignore-scripts repoise@0.1.0-alpha.1

@@ -1,6 +1,6 @@
 # Repoise v1 — master implementation plan
 
-Status: v1 engine implemented; 0.1.0-alpha.1 is the first functional preview candidate.
+Status: v1 engine implemented; 0.1.0-alpha.1 is the first functional preview, now published.
 Progress snapshot: October 16, 2026 (America/Denver); offline docs+code indexing,
 search, reads, the opt-in history lane, MCP and watch are implemented and tested;
 hybrid evaluation and the owner-approved live agent pilot remain pending.
@@ -15,8 +15,8 @@ is pilot context, not a dependency of Repoise. At intake the repository containe
 and a Rust .gitignore. It now has the native CLI, tested packaging, the functional
 engine and the published 0.1.0-alpha.0 scaffold. Windows npm name clearance is
 complete (trusted-publisher verification remains); the 0.1.0-alpha.1 functional
-preview is the current publication candidate, and npm `latest` is still a
-placeholder. Measured adoption benchmarks are not yet available.
+preview is published under npm `next` and as native archives, and npm `latest`
+is still a placeholder. Measured adoption benchmarks are not yet available.
 See the [publishing guides](../publish/README.md), the [alpha execution record](../publish/alpha-0-status.md)
 (historical) and [preview readiness](../publish/alpha-1-readiness.md).
 Read [AGENTS.md](../../AGENTS.md) for repository working rules.
@@ -804,9 +804,10 @@ only), with no install-time downloads, models or indexing. Checksums accompany n
 archives. Both Cargo crates remain non-publishable; MIT is selected. npm packaging/release
 controls are documented in [publishing guides](../publish/README.md). Native 0.1.0-alpha.0
 and Linux/macOS npm binaries are published; Windows name clearance is complete and the
-0.1.0-alpha.1 functional preview is the current candidate
-([preview readiness](../publish/alpha-1-readiness.md)). OIDC trust is configured for three
-packages but has not been exercised.
+0.1.0-alpha.1 functional preview is published under npm `next` and as native archives
+([preview readiness](../publish/alpha-1-readiness.md)). CI OIDC staging failed
+authentication; publication completed via maintainer-local staging/approval without
+CI-generated npm provenance.
 Future subsystems gain crates only when real boundaries justify them.
 
 ### Implementation status by card
@@ -818,7 +819,7 @@ Future subsystems gain crates only when real boundaries justify them.
 | K3                              | Complete (v1-2)            | Versioned provider adapter (OpenAI-compatible endpoint), content-addressed embedding cache with profile fingerprints, per-generation vector publication, hybrid RRF search with coverage and lexical degradation, bounded budgets and embedding-cache GC complete, with core acceptance tests. The local inference preset remains evaluation-only. |
 | K4                              | Complete (v1-3)              | Pinned tree-sitter TypeScript/TSX and JavaScript/JSX grammars produce code chunks with exact line ranges, enclosing scope/symbol context and labeled oversized splits; other code languages fall back to line windows. Symbols and syntactic reference edges (imports resolved against the generation's file set, calls/references as bounded hints with honest confidence) publish per generation; FTS gains symbol/context columns; embedding scope selects docs or docs+code; schema v3 migration is additive and idempotent. Card-level fixtures for grammar behavior, incremental reparse and search coverage pass. Type resolution and call graphs remain out of scope. |
 | K5                              | Complete (v1-4), with explicit deferred scope | Opt-in offline local history lane (first-parent horizon, bounded paths and hunk descriptors, explicit shallow/horizon gaps) publishes in the same generation; history is a separate search lane (`search --lane history`) with FTS5/BM25 ranking and bounded cursors. Verified GitHub PR enrichment is opt-in behind the CLI `github-enrichment` feature: read-only commit-to-PR verification with bounded pagination, ETag repository-scoped host cache, per-build request budgets, primary/secondary rate-limit handling and fail-closed permission denial. Unit and CLI acceptance tests cover hint parsing, enrichment outcomes, budgets, cache invalidation, lane separation and permalink validation. Deferred (recorded in v1-4): review-discussion fetch, edited-state exposure, an explicit deleted-PR fixture, and the private-cache retention/access policy. |
-| K6                              | Distribution groundwork plus watch/check/related/overlay/MCP stdio and package release validation | Three-target offline packed-consumer smoke, checksums, release runbooks and public native alpha complete. Linux/macOS npm alphas public; Windows/main wrapper and OIDC validation pending. Shipped in the v1-5 PR: the related-knowledge service (`related`), offline `check` with stable exit-code categories, the incremental `watch` loop with bounded pending paths and safe cancellation, the non-destructive overlay lifecycle (init agents snippet, `overlay uninstall`, `overlay update` three-way template migration with manifest baseline), the stdio MCP server (`repoise mcp`) exposing search/read/related/status over the shared services with an explicitly opt-in refresh tool (`mcp.refresh` or `--allow-refresh`), package release validation (packed-consumer smoke on all three targets) and the offline lexical evaluation harness (frozen synthetic fixtures, 60 labeled queries with 12 held-out, per-hit provenance validation, recall@5/exact/policy/timing metrics, docs-only vs docs-code-lexical preset comparison, replay-evidence import format and runbook under `scripts/eval/`), and the build/Actions integration examples (consumer guide at `docs/build-ci.md`, a minimal GitHub Actions `push`/`pull_request` example at `examples/ci/repoise-ci.example.yml`, and the cache/private-corpus isolation policy; local validation only, no active workflow or registry install). Remaining: feature acceptance (benchmarks), hybrid evaluation and the owner-approved live agent pilot. |
+| K6                              | Distribution groundwork plus watch/check/related/overlay/MCP stdio and package release validation | Three-target offline packed-consumer smoke, checksums, release runbooks and public native alpha complete. All four npm packages are published under `next` (Windows name clearance complete; trusted-publisher verification and CI OIDC staging remain, with publication completed via maintainer-local staging). Shipped in the v1-5 PR: the related-knowledge service (`related`), offline `check` with stable exit-code categories, the incremental `watch` loop with bounded pending paths and safe cancellation, the non-destructive overlay lifecycle (init agents snippet, `overlay uninstall`, `overlay update` three-way template migration with manifest baseline), the stdio MCP server (`repoise mcp`) exposing search/read/related/status over the shared services with an explicitly opt-in refresh tool (`mcp.refresh` or `--allow-refresh`), package release validation (packed-consumer smoke on all three targets) and the offline lexical evaluation harness (frozen synthetic fixtures, 60 labeled queries with 12 held-out, per-hit provenance validation, recall@5/exact/policy/timing metrics, docs-only vs docs-code-lexical preset comparison, replay-evidence import format and runbook under `scripts/eval/`), and the build/Actions integration examples (consumer guide at `docs/build-ci.md`, a minimal GitHub Actions `push`/`pull_request` example at `examples/ci/repoise-ci.example.yml`, and the cache/private-corpus isolation policy; local validation only, no active workflow or registry install). Remaining: feature acceptance (benchmarks), hybrid evaluation and the owner-approved live agent pilot. |
 | ai-gateway consumer integration | Not started                  | Separate pinned consumer PR follows functional offline indexing acceptance.                                                                                                                                                                                                              |
 
 K1, K2, K3, K4 and K5 establish the offline docs+code milestone plus opt-in hybrid
