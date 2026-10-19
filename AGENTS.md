@@ -61,6 +61,7 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 | Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
 | MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md)                                                                                             |
 | Agent setup, CLI/MCP retrieval workflow and worktrees | [Agent setup](docs/agents.md)                                                                                     |
+| Portable consumer skill and one-command installation | [Agent skill](skills/repoise/SKILL.md); [installation](docs/agents.md#install-the-agent-skill) |
 | Build/CI integration and consumer guide            | [Build/CI guide](docs/build-ci.md)                                                                                   |
 | Agent interfaces and installation                  | Master plan sections 8–10                                                                                              |
 | Benchmarks, resource budgets and adoption gates    | Master plan section 11; [evaluation runbook](scripts/eval/RUNBOOK.md) |
