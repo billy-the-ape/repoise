@@ -25,6 +25,11 @@ FTS groups), copied fixture/test-data paths no longer gain the current-document
 ranking boost, and retrieval-workflow guidance (including strict lexical
 matching and `next_cursor` pagination) is shipped in the MCP tool
 descriptions, CLI help and the managed AGENTS.md snippet (template 1.2.0).
+Configured environment references (`env:` endpoints, `apiKeyEnv`, history
+`tokenEnv`, `REPOISE_CACHE_DIR`) resolve from the process environment first,
+then the target repository root's `.env` as a fallback (parsed strictly as
+data; process values win; malformed files fail with value-free diagnostics;
+`.env` stays secret-denied out of the corpus).
 The functional 0.1.0-alpha.1 preview is published as native archives and all four
 npm packages under both latest and next; the version remains an alpha preview. Public-registry CLI/MCP
 checks passed on macOS ARM64; Linux/Windows registry-install checks remain

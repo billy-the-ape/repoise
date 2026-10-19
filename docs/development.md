@@ -80,8 +80,9 @@ The workspace test suite covers these behaviors end to end:
 `cargo test --workspace --locked` (contract fixtures live in
 `crates/repoise-core/tests/v1_0.rs`, `crates/repoise-core/tests/v1_1.rs` and
 `crates/repoise-cli/tests/cli.rs`, `crates/repoise-cli/tests/mcp.rs` for the stdio MCP
-server; secret fixtures are generated in memory and
-never stored in Git). See [storage.md](storage.md) for the persistent index layout and
+server, and `crates/repoise-cli/tests/dotenv.rs` for `.env` resolution; secret fixtures
+are generated in memory and never stored in Git). See [storage.md](storage.md) for the
+persistent index layout and
 [mcp.md](mcp.md) for the MCP server.
 
 ## Optional hybrid search
@@ -97,6 +98,43 @@ The HTTPS transport is built into the CLI behind the default `remote-embedding`
 feature; `cargo check -p repoise-cli --no-default-features` produces the lexical-only
 binary. `doctor` additionally warns (without failing) when `endpoint` resolves to a
 non-TLS `http://` remote host: source text and the API key would travel in cleartext.
+
+### Environment references and the `.env` fallback
+
+All configured environment references (`env:` endpoints, `apiKeyEnv`, history
+`tokenEnv`, and the `REPOISE_CACHE_DIR` cache override) resolve through one
+source: the process environment first (existing shell/Cline values always
+win), then a plain `.env` file in the target repository root (the root
+argument, or the current directory) as a fallback. This applies to every
+command that uses repository configuration — `index`, `watch`, `mcp`, and
+the read/status family — including launches from outside the repository.
+The file is parsed strictly as data, never evaluated as shell code. A missing
+`.env` changes nothing; a malformed one fails the command with a value-free
+diagnostic instead of supplying partial values. `.env` values never enter
+diagnostics, caches, configuration, or the corpus (`.env` stays
+secret-denied and is not indexed). Keep the committed config to references
+and the values in an ignored local `.env`:
+
+```json
+// repoise.config.json (committed; references only, no secrets)
+{
+  "schemaVersion": 1,
+  "preset": "hybrid",
+  "embedding": {
+    "provider": "openai-compatible",
+    "model": "text-embedding-3-small",
+    "dimensions": 1536,
+    "endpoint": "env:REPOISE_EMBEDDING_ENDPOINT",
+    "apiKeyEnv": "REPOISE_EMBEDDING_API_KEY"
+  }
+}
+```
+
+```sh
+# .env in the repository root (add to .gitignore; never committed or indexed)
+REPOISE_EMBEDDING_ENDPOINT=https://api.example.com/v1
+REPOISE_EMBEDDING_API_KEY=...
+```
 
 ## Optional history lane
 
@@ -125,8 +163,9 @@ references stay unverified hints until the host API confirms the commit belongs
 to that change request (the commit's PR list is fetched once per commit,
 bounded and paginated, and matched against the hints); only then is a
 verified association (title, bounded body, state, permalink, fetched time)
-stored. The token is read from the named environment variable at runtime and
-never enters config or caches; a missing or empty token disables enrichment
+stored. The token is read from the named environment variable at runtime
+(same process-environment-first `.env` fallback as embeddings) and never enters
+config or caches; a missing or empty token disables enrichment
 entirely — no unauthenticated requests are sent — without affecting local
 indexing. The transport is built into the CLI behind the default
 `github-enrichment` feature (`ureq` read-only requests to `api.github.com`);

@@ -34,15 +34,17 @@ const MAX_TOOL_OUTPUT_BYTES: usize = 256 * 1024;
 struct Server {
     context: crate::Context,
     allow_refresh: bool,
+    envs: crate::EnvSource,
 }
 
 /// Runs the stdio MCP server until stdin closes (clean shutdown, exit 0).
-pub fn run_mcp(opts: &crate::CliOptions) -> Result<ExitCode, String> {
-    let context = crate::build_context(opts)?;
+pub fn run_mcp(opts: &crate::CliOptions, envs: &crate::EnvSource) -> Result<ExitCode, String> {
+    let context = crate::build_context(opts, envs)?;
     let allow_refresh = opts.allow_refresh || context.effective.mcp_refresh;
     let server = Server {
         context,
         allow_refresh,
+        envs: envs.clone(),
     };
     eprintln!(
         "repoise mcp: serving {}/{} on stdio; read-only{}",
@@ -471,7 +473,7 @@ impl Server {
         };
         let rrf_k = u32_value(args, "rrfK");
         let query_embedder = if mode != repoise_core::search::SearchMode::Lexical {
-            crate::query_embedder_from_config(&self.context.effective)?
+            crate::query_embedder_from_config(&self.context.effective, &self.envs)?
         } else {
             None
         };
@@ -567,8 +569,8 @@ impl Server {
                     .into(),
             );
         }
-        let client = crate::embedding_client(&self.context.effective)?;
-        let enrichment = crate::enrichment_session(&self.context)?;
+        let client = crate::embedding_client(&self.context.effective, &self.envs)?;
+        let enrichment = crate::enrichment_session(&self.context, &self.envs)?;
         let outcome = repoise_core::indexing::index(
             self.context.adapter.as_ref(),
             self.context.mode,

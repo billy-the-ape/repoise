@@ -90,6 +90,89 @@ struct CliOptions {
     allow_refresh: bool,
 }
 
+/// Environment source for configured environment references (`env:`
+/// endpoints, `apiKeyEnv`, history `tokenEnv`) and the `REPOISE_CACHE_DIR`
+/// override.
+///
+/// Resolution order: the process environment first (existing shell/Cline
+/// values always win), then the target repository root's `.env` as a
+/// fallback. The `.env` file is parsed strictly as data by `dotenvy` (never
+/// evaluated as shell code); a missing file preserves current behavior and a
+/// malformed file fails the command with a value-free diagnostic without
+/// supplying any partial values. Parsed values never enter diagnostics,
+/// caches, configuration, or the indexed corpus (`.env` stays secret-denied).
+#[derive(Clone, Debug)]
+struct EnvSource {
+    dotenv: Vec<(String, String)>,
+}
+
+impl EnvSource {
+    /// A source with no `.env` fallback (no configured values beyond the
+    /// process environment).
+    fn none() -> Self {
+        Self { dotenv: Vec::new() }
+    }
+
+    /// Loads the target root's `.env` (when present) as the fallback layer.
+    fn load(root: &std::path::Path) -> Result<Self, String> {
+        let path = root.join(".env");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Self::none()),
+            Err(err) => {
+                return Err(format!(
+                    "could not read the .env file at {}: {err}",
+                    path.display()
+                ));
+            }
+        };
+        // Strip a UTF-8 BOM so the first line parses as data.
+        let content = bytes
+            .strip_prefix(&[0xEF, 0xBB, 0xBF])
+            .unwrap_or(&bytes[..])
+            .to_vec();
+        let mut parsed: Vec<(String, String)> = Vec::new();
+        for item in dotenvy::from_read_iter(std::io::Cursor::new(content)) {
+            match item {
+                Ok((key, value)) => parsed.push((key, value)),
+                Err(dotenvy::Error::LineParse(..)) => {
+                    return Err(format!(
+                        "the .env file at {} contains a malformed line; \
+                         no environment values were loaded",
+                        path.display()
+                    ));
+                }
+                Err(dotenvy::Error::Io(err)) => {
+                    return Err(format!(
+                        "could not read the .env file at {}: {err}",
+                        path.display()
+                    ));
+                }
+                Err(_) => {
+                    return Err(format!(
+                        "failed to load the .env file at {}; no environment values were loaded",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        eprintln!("note: loaded .env from {}", path.display());
+        Ok(Self { dotenv: parsed })
+    }
+
+    /// Resolves one configured reference: process environment first, then the
+    /// `.env` fallback.
+    fn get(&self, key: &str) -> Option<String> {
+        if let Ok(value) = env::var(key) {
+            return Some(value);
+        }
+        self.dotenv
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+    }
+}
+
 const USAGE: &str = "\
 Repoise - offline repository knowledge indexer
 
@@ -456,6 +539,13 @@ fn main() -> ExitCode {
 }
 
 fn run(opts: CliOptions) -> Result<ExitCode, String> {
+    // Every command that operates on a repository root gets the same
+    // environment source: process environment first, then the target
+    // root's .env as a fallback.
+    let envs = match opts.command {
+        Command::Greet | Command::Help | Command::Version => EnvSource::none(),
+        _ => EnvSource::load(&opts.root)?,
+    };
     match opts.command {
         Command::Greet => {
             println!("{NAME} says hello");
@@ -469,19 +559,19 @@ fn run(opts: CliOptions) -> Result<ExitCode, String> {
             println!("repoise {}", env!("CARGO_PKG_VERSION"));
             Ok(ExitCode::SUCCESS)
         }
-        Command::Doctor => run_doctor(&opts),
-        Command::Explain => run_explain(&opts),
-        Command::Index => run_index(&opts),
-        Command::Init => run_init(&opts),
-        Command::Status => run_status(&opts),
-        Command::Search => run_search(&opts),
-        Command::Read => run_read(&opts),
-        Command::Related => run_related(&opts),
-        Command::Check => run_check(&opts),
-        Command::Watch => run_watch(&opts),
-        Command::Mcp => mcp::run_mcp(&opts),
-        Command::Overlay => run_overlay(&opts),
-        Command::Purge => run_purge(&opts),
+        Command::Doctor => run_doctor(&opts, &envs),
+        Command::Explain => run_explain(&opts, &envs),
+        Command::Index => run_index(&opts, &envs),
+        Command::Init => run_init(&opts, &envs),
+        Command::Status => run_status(&opts, &envs),
+        Command::Search => run_search(&opts, &envs),
+        Command::Read => run_read(&opts, &envs),
+        Command::Related => run_related(&opts, &envs),
+        Command::Check => run_check(&opts, &envs),
+        Command::Watch => run_watch(&opts, &envs),
+        Command::Mcp => mcp::run_mcp(&opts, &envs),
+        Command::Overlay => run_overlay(&opts, &envs),
+        Command::Purge => run_purge(&opts, &envs),
     }
 }
 
@@ -507,7 +597,7 @@ fn config_paths(opts: &CliOptions) -> ConfigPaths {
     }
 }
 
-fn run_doctor(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_doctor(opts: &CliOptions, _envs: &EnvSource) -> Result<ExitCode, String> {
     let cli = cli_overrides(opts)?;
     let paths = config_paths(opts);
     let report = repoise_core::doctor::doctor(&opts.root, &cli, &paths, opts.committed)
@@ -529,7 +619,7 @@ fn run_doctor(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_explain(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_explain(opts: &CliOptions, _envs: &EnvSource) -> Result<ExitCode, String> {
     let relative = opts
         .explain_path
         .as_deref()
@@ -555,13 +645,13 @@ fn run_explain(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
-    let ctx = build_context(opts)?;
+fn run_index(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
+    let ctx = build_context(opts, envs)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::indexing::IndexRequest::default();
-    let client = embedding_client(&ctx.effective)?;
+    let client = embedding_client(&ctx.effective, envs)?;
     let session = client.as_ref();
-    let enrichment = enrichment_session(&ctx)?;
+    let enrichment = enrichment_session(&ctx, envs)?;
     let enrichment_session = enrichment.as_ref();
     let outcome = repoise_core::indexing::index(
         ctx.adapter.as_ref(),
@@ -656,6 +746,7 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
 /// local-only (hints stay unverified); local indexing never fails for it.
 fn enrichment_session(
     ctx: &Context,
+    envs: &EnvSource,
 ) -> Result<Option<repoise_core::history::EnrichmentSession>, String> {
     let Some(settings) = &ctx.effective.history.enrichment else {
         return Ok(None);
@@ -669,8 +760,8 @@ fn enrichment_session(
     }
     #[cfg(feature = "github-enrichment")]
     {
-        let token = match env::var(&settings.token_env) {
-            Ok(token) if !token.trim().is_empty() => token,
+        let token = match envs.get(&settings.token_env) {
+            Some(token) if !token.trim().is_empty() => token,
             _ => {
                 // No credential means no enrichment at all: never send
                 // unauthenticated requests (they would leak private-repo
@@ -704,13 +795,14 @@ fn enrichment_session(
     }
     #[cfg(not(feature = "github-enrichment"))]
     {
+        let _ = envs;
         eprintln!("note: this binary has no GitHub enrichment transport; hints stay unverified");
         Ok(None)
     }
 }
 
-fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
-    let ctx = build_context(opts)?;
+fn run_status(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
+    let ctx = build_context(opts, envs)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let view = repoise_core::status::status(
         ctx.adapter.as_ref(),
@@ -821,7 +913,7 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_init(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_init(opts: &CliOptions, _envs: &EnvSource) -> Result<ExitCode, String> {
     let preset = match &opts.preset {
         Some(name) => Preset::parse(name).ok_or_else(|| {
             format!("unknown preset: {name} (expected docs-only, docs-code-lexical, or hybrid)")
@@ -874,7 +966,7 @@ fn run_init(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_related(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_related(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
     let source_id = opts
         .source_id
         .as_deref()
@@ -891,7 +983,7 @@ fn run_related(opts: &CliOptions) -> Result<ExitCode, String> {
             })
         })
         .collect::<Result<_, String>>()?;
-    let ctx = build_context(opts)?;
+    let ctx = build_context(opts, envs)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::related::RelatedRequest {
         source_id,
@@ -948,8 +1040,8 @@ fn run_related(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_check(opts: &CliOptions) -> Result<ExitCode, String> {
-    let ctx = build_context(opts)?;
+fn run_check(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
+    let ctx = build_context(opts, envs)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let options = repoise_core::check::CheckOptions {
         require_fresh: opts.fresh,
@@ -984,11 +1076,11 @@ fn run_check(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(code)
 }
 
-fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_watch(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
-    let ctx = build_context(opts)?;
+    let ctx = build_context(opts, envs)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let options = repoise_core::watch::WatchOptions {
         interval: Duration::from_millis(
@@ -1069,7 +1161,7 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_overlay(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_overlay(opts: &CliOptions, _envs: &EnvSource) -> Result<ExitCode, String> {
     let root = std::fs::canonicalize(&opts.root).map_err(|err| err.to_string())?;
     match opts.overlay_action.as_deref() {
         Some("uninstall") => {
@@ -1172,18 +1264,18 @@ struct Context {
     worktree_id: String,
 }
 
-fn resolve_cache_root(opts: &CliOptions) -> Result<CachePaths, String> {
+fn resolve_cache_root(opts: &CliOptions, envs: &EnvSource) -> Result<CachePaths, String> {
     let root = std::fs::canonicalize(&opts.root).map_err(|err| err.to_string())?;
     let cli = cli_overrides(opts)?;
     let paths = config_paths(opts);
     let effective =
         EffectiveConfig::resolve_with(&root, &paths, &cli).map_err(|err| err.to_string())?;
-    let env_override = env::var(CACHE_ENV_VAR).ok();
+    let env_override = envs.get(CACHE_ENV_VAR);
     CachePaths::resolve(&root, &effective.cache_dir, env_override.as_deref())
         .map_err(|err| err.to_string())
 }
 
-fn build_context(opts: &CliOptions) -> Result<Context, String> {
+fn build_context(opts: &CliOptions, envs: &EnvSource) -> Result<Context, String> {
     let root = std::fs::canonicalize(&opts.root).map_err(|err| err.to_string())?;
     let cli = cli_overrides(opts)?;
     let paths = config_paths(opts);
@@ -1191,7 +1283,7 @@ fn build_context(opts: &CliOptions) -> Result<Context, String> {
         EffectiveConfig::resolve_with(&root, &paths, &cli).map_err(|err| err.to_string())?;
     let adapter = default_adapter(&root)?;
     let mode = adapter_mode(&root, opts.committed);
-    let cache = resolve_cache_root(opts)?;
+    let cache = resolve_cache_root(opts, envs)?;
     let (repo_id, worktree_id, _) = repoise_core::search::scope_for_search(adapter.as_ref(), mode)
         .map_err(|err| err.to_string())?;
     let config_file = opts.config.clone().or_else(|| {
@@ -1213,7 +1305,7 @@ fn build_context(opts: &CliOptions) -> Result<Context, String> {
     })
 }
 
-fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_search(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
     let query = opts
         .query
         .as_deref()
@@ -1223,7 +1315,7 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
         Some(name) => Some(Role::parse(name).ok_or_else(|| format!("unknown role: {name}"))?),
         None => None,
     };
-    let ctx = build_context(opts)?;
+    let ctx = build_context(opts, envs)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     if opts.lane.as_deref() == Some("history") {
         let request = repoise_core::history::HistorySearchRequest {
@@ -1344,7 +1436,7 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
     let query_embedder = if mode == SearchMode::Lexical {
         None
     } else {
-        query_embedder_from_config(&ctx.effective)?
+        query_embedder_from_config(&ctx.effective, envs)?
     };
     let response = match repoise_core::search::search(
         ctx.adapter.as_ref(),
@@ -1395,7 +1487,7 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_read(opts: &CliOptions) -> Result<ExitCode, String> {
+fn run_read(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
     if opts.lane.as_deref() == Some("history") {
         return Err(
             "read targets current chunks only; history items have no exact-read lane".into(),
@@ -1406,7 +1498,7 @@ fn run_read(opts: &CliOptions) -> Result<ExitCode, String> {
         .as_deref()
         .ok_or("--source-id <ID> is required for read")?
         .to_string();
-    let ctx = build_context(opts)?;
+    let ctx = build_context(opts, envs)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::read::ReadRequest {
         source_id,
@@ -1442,8 +1534,8 @@ fn run_read(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_purge(opts: &CliOptions) -> Result<ExitCode, String> {
-    let cache = resolve_cache_root(opts)?;
+fn run_purge(opts: &CliOptions, envs: &EnvSource) -> Result<ExitCode, String> {
+    let cache = resolve_cache_root(opts, envs)?;
     let request = repoise_core::purge::PurgeRequest {
         all: opts.purge_all,
         repo_id: opts.repo_id.clone(),
@@ -1467,11 +1559,14 @@ fn run_purge(opts: &CliOptions) -> Result<ExitCode, String> {
 }
 
 /// Resolves the endpoint (an `env:` reference) and the API key (the named
-/// environment variable) from embedding settings. Missing values degrade the
-/// operation to lexical-only (with a note) rather than failing it.
+/// environment variable) from embedding settings, using the shared
+/// environment source (process environment first, then the target root's
+/// `.env` fallback). Missing values degrade the operation to lexical-only
+/// (with a note) rather than failing it.
 #[cfg(feature = "remote-embedding")]
 fn resolve_provider_credentials(
     settings: &repoise_core::config::EmbeddingConfig,
+    envs: &EnvSource,
 ) -> Result<Option<(String, String)>, String> {
     let Some(endpoint_ref) = settings.endpoint.as_deref() else {
         return Ok(None);
@@ -1479,7 +1574,7 @@ fn resolve_provider_credentials(
     let Some(var_name) = endpoint_ref.strip_prefix("env:") else {
         return Err("embedding.endpoint must be an env: reference".into());
     };
-    let Some(endpoint) = env::var(var_name).ok() else {
+    let Some(endpoint) = envs.get(var_name) else {
         eprintln!("note: endpoint variable {var_name} is not set; continuing lexical-only");
         return Ok(None);
     };
@@ -1487,7 +1582,7 @@ fn resolve_provider_credentials(
         eprintln!("note: no API key variable configured; continuing lexical-only");
         return Ok(None);
     };
-    let Some(api_key) = env::var(key_env).ok() else {
+    let Some(api_key) = envs.get(key_env) else {
         eprintln!("note: API key variable {key_env} is not set; continuing lexical-only");
         return Ok(None);
     };
@@ -1496,7 +1591,10 @@ fn resolve_provider_credentials(
 
 /// Builds the optional embedding session for a build, from effective config.
 /// A missing profile, endpoint, or credential keeps the build lexical-only.
-fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, String> {
+fn embedding_client(
+    eff: &EffectiveConfig,
+    envs: &EnvSource,
+) -> Result<Option<EmbeddingClient>, String> {
     let Some(settings) = &eff.embedding else {
         return Ok(None);
     };
@@ -1505,7 +1603,7 @@ fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, St
     };
     #[cfg(feature = "remote-embedding")]
     {
-        let Some((endpoint, api_key)) = resolve_provider_credentials(settings)? else {
+        let Some((endpoint, api_key)) = resolve_provider_credentials(settings, envs)? else {
             return Ok(None);
         };
         let budgets = repoise_core::config::budgets_from_config(settings);
@@ -1525,7 +1623,7 @@ fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, St
     }
     #[cfg(not(feature = "remote-embedding"))]
     {
-        let _ = profile;
+        let _ = (profile, envs);
         eprintln!("note: this binary has no remote embedding transport; continuing lexical-only");
         Ok(None)
     }
@@ -1560,6 +1658,7 @@ impl QueryEmbedder for ProviderQueryEmbedder {
 /// profile, endpoint, or credential degrades hybrid search to lexical.
 fn query_embedder_from_config(
     eff: &EffectiveConfig,
+    envs: &EnvSource,
 ) -> Result<Option<Box<dyn QueryEmbedder>>, String> {
     let Some(settings) = &eff.embedding else {
         return Ok(None);
@@ -1569,7 +1668,7 @@ fn query_embedder_from_config(
     };
     #[cfg(feature = "remote-embedding")]
     {
-        let Some((endpoint, api_key)) = resolve_provider_credentials(settings)? else {
+        let Some((endpoint, api_key)) = resolve_provider_credentials(settings, envs)? else {
             return Ok(None);
         };
         let budgets = repoise_core::config::budgets_from_config(settings);
@@ -1588,7 +1687,7 @@ fn query_embedder_from_config(
     }
     #[cfg(not(feature = "remote-embedding"))]
     {
-        let _ = profile;
+        let _ = (profile, envs);
         Ok(None)
     }
 }

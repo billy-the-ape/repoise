@@ -119,8 +119,9 @@ required.
 ## Configuration
 
 Standard Repoise configuration applies (`repoise.config.json`,
-`repoise.local.json`, `REPOISE_CACHE_DIR`); the MCP server reads the same effective
-config as the CLI. The optional `mcp` block (see
+`repoise.local.json`, `REPOISE_CACHE_DIR`, plus the target root's `.env` fallback —
+process environment wins; see [development.md](development.md)); the MCP server
+reads the same effective config as the CLI. The optional `mcp` block (see
 `schemas/repoise.config.v1.schema.json`):
 
 ```json
@@ -128,7 +129,8 @@ config as the CLI. The optional `mcp` block (see
 ```
 
 `mcp.refresh` (default false) enables the opt-in refresh tool. Embedding
-settings work as in the CLI (opt-in, `env:` credential references); without them
+settings work as in the CLI (opt-in, `env:` credential references resolved
+through the same environment source); without them
 the server stays lexical-only, and remote history enrichment is not available
 from the MCP server in this build (the history lane remains a CLI feature).
 
