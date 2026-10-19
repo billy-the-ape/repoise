@@ -138,7 +138,7 @@ impl Watcher {
     /// any publication starts.
     pub fn step(&mut self, cancel: &AtomicBool) -> Result<WatchStep> {
         let started = Instant::now();
-        let inventory = discovery::inventory(self.adapter.as_ref(), self.mode, &self.eff)?;
+        let inventory = discovery::inventory(self.adapter.as_ref(), self.mode, &self.eff, None)?;
         let live_branch = inventory.snapshot.branch.clone();
         let branch_switch = self.branch_changed(&live_branch);
 
@@ -167,7 +167,7 @@ impl Watcher {
 
         // Coalesce: rescan after the debounce and reconcile against the
         // freshest state, not the pre-debounce scan.
-        let inventory = discovery::inventory(self.adapter.as_ref(), self.mode, &self.eff)?;
+        let inventory = discovery::inventory(self.adapter.as_ref(), self.mode, &self.eff, None)?;
         let live_branch = inventory.snapshot.branch.clone();
         if !self.needs_publish(&inventory) {
             self.last_branch = live_branch;
@@ -191,6 +191,7 @@ impl Watcher {
             &self.store,
             &self.cache,
             &request,
+            None,
             None,
             None,
         )?;

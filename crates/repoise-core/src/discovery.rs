@@ -19,6 +19,7 @@ use crate::config::EffectiveConfig;
 use crate::error::Error;
 use crate::hash;
 use crate::ignore::{Decision, Policy};
+use crate::progress::{IndexPhase, IndexProgressReporter};
 use crate::provenance::{
     FileRecord, PARSER_VERSION_TEXT, RepositoryRecord, SnapshotManifest, SnapshotRecord,
 };
@@ -154,10 +155,12 @@ fn gitignore_files_on_disk(root: &Path) -> Result<Vec<(PathBuf, Vec<String>)>, E
 }
 
 /// Builds the deterministic inventory for one adapter snapshot.
+/// `progress` reports per-candidate discovery progress when provided.
 pub fn inventory(
     adapter: &dyn SourceAdapter,
     mode: SnapshotMode,
     eff: &EffectiveConfig,
+    progress: Option<&dyn IndexProgressReporter>,
 ) -> Result<Inventory, Error> {
     let revision = adapter.resolve(None, mode)?;
     let raw = adapter.enumerate(&revision, mode)?;
@@ -169,11 +172,21 @@ pub fn inventory(
         .map(|(rule, _)| rule.clone())
         .collect();
 
+    // The enumeration is the reliable denominator for discovery work.
+    let discovery_total = raw.len() as u64;
+    if let Some(reporter) = progress {
+        reporter.phase_started(IndexPhase::Discovery, Some(discovery_total));
+    }
     let mut entries: Vec<SourceEntry> = Vec::new();
     let mut files: Vec<FileRecord> = Vec::new();
     let mut skips: Vec<SkipDiagnostic> = Vec::new();
+    let mut discovered = 0u64;
 
     for entry in raw {
+        discovered += 1;
+        if let Some(reporter) = progress {
+            reporter.progress(IndexPhase::Discovery, discovered, discovery_total);
+        }
         let decision = policy.decide(&entry.path);
         if !decision.included {
             continue;
@@ -236,6 +249,9 @@ pub fn inventory(
         entries.push(entry);
     }
 
+    if let Some(reporter) = progress {
+        reporter.phase_finished(IndexPhase::Discovery);
+    }
     let manifest = SnapshotManifest::build(entries);
     let dirty = match mode {
         SnapshotMode::Committed => None,

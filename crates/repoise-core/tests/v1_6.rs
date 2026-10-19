@@ -93,6 +93,7 @@ fn build_index(repo: &DirRepo) -> indexing::IndexOutcome {
         &IndexRequest::default(),
         None,
         None,
+        None,
     )
     .unwrap()
 }

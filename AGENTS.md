@@ -25,6 +25,9 @@ FTS groups), copied fixture/test-data paths no longer gain the current-document
 ranking boost, and retrieval-workflow guidance (including strict lexical
 matching and `next_cursor` pagination) is shipped in the MCP tool
 descriptions, CLI help and the managed AGENTS.md snippet (template 1.2.0).
+`repoise index` reports live phase progress (discovery, reconciliation,
+optional embedding/history, publication) to stdout, or stderr under `--json`,
+with counts, elapsed time and an approximate ETA only when reliable.
 The functional 0.1.0-alpha.1 preview is published as native archives and all four
 npm packages under both latest and next; the version remains an alpha preview. Public-registry CLI/MCP
 checks passed on macOS ARM64; Linux/Windows registry-install checks remain

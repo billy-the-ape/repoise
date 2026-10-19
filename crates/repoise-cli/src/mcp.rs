@@ -578,6 +578,7 @@ impl Server {
             &repoise_core::indexing::IndexRequest::default(),
             client.as_ref(),
             enrichment.as_ref(),
+            None,
         )
         .map_err(|err| err.to_string())?;
         serde_json::to_value(&outcome).map_err(|err| err.to_string())

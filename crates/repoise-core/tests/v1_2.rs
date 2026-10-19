@@ -143,20 +143,20 @@ fn embedding_cache_reuses_unchanged_input_and_separates_profiles() {
             input_hash: hash::sha256_hex("beta"),
         },
     ];
-    let first = embed_chunks(&cache, &session, &work, 1).unwrap();
+    let first = embed_chunks(&cache, &session, &work, 1, None).unwrap();
     assert_eq!(first.vectors.len(), 2);
     assert_eq!(first.stats.embedded, 2);
     assert_eq!(first.stats.cache_hits, 0);
 
     // Unchanged inputs are served from the cache without a provider call.
-    let second = embed_chunks(&cache, &session, &work, 2).unwrap();
+    let second = embed_chunks(&cache, &session, &work, 2, None).unwrap();
     assert_eq!(second.stats.cache_hits, 2);
     assert_eq!(second.stats.embedded, 0);
     assert_eq!(second.vectors.len(), 2);
 
     // A different profile (different model) never reuses the entry.
     let other = client(HashProvider::other_model(8));
-    let third = embed_chunks(&cache, &other, &work, 3).unwrap();
+    let third = embed_chunks(&cache, &other, &work, 3, None).unwrap();
     assert_eq!(third.stats.embedded, 2);
     assert_eq!(third.stats.cache_hits, 0);
 
@@ -175,7 +175,7 @@ fn failed_vectors_are_never_zero_filled() {
         input: "alpha".into(),
         input_hash: hash::sha256_hex("alpha"),
     }];
-    let outcome = embed_chunks(&cache, &client, &work, 1).unwrap();
+    let outcome = embed_chunks(&cache, &client, &work, 1, None).unwrap();
     assert!(outcome.vectors.is_empty(), "no vector may be published");
     assert_eq!(outcome.stats.failed, 1);
     assert_eq!(outcome.stats.embedded, 0);
@@ -223,6 +223,7 @@ fn build_scope(tag: &str, files: &[(&str, &str)], session: Option<&EmbeddingClie
         &cache,
         &IndexRequest::default(),
         session,
+        None,
         None,
     )
     .unwrap();
@@ -602,7 +603,7 @@ fn character_budget_counts_the_first_input_and_keeps_the_rest_pending() {
     };
     let session = EmbeddingClient::new(Box::new(provider), budgets, CancellationToken::new());
     let inputs = vec!["a".repeat(100); 40];
-    let (outcomes, stats) = session.embed_all(&inputs);
+    let (outcomes, stats) = session.embed_all(&inputs, None);
     assert!(
         outcomes.iter().all(|vector| vector.is_none()),
         "an exhausted character budget must not produce vectors"

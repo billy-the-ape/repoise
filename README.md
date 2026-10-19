@@ -72,6 +72,11 @@ Review the generated configuration and managed AGENTS.md block. Keep
 contain source text; `REPOISE_CACHE_DIR` relocates it. Indexing respects
 configured policy and inherited Git ignores; use `explain` to inspect decisions.
 
+`repoise index` reports live phase progress (discovery, reconciliation,
+optional embedding and history enrichment, publication) with counts, elapsed
+time, and an approximate ETA only when the observed rate is reliable. With
+`--json`, progress goes to stderr so stdout stays a single JSON document.
+
 Copy a result's `source_id` into an exact read:
 
 ```sh

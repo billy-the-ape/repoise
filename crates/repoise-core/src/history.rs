@@ -478,7 +478,14 @@ impl EnrichmentSession {
     /// Enriches every hint-carrying item in `set`, bounded by the budgets.
     /// Stops on rate limit (items keep hints), permission denial (fail
     /// closed: the remote cache is invalidated), or budget exhaustion.
-    pub fn run(&self, remote: Option<&str>, set: &mut HistorySet) -> EnrichmentReport {
+    /// `on_progress` receives `(hint items processed, total hint items)`
+    /// after each item and once more at the end (covering early stops).
+    pub fn run(
+        &self,
+        remote: Option<&str>,
+        set: &mut HistorySet,
+        mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
+    ) -> EnrichmentReport {
         let mut report = EnrichmentReport::default();
         let Some(remote) = remote else {
             return report;
@@ -559,6 +566,13 @@ impl EnrichmentSession {
                     report.failed += 1;
                 }
             }
+            if let Some(cb) = on_progress.as_mut() {
+                cb((position + 1) as u64, hint_items.len() as u64);
+            }
+        }
+        // Final report covers early stops (rate limit, denial, budgets).
+        if let Some(cb) = on_progress.as_mut() {
+            cb(report.attempted as u64, hint_items.len() as u64);
         }
         report
     }
@@ -1188,7 +1202,7 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(10)), item(2, None)],
         };
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert_eq!(report.attempted, 1);
         assert_eq!(report.enriched, 1);
         assert!(set.items[0].association.is_some());
@@ -1215,7 +1229,7 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(10))],
         };
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert_eq!(report.no_association, 1);
         assert!(set.items[0].association.is_none());
         let _ = fs::remove_file(&path);
@@ -1252,7 +1266,7 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(9)), item(2, Some(10))],
         };
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert!(report.permission_denied);
         assert_eq!(report.attempted, 1, "the pass stops at the denial");
         let probe = HostCache::open(path.clone(), "github");
@@ -1283,7 +1297,7 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(1)), item(2, Some(2))],
         };
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert!(report.rate_limited);
         assert_eq!(report.attempted, 1);
         assert!(
@@ -1311,7 +1325,7 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(1))],
         };
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert!(report.budget_exhausted);
         let _ = fs::remove_file(&path);
     }
@@ -1339,7 +1353,7 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(1)), item(2, Some(2)), item(3, Some(3))],
         };
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert_eq!(report.attempted, 1);
         assert_eq!(report.enriched, 1);
         assert!(set.items[1].association.is_none());
@@ -1366,7 +1380,7 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(1)), item(2, Some(2))],
         };
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert_eq!(report.failed, 2, "other failures never stop the pass");
         let _ = fs::remove_file(&path);
     }
@@ -1390,9 +1404,9 @@ mod tests {
             gaps: Vec::new(),
             items: vec![item(1, Some(1))],
         };
-        let report = session.run(None, &mut set);
+        let report = session.run(None, &mut set, None);
         assert_eq!(report.attempted, 0);
-        let report = session.run(Some("gitlab.com/owner/repo"), &mut set);
+        let report = session.run(Some("gitlab.com/owner/repo"), &mut set, None);
         assert_eq!(report.attempted, 0, "foreign host remotes are not enriched");
         let _ = fs::remove_file(&path);
     }
@@ -1430,7 +1444,7 @@ mod tests {
             HostCache::open(cache_path("redact"), "github"),
             budgets(),
         );
-        let report = session.run(Some("github.com/owner/repo"), &mut set);
+        let report = session.run(Some("github.com/owner/repo"), &mut set, None);
         assert_eq!(report.enriched, 1);
         let title = set.items[0]
             .association
@@ -1459,7 +1473,7 @@ mod tests {
             budgets(),
         );
         // A prefix-matching host must never reach the provider.
-        let report = session.run(Some("github.acme.corp/owner/repo"), &mut set);
+        let report = session.run(Some("github.acme.corp/owner/repo"), &mut set, None);
         assert_eq!(report.attempted, 0);
         assert!(set.items[0].association.is_none());
     }

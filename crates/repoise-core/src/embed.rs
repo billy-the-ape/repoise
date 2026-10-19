@@ -311,7 +311,14 @@ impl EmbeddingClient {
     /// could not be embedded (batch failure after retries, timeout,
     /// validation failure, budget exhaustion, cancellation) come back as
     /// `None` — never a zero vector. `stats` describes the session.
-    pub fn embed_all(&self, inputs: &[String]) -> (Vec<Option<Vec<f32>>>, EmbeddingStats) {
+    /// `on_progress` receives `(completed inputs, total inputs)` after each
+    /// batch and once more at completion; completed counts provider work
+    /// only (successful or rejected inputs), not cache-served inputs.
+    pub fn embed_all(
+        &self,
+        inputs: &[String],
+        mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
+    ) -> (Vec<Option<Vec<f32>>>, EmbeddingStats) {
         let dimension = self.provider.profile().dimension;
         let mut out: Vec<Option<Vec<f32>>> = vec![None; inputs.len()];
         let mut stats = EmbeddingStats::default();
@@ -369,6 +376,13 @@ impl EmbeddingClient {
                 }
             }
             i = end;
+            if let Some(cb) = on_progress.as_mut() {
+                cb(i as u64, inputs.len() as u64);
+            }
+        }
+        // Final report also covers early exits (cancellation, budgets).
+        if let Some(cb) = on_progress.as_mut() {
+            cb(i as u64, inputs.len() as u64);
         }
         (out, stats)
     }
@@ -711,11 +725,15 @@ pub struct EmbeddingOutcome {
 /// first (no re-embedding of unchanged input), then bounded provider calls
 /// for the misses. Every returned vector is dimension- and finiteness-
 /// validated; rejected vectors are reported as failures, never zero-filled.
+/// `on_progress` receives `(completed chunk inputs, total chunk inputs)`;
+/// cache-served inputs count as complete before any provider work, and
+/// provider-completed inputs (successful or rejected) count as batches land.
 pub fn embed_chunks(
     cache: &EmbeddingCache,
     client: &EmbeddingClient,
     work: &[EmbeddingWork],
     now_ms: i64,
+    mut on_progress: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<EmbeddingOutcome> {
     let profile = client.profile();
     let fingerprint = profile.fingerprint();
@@ -744,10 +762,25 @@ pub fn embed_chunks(
         }
     }
 
+    // Cache-served inputs are complete before any provider work.
+    let total = work.len() as u64;
+    if let Some(cb) = on_progress.as_mut() {
+        cb(stats.cache_hits as u64, total);
+    }
+
     // Phase 2: bounded provider calls for the misses.
     if !misses.is_empty() {
         let miss_inputs: Vec<String> = misses.iter().map(|item| item.input.clone()).collect();
-        let (results, session) = client.embed_all(&miss_inputs);
+        let cache_hits = stats.cache_hits as u64;
+        let (results, session) = match on_progress {
+            Some(forward) => {
+                let mut bridge = move |done: u64, total: u64| {
+                    forward(cache_hits + done, total);
+                };
+                client.embed_all(&miss_inputs, Some(&mut bridge))
+            }
+            None => client.embed_all(&miss_inputs, None),
+        };
         stats.embedded += session.embedded;
         stats.failed += session.failed;
         stats.pending += session.pending;
