@@ -150,6 +150,8 @@ export function verifyRegistry(mode, bundlePath, sha) {
         "--ignore-scripts",
         "--no-audit",
         "--no-fund",
+        "--registry",
+        REGISTRY,
         `${manifest().name}@${release.version}`,
       ],
       { cwd: consumer, timeout: 300_000 },

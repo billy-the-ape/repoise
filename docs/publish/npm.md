@@ -104,10 +104,12 @@ npx --yes --package=npm@11.21.0 npm stage view <stage-id> --registry=https://reg
 The npm staged-package page or `npm stage download <stage-id>` allows payload inspection.
 With this run's bundle extracted to `./dist/bundle`, the read-only helper also checks
 that every package has exactly one pending stage at the release version and prints
-the stage IDs in approval order (uses the maintainer's local npm session):
+the stage IDs in approval order. Run it through the pinned npm (npx sets
+`npm_execpath`, so the helper uses npm 11.21.0, which has the `stage` subcommand),
+with the maintainer's local session:
 
 ```sh
-node scripts/release/verify-registry.mjs stage ./dist/bundle <sha>
+npx --yes --package=npm@11.21.0 -- node scripts/release/verify-registry.mjs stage ./dist/bundle <sha>
 ```
 
 Approve **all three native versions first**, one at a time with local 2FA:
