@@ -547,8 +547,9 @@ pub fn search(
         .unwrap_or(false)
         && has_vectors;
     // Query vectors, per corpus. An unfiltered mixed-corpus request embeds
-    // both the document-search and code-retrieval vectors in one provider
-    // batch; a role-filtered request embeds only the relevant one. Any
+    // the document-search and code-retrieval vectors in one provider batch
+    // (a single shared input when the profile's templates agree, as with
+    // raw); a role-filtered request embeds only the relevant one. Any
     // provider failure, or an invalid vector, degrades that corpus's rank
     // (with no vector left at all, the search degrades to lexical).
     let target = corpus_target(request.role_filter);
@@ -557,14 +558,21 @@ pub fn search(
         _ if has_vectors && !profile_mismatch => match query_embedder {
             Some(embedder) => {
                 let profile = embedder.input_profile();
+                let docs_query = crate::embed::format_docs_query(profile, &request.query);
+                let code_query = crate::embed::format_code_query(profile, &request.query);
                 let mut inputs: Vec<String> = Vec::new();
                 let docs_index = (target != CorpusTarget::Code).then(|| {
-                    inputs.push(crate::embed::format_docs_query(profile, &request.query));
+                    inputs.push(docs_query.clone());
                     inputs.len() - 1
                 });
                 let code_index = (target != CorpusTarget::Docs).then(|| {
-                    inputs.push(crate::embed::format_code_query(profile, &request.query));
-                    inputs.len() - 1
+                    if inputs.last() == Some(&code_query) {
+                        // Identity templates (raw): reuse the shared input.
+                        0
+                    } else {
+                        inputs.push(code_query.clone());
+                        inputs.len() - 1
+                    }
                 });
                 let results = embedder.embed_queries(&inputs).unwrap_or_default();
                 (
@@ -589,15 +597,29 @@ pub fn search(
 
     // Exact cosine ranks over this generation's stored vectors (one profile),
     // restricted to the requested path/role filters (same semantics as the
-    // lexical query). When the profile yields a single query space (the `raw`
-    // default, whose query templates are identity, or identical vectors), all
-    // stored vectors share one global cosine rank — the pre-profile behavior.
-    // The `embeddinggemma-2` profile's distinct vectors rank per corpus
-    // instead, so vectors from different input templates are never compared
-    // against the wrong corpus.
+    // lexical query). When the request has one query space — always true
+    // for single-corpus requests and for the raw profile (identity query
+    // templates) — all stored vectors share one global cosine rank (the
+    // pre-profile behavior). A templated profile's distinct vectors rank per
+    // corpus instead, so vectors from different input templates are never
+    // compared against the wrong corpus; a corpus whose query vector failed
+    // validation simply contributes no rank.
     let single_space = match (&query_vectors.0, &query_vectors.1) {
         (Some(docs), Some(code)) => docs == code,
-        _ => true,
+        // Zero or one surviving vector: one query space for a single-corpus
+        // request, or for a raw profile whose templates are identity. A
+        // partially failed mixed request on a templated profile must keep
+        // the per-corpus split, so the surviving vector only ranks its own
+        // corpus.
+        _ => {
+            target != CorpusTarget::Mixed
+                || query_embedder.is_some_and(|embedder| {
+                    matches!(
+                        embedder.input_profile().kind,
+                        crate::embed::InputProfileKind::Raw
+                    )
+                })
+        }
     };
     let mut global_rank: Vec<(String, f64)> = Vec::new();
     let mut docs_rank: Vec<(String, f64)> = Vec::new();

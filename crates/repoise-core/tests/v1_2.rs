@@ -1158,14 +1158,10 @@ fn raw_profile_mixed_corpus_keeps_the_global_cosine_rank() {
         provider: provider.clone(),
     };
 
-    // The raw templates are identity: one query space, one provider batch of
-    // two identical inputs.
+    // The raw templates are identity: one shared query input in one batch.
     let response = run_search(&built, query, SearchMode::VectorsOnly, Some(&embedder)).unwrap();
     assert_eq!(response.retrieval_mode, "vectors-only");
-    assert_eq!(
-        provider.received(),
-        vec![query.to_string(), query.to_string()]
-    );
+    assert_eq!(provider.received(), vec![query.to_string()]);
 
     // Expected pre-profile behavior: one global cosine rank over every stored
     // vector, both corpora together.
@@ -1232,6 +1228,126 @@ fn raw_profile_mixed_corpus_keeps_the_global_cosine_rank() {
             .any(|hit| hit.explanation.contains("vector rank ")),
         "a hybrid result must carry the global vector rank attribution: {:?}",
         hybrid
+            .results
+            .iter()
+            .map(|hit| hit.explanation.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Query embedder whose second batch slot returns no valid vector
+/// (simulating a per-slot `validate_vector` failure) — no provider needed.
+struct PartialQueryEmbedder {
+    inputs: Arc<Mutex<Vec<String>>>,
+    fail_index: usize,
+    dimension: u32,
+    input_profile: InputProfile,
+}
+
+impl PartialQueryEmbedder {
+    fn new(fail_index: usize, dimension: u32, input_profile: InputProfile) -> Self {
+        Self {
+            inputs: Arc::new(Mutex::new(Vec::new())),
+            fail_index,
+            dimension,
+            input_profile,
+        }
+    }
+
+    fn received(&self) -> Vec<String> {
+        self.inputs.lock().unwrap().clone()
+    }
+
+    fn profile_for(&self) -> EmbeddingProfile {
+        EmbeddingProfile {
+            provider: "test-record".to_string(),
+            model: "v1".to_string(),
+            dimension: self.dimension,
+            profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: self.input_profile,
+        }
+    }
+}
+
+impl QueryEmbedder for PartialQueryEmbedder {
+    fn embed_queries(&self, inputs: &[String]) -> repoise_core::Result<Vec<Option<Vec<f32>>>> {
+        self.inputs.lock().unwrap().extend(inputs.iter().cloned());
+        Ok(inputs
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                if index == self.fail_index {
+                    None
+                } else {
+                    Some(vector_for(input, self.dimension))
+                }
+            })
+            .collect())
+    }
+
+    fn profile_fingerprint(&self) -> String {
+        self.profile_for().fingerprint()
+    }
+
+    fn input_profile(&self) -> InputProfile {
+        self.input_profile
+    }
+}
+
+#[test]
+fn partially_failed_mixed_query_keeps_the_corpus_split() {
+    let files: Vec<(&str, &str)> = vec![
+        (
+            "docs/a.md",
+            "# Guide\n\nMultiply two numbers with the gizmo bearing.\n",
+        ),
+        ("src/math.ts", MATH_TS),
+    ];
+    let eg2 = InputProfile::parse("embeddinggemma-2").unwrap();
+    let built = build_scope_with_scope(
+        "partial-failure",
+        &files,
+        Some(&client_of(RecordingProvider::new("v1", 8, eg2))),
+        "all",
+    );
+    let query = "multiply";
+    // The code-retrieval slot (second batch input) fails validation.
+    let embedder = PartialQueryEmbedder::new(1, 8, eg2);
+    let response = run_search(&built, query, SearchMode::Hybrid, Some(&embedder)).unwrap();
+    assert_eq!(response.retrieval_mode, "hybrid");
+    assert_eq!(
+        embedder.received(),
+        vec![format_docs_query(eg2, query), format_code_query(eg2, query)]
+    );
+
+    // Both corpora reach the page lexically, so the check is not vacuous.
+    assert!(response.results.iter().any(|hit| hit.path == "src/math.ts"));
+    assert!(response.results.iter().any(|hit| hit.path == "docs/a.md"));
+
+    // The surviving document-search vector ranks only docs chunks: code
+    // chunks must not be compared against it (and the missing code vector
+    // contributes no rank of its own).
+    for hit in &response.results {
+        assert!(
+            !hit.explanation.contains("code vector rank"),
+            "a missing code vector must not rank code chunks: {:?}",
+            hit.explanation
+        );
+        if hit.path == "src/math.ts" {
+            assert!(
+                !hit.explanation.contains("docs vector rank"),
+                "code chunks must not be compared against the docs vector: {:?}",
+                hit.explanation
+            );
+        }
+    }
+    assert!(
+        response
+            .results
+            .iter()
+            .any(|hit| hit.explanation.contains("docs vector rank")),
+        "docs chunks must still be ranked by the surviving docs vector: {:?}",
+        response
             .results
             .iter()
             .map(|hit| hit.explanation.clone())
