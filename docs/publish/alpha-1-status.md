@@ -85,6 +85,8 @@ createStagedPackage; stage listing was empty. The pinned npm client suppresses
 OIDC exchange failure details at normal log level; the underlying cause remains
 unresolved. Local staged publishing succeeded. This release has no CI-generated
 npm provenance; checksums and source metadata are integrity evidence, not signing.
+The two-dispatch sequence above was the alpha.1 fallback for local staging, not
+a workflow requirement; the runbook documents a single-dispatch sequence.
 
 - Diagnose OIDC failure without adding registry bypass tokens.
 - Verify public-registry functional installs on Linux and Windows.

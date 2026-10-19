@@ -39,18 +39,19 @@ Follow [npm.md](npm.md) and [native.md](native.md), using the reviewed
 
 1. Merge the version/readiness PR after CI and review.
 2. Create annotated v0.1.0-alpha.1 at the verified merged commit.
-3. Dispatch release.yml from main with both publication options false.
-   Verify all platform checks, packed-consumer smokes, bundle source SHA,
-   version and seven payload checksums.
+3. Dispatch release.yml from main with the tag, `stage_npm` and `draft_native`
+   checked. The run builds, assembles release-bundle and pauses for
+   npm-release approval; verify this run's bundle source SHA, version and
+   seven payload checksums before approving.
 4. Verify all four npm trusted publishers and Windows publishing access.
    Support cleared the Windows name block; its 0.0.1-security placeholder
    is not a functional binary release. Do not approve the main bootstrap.
-5. Stage the same reviewed tag with stage_npm; create a native draft with
-   draft_native if desired. Inspect the actual publishing run's bundle;
-   separate builds need not be byte-identical.
-6. Approve/verify all three native npm packages before approving the launcher.
-   Prerelease npm dist-tag is next; do not change latest.
-7. Verify native draft assets and publish as a prerelease, not latest stable.
+5. Approve npm-release for the staging job; it stages the four packages,
+   natives first and launcher last.
+6. Approve/verify all three native npm packages before approving the
+   launcher. Prerelease npm dist-tag is next; do not change latest.
+7. Approve npm-release for the native-draft job; verify the draft assets
+   and publish as a prerelease, not latest stable.
 8. Test a fresh pinned registry install and record actual results/platforms.
    Update current installation guidance only after publication is verified.
 
