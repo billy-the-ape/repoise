@@ -6,8 +6,9 @@ back with content-hash validation.
 
 **Functional preview: 0.1.0-alpha.1 is available on npm under `next` and as
 [native prerelease archives](https://github.com/billy-the-ape/repoise/releases/tag/v0.1.0-alpha.1).**
-This is not stable v1. Pin the exact version: npm `latest` still points to a
-nonfunctional placeholder. The older 0.1.0-alpha.0 release is the CLI scaffold.
+This is not stable v1. npm `latest` and `next` both resolve to 0.1.0-alpha.1,
+so default installs now select the functional preview. Pin the exact version
+for reproducible automation. The older 0.1.0-alpha.0 release is the CLI scaffold.
 See the [publication record](docs/publish/alpha-1-status.md) for verification and limits.
 
 ## What works today
