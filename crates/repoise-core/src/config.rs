@@ -45,6 +45,11 @@ pub struct Config {
     /// Generated-data directory (kept out of the corpus by default).
     #[serde(default)]
     pub cache_dir: Option<String>,
+    /// Whether linked worktrees of one local repository share reusable
+    /// parse/embedding artifacts (default true). Opt out for fully isolated
+    /// indexing.
+    #[serde(default)]
+    pub shared_cache: Option<bool>,
     /// Optional embedding settings; secrets only via environment references.
     #[serde(default)]
     pub embedding: Option<EmbeddingConfig>,
@@ -293,6 +298,9 @@ pub struct EffectiveConfig {
     pub document_roles: Vec<(RoleRule, Origin)>,
     /// Generated-data directory.
     pub cache_dir: String,
+    /// Whether linked worktrees of one local repository share reusable
+    /// parse/embedding artifacts (default true).
+    pub shared_cache: bool,
     /// Optional embedding settings.
     pub embedding: Option<EmbeddingConfig>,
     /// Which chunks the enabled embedding profile applies to (default docs).
@@ -355,6 +363,7 @@ impl EffectiveConfig {
         let mut max_file_bytes = DEFAULT_MAX_FILE_BYTES;
         let mut document_roles: Vec<(RoleRule, Origin)> = Vec::new();
         let mut cache_dir = DEFAULT_CACHE_DIR.to_string();
+        let mut shared_cache = true;
         let mut embedding: Option<EmbeddingConfig> = None;
         let mut history: Option<HistoryConfig> = None;
         let mut mcp_refresh = false;
@@ -384,6 +393,9 @@ impl EffectiveConfig {
                 }
                 if let Some(dir) = &config.cache_dir {
                     cache_dir = dir.clone();
+                }
+                if let Some(flag) = config.shared_cache {
+                    shared_cache = flag;
                 }
                 if let Some(settings) = &config.embedding {
                     embedding = Some(settings.clone());
@@ -467,6 +479,7 @@ impl EffectiveConfig {
             max_file_bytes,
             document_roles,
             cache_dir,
+            shared_cache,
             embedding,
             embedding_scope,
             embedding_input_profile,

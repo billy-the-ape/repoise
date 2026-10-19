@@ -827,25 +827,37 @@ impl EmbeddingCache {
         Ok(stmt.query_row([], |row| row.get(0))?)
     }
 
-    /// Deletes entries not referenced by any retained generation.
-    /// `referenced` holds the (input hash, fingerprint) pairs still in use.
+    /// Deletes entries not referenced by any retained generation and no
+    /// younger than the grace cutoff. `referenced` holds the (input hash,
+    /// fingerprint) pairs still in use; `created_before_ms` retains recent
+    /// entries even when unreferenced, because an in-flight sibling build
+    /// may not yet have published the generation that references them
+    /// (liveness cannot always be proved, so retention is conservative).
     /// Returns the number of entries reclaimed.
-    pub fn gc(&self, referenced: &HashSet<(String, String)>) -> Result<usize> {
+    pub fn gc(
+        &self,
+        referenced: &HashSet<(String, String)>,
+        created_before_ms: i64,
+    ) -> Result<usize> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT cache_key, input_hash, fingerprint FROM embedding")?;
-        let rows: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT cache_key, input_hash, fingerprint, created_at_ms FROM embedding")?;
+        let rows: Vec<(String, String, String, i64)> = {
             let iter = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             })?;
             iter.collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?
         };
         let mut reclaimed = 0usize;
-        for (key, input_hash, fingerprint) in rows {
-            if !referenced.contains(&(input_hash, fingerprint)) {
+        for (key, input_hash, fingerprint, created_at_ms) in rows {
+            if created_at_ms <= created_before_ms
+                && !referenced.contains(&(input_hash, fingerprint))
+            {
                 conn.execute("DELETE FROM embedding WHERE cache_key = ?1", params![key])?;
                 reclaimed += 1;
             }
@@ -1001,7 +1013,48 @@ pub fn gc_repo_embeddings(cache_paths: &crate::cache::CachePaths, repo_id: &str)
             }
         }
     }
-    cache.gc(&referenced)
+    cache.gc(
+        &referenced,
+        crate::shared::gc_grace_cutoff_ms(crate::shared::now_ms()),
+    )
+}
+
+/// Family-scoped counterpart of [`gc_repo_embeddings`] for the shared store:
+/// reclaims embeddings not referenced by any registered worktree scope of
+/// the repository family. The member registry is one file per scope, so
+/// concurrent registrations cannot clobber each other. If no member is
+/// registered, or any member database cannot be opened or any member file is
+/// malformed, GC is skipped entirely (fail closed: unknown references are
+/// never deleted around).
+pub fn gc_family_embeddings(shared_root: &std::path::Path) -> Result<usize> {
+    let cache = EmbeddingCache::open(shared_root.join("embeddings.sqlite"))?;
+    let members = crate::shared::load_members(shared_root)?;
+    if members.is_empty() {
+        return Ok(0);
+    }
+    let mut referenced: HashSet<(String, String)> = HashSet::new();
+    for member in &members {
+        if !member.db_path.exists() {
+            // The scope's index database is gone (purged or removed worktree):
+            // it references no vectors. Stale member files never contribute
+            // references, so shared retention stays bounded.
+            continue;
+        }
+        // Fail closed only when an existing database cannot be read:
+        // unknown references are never deleted around.
+        let conn = match crate::store::Store::new(member.db_path.clone()).open() {
+            Ok(conn) => conn,
+            Err(_) => return Ok(0),
+        };
+        match crate::store::referenced_embedding_keys(&conn, &member.repo_id) {
+            Ok(keys) => referenced.extend(keys),
+            Err(_) => return Ok(0),
+        }
+    }
+    cache.gc(
+        &referenced,
+        crate::shared::gc_grace_cutoff_ms(crate::shared::now_ms()),
+    )
 }
 
 /// Vector storage interface: exact cosine candidates for one generation and

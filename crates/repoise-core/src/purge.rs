@@ -3,6 +3,15 @@
 //! `repoise purge` removes generated cache data only — never source files.
 //! Scope ids are validated before any path is touched, and the removal unit
 //! is the whole scope directory (database plus WAL/SHM sidecars).
+//!
+//! Cross-worktree shared stores (see [`crate::shared`]): a worktree-scoped
+//! purge removes the scope directory and the CLI additionally removes that
+//! scope's member registration, leaving sibling worktrees' shared artifacts
+//! and vectors intact. `--all` removes everything under the selected cache
+//! root — including `families/` when an explicit cache root is in use. With
+//! the default checkout-local cache root, the family store lives under the
+//! repository's Git common directory (outside the cache root) and is not
+//! removed by `--all`, so sibling worktrees keep their shared data.
 
 use std::fs;
 use std::path::PathBuf;
@@ -48,7 +57,11 @@ fn validate_id(value: &str) -> Result<()> {
 pub fn purge(cache: &CachePaths, request: &PurgeRequest) -> Result<PurgeReport> {
     let mut removed = Vec::new();
     if request.all {
-        for dir in [cache.root.join("repos"), cache.root.join("embedding-cache")] {
+        for dir in [
+            cache.root.join("repos"),
+            cache.root.join("embedding-cache"),
+            cache.root.join("families"),
+        ] {
             if dir.exists() {
                 fs::remove_dir_all(&dir)?;
                 removed.push(dir);

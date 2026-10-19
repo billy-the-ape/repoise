@@ -149,6 +149,23 @@ pub enum SnapshotMode {
     PlainDirectory,
 }
 
+/// Optional identity of a *reuse family*: the linked checkouts of one local
+/// repository that may safely reuse immutable parse/embedding artifacts.
+///
+/// The family id is stable across checkout roots (all worktrees of one
+/// local repository share it) and is never derived from remotes, commits or
+/// checkout paths; the anchor is the canonical local directory the family is
+/// bound to (used only to place the default shared store). Adapters without
+/// linked-checkout semantics (plain directories, fake fixtures) report
+/// `None`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReuseFamily {
+    /// Opaque stable family id (`family-<sha256>`).
+    pub id: String,
+    /// Canonical local directory anchoring the family.
+    pub anchor: PathBuf,
+}
+
 /// One exact source file in a snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceEntry {
@@ -317,6 +334,12 @@ pub trait SourceAdapter {
 
     /// Sanitized optional remote identity (host plus path, no credentials).
     fn remote_identity(&self) -> Result<Option<String>, AdapterError> {
+        Ok(None)
+    }
+
+    /// Optional reuse family for linked checkouts of one local repository;
+    /// `None` when the adapter has no family semantics.
+    fn reuse_family(&self) -> Result<Option<ReuseFamily>, AdapterError> {
         Ok(None)
     }
 

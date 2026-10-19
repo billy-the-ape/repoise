@@ -9,6 +9,15 @@
 //!
 //! Affected paths are scheduling hints only: every build reconciles the full
 //! corpus and validates manifest consistency before publication.
+//!
+//! Linked worktrees of one local repository additionally reuse immutable
+//! parse artifacts and embedding vectors from the repository's shared store
+//! (see [`crate::shared`]): a file whose content, language, parser version,
+//! corpus and path all match a family artifact is rematerialized into the
+//! destination's own scope without reparsing, and unchanged embedding
+//! inputs are served from the family-scoped content-addressed cache without
+//! provider calls. Each worktree still publishes one complete, scope-bound
+//! generation of its own; donor ids are never served.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,6 +64,12 @@ pub struct IndexOutcome {
     pub snapshot_mode: String,
     /// Snapshot-level provenance.
     pub snapshot: SnapshotRecord,
+    /// Reuse family id when linked-worktree sharing was active for this
+    /// build (`None` when the build is isolated or sharing was opted out).
+    pub family_id: Option<String>,
+    /// Reason the build fell back to isolated indexing although a family
+    /// was resolved (e.g. the shared store was unavailable).
+    pub sharing_fallback: Option<String>,
     /// Published generation id.
     pub generation_id: i64,
     /// Content manifest hash of the inventory.
@@ -65,6 +80,11 @@ pub struct IndexOutcome {
     pub files_reused: usize,
     /// Files reparsed (new, changed, or forced).
     pub files_reparsed: usize,
+    /// Files whose parse artifact was reused from the repository family
+    /// (no local reparse; `0` when the build is isolated).
+    pub files_family_reused: usize,
+    /// Chunks rematerialized from family parse artifacts.
+    pub chunks_family_reused: usize,
     /// Total chunks in the new generation.
     pub chunks_total: usize,
     /// Chunks whose input was unchanged (location metadata refreshed).
@@ -366,6 +386,34 @@ pub fn index(
         .map(|entry| (crate::adapter::to_posix(&entry.path), entry.size))
         .collect();
 
+    // Cross-worktree reuse: resolve the repository family store. This
+    // probe never creates state; the build creates the store directory
+    // only when it will actually use it (read-only operations never reach
+    // this point). An unavailable store degrades to isolated indexing and
+    // is reported, never silently claimed as shared.
+    let sharing = crate::shared::resolve_sharing(adapter, eff, cache)?;
+    let mut family_id: Option<String> = None;
+    let mut shared_root: Option<PathBuf> = None;
+    let mut sharing_fallback: Option<String> = None;
+    let mut artifacts: Option<crate::shared::ArtifactCache> = None;
+    let embedding_db = match &sharing {
+        crate::shared::SharingState::Shared(store) => match std::fs::create_dir_all(&store.root) {
+            Ok(()) => {
+                family_id = Some(store.family_id.clone());
+                shared_root = Some(store.root.clone());
+                artifacts = Some(crate::shared::ArtifactCache::open(&store.root));
+                store.root.join("embeddings.sqlite")
+            }
+            Err(err) => {
+                sharing_fallback = Some(format!(
+                    "shared store is unavailable ({err}); indexed isolated"
+                ));
+                cache.embedding_cache_path(&repo_id)
+            }
+        },
+        _ => cache.embedding_cache_path(&repo_id),
+    };
+
     let mut file_rows: Vec<FileRow> = Vec::new();
     let mut chunk_rows: Vec<ChunkRow> = Vec::new();
     let mut files_reused = 0usize;
@@ -373,6 +421,8 @@ pub fn index(
     let mut chunks_reused = 0usize;
     let mut chunks_added = 0usize;
     let mut chunks_removed = 0usize;
+    let mut files_family_reused = 0usize;
+    let mut chunks_family_reused = 0usize;
 
     // Code files (card K4): structural grammar chunks plus symbols and
     // syntactic reference edges. Unchanged files carry their previous
@@ -429,6 +479,7 @@ pub fn index(
             }
         };
         let parser_version = parser_version.expect("corpus selection has version");
+        let corpus_name = enum_name(corpus);
         let unchanged = !force_full
             && prev_files.get(&posix_path).is_some_and(|p| {
                 p.content_hash == file.content_hash
@@ -463,52 +514,89 @@ pub fn index(
                     .cloned()
                     .unwrap_or_default(),
             );
-        } else if is_code {
-            let grammar_version = code_grammar
-                .map(|(version, _)| version)
-                .unwrap_or(PARSER_VERSION_CODE_LINE);
-            reparse_code_file(
-                &CodeFileScope {
-                    key: &scope_key,
-                    path: &posix_path,
-                    parser_version: grammar_version,
-                },
-                &file.language,
-                &Snapshot { adapter, mode },
-                file,
-                prev_chunks.get(&posix_path),
-                &mut ReparseOutput {
-                    chunk_rows: &mut chunk_rows,
-                    files_reparsed: &mut files_reparsed,
-                    chunks_reused: &mut chunks_reused,
-                    chunks_added: &mut chunks_added,
-                    chunks_removed: &mut chunks_removed,
-                },
-                &mut code_files,
-            )?;
         } else {
-            reparse_file(
-                &ChunkScope {
-                    key: &scope_key,
-                    path: &posix_path,
-                    parser_version: &parser_version,
-                    corpus,
-                },
-                selection
-                    .expect("chunker for non-code chunkable file")
-                    .2
-                    .as_ref(),
-                &Snapshot { adapter, mode },
-                file,
-                prev_chunks.get(&posix_path),
-                &mut ReparseOutput {
-                    chunk_rows: &mut chunk_rows,
-                    files_reparsed: &mut files_reparsed,
-                    chunks_reused: &mut chunks_reused,
-                    chunks_added: &mut chunks_added,
-                    chunks_removed: &mut chunks_removed,
-                },
-            )?;
+            // Cross-worktree reuse: a family artifact matching this file's
+            // exact parse inputs (content, language, parser version, corpus,
+            // path) is rematerialized into this destination's scope without
+            // reparsing. Unreadable, truncated or incompatible artifacts are
+            // safe misses that fall through to a local reparse.
+            let artifact = artifacts.as_ref().and_then(|cache| {
+                cache
+                    .get(
+                        &file.content_hash,
+                        &file.language,
+                        &parser_version,
+                        &corpus_name,
+                        &posix_path,
+                    )
+                    .ok()
+                    .flatten()
+            });
+            if let Some(artifact) = artifact.filter(|artifact| artifact.refs_have_known_kinds()) {
+                files_family_reused += 1;
+                chunks_family_reused += artifact.chunks.len();
+                let (data, reused, added) = rematerialize_artifact(
+                    &scope_key,
+                    &parser_version,
+                    &corpus_name,
+                    &artifact,
+                    prev_chunks.get(&posix_path),
+                    &mut chunk_rows,
+                );
+                chunks_reused += reused;
+                chunks_added += added;
+                if is_code {
+                    code_files.push(data);
+                }
+            } else if is_code {
+                let grammar_version = code_grammar
+                    .map(|(version, _)| version)
+                    .unwrap_or(PARSER_VERSION_CODE_LINE);
+                reparse_code_file(
+                    &CodeFileScope {
+                        key: &scope_key,
+                        path: &posix_path,
+                        parser_version: grammar_version,
+                    },
+                    &file.language,
+                    &Snapshot { adapter, mode },
+                    file,
+                    prev_chunks.get(&posix_path),
+                    &mut ReparseOutput {
+                        chunk_rows: &mut chunk_rows,
+                        files_reparsed: &mut files_reparsed,
+                        chunks_reused: &mut chunks_reused,
+                        chunks_added: &mut chunks_added,
+                        chunks_removed: &mut chunks_removed,
+                    },
+                    &mut code_files,
+                    artifacts.as_ref(),
+                )?;
+            } else {
+                reparse_file(
+                    &ChunkScope {
+                        key: &scope_key,
+                        path: &posix_path,
+                        parser_version: &parser_version,
+                        corpus,
+                    },
+                    selection
+                        .expect("chunker for non-code chunkable file")
+                        .2
+                        .as_ref(),
+                    &Snapshot { adapter, mode },
+                    file,
+                    prev_chunks.get(&posix_path),
+                    &mut ReparseOutput {
+                        chunk_rows: &mut chunk_rows,
+                        files_reparsed: &mut files_reparsed,
+                        chunks_reused: &mut chunks_reused,
+                        chunks_added: &mut chunks_added,
+                        chunks_removed: &mut chunks_removed,
+                    },
+                    artifacts.as_ref(),
+                )?;
+            }
         }
     }
     // Files that existed before but are no longer eligible: tombstone chunks.
@@ -548,8 +636,7 @@ pub fn index(
     if let Some(client) = embed_session {
         let profile = client.profile();
         let fingerprint = profile.fingerprint();
-        let embedding_cache =
-            crate::embed::EmbeddingCache::open(cache.embedding_cache_path(&repo_id))?;
+        let embedding_cache = crate::embed::EmbeddingCache::open(embedding_db)?;
         let work: Vec<crate::embed::EmbeddingWork> = chunk_rows
             .iter()
             .filter(|chunk| {
@@ -755,9 +842,17 @@ pub fn index(
             return Err(err);
         }
     };
-    // Reclaim shared embeddings no longer referenced by retained generations.
-    // A GC problem never fails the build (lexical operation is unaffected).
-    if embedding_stats.is_some() {
+    // Register this scope with the family store (one file per scope, so
+    // concurrent registrations cannot clobber each other) and reclaim
+    // embeddings no longer referenced by any registered scope of the
+    // family. A GC problem never fails the build (lexical operation is
+    // unaffected); isolated builds keep the per-repository cache GC.
+    if let Some(root) = &shared_root {
+        let _ = crate::shared::upsert_member(root, &repo_id, &worktree_id, &store.path);
+        if embedding_stats.is_some() {
+            let _ = crate::embed::gc_family_embeddings(root);
+        }
+    } else if embedding_stats.is_some() {
         let _ = crate::embed::gc_repo_embeddings(cache, &repo_id);
     }
     let state = StateFile {
@@ -783,14 +878,18 @@ pub fn index(
         worktree_id,
         snapshot_mode: format!("{mode:?}"),
         snapshot,
+        family_id,
+        sharing_fallback,
         generation_id,
         manifest_hash: inventory.manifest.manifest_hash,
         files_indexed: file_rows.len(),
         files_reused,
         files_reparsed,
+        files_family_reused,
         chunks_total: chunk_rows.len(),
         chunks_reused,
         chunks_added,
+        chunks_family_reused,
         chunks_removed,
         symbols_total: symbol_rows.len(),
         references_total: reference_rows.len(),
@@ -844,6 +943,7 @@ fn reparse_file(
     file: &crate::provenance::FileRecord,
     prev: Option<&Vec<store::StoredChunk>>,
     out: &mut ReparseOutput<'_>,
+    artifacts: Option<&crate::shared::ArtifactCache>,
 ) -> Result<()> {
     *out.files_reparsed += 1;
     *out.chunks_removed += prev.map(Vec::len).unwrap_or(0);
@@ -852,6 +952,7 @@ fn reparse_file(
     let chunks = chunker.parse(scope.path, &text);
     let corpus_name = enum_name(scope.corpus);
     let mut parent_ids: HashMap<u32, String> = HashMap::new();
+    let mut artifact_chunks: Vec<crate::shared::ArtifactChunk> = Vec::new();
     for chunk in chunks {
         let address = chunk_address(chunk.ordinal, chunk.parent);
         let id = chunk_id(
@@ -875,6 +976,20 @@ fn reparse_file(
             }
         }
         let (byte_start, byte_end) = line_byte_range(&bytes, chunk.line_start, chunk.line_end);
+        // The family artifact keeps the pre-redaction parser text; the
+        // destination re-applies its own policy below.
+        artifact_chunks.push(crate::shared::ArtifactChunk {
+            ordinal: chunk.ordinal,
+            parent: chunk.parent,
+            heading_path: chunk.heading_path.clone(),
+            text: chunk.text.clone(),
+            line_start: chunk.line_start,
+            line_end: chunk.line_end,
+            byte_start,
+            byte_end,
+            symbol: String::new(),
+            context: None,
+        });
         // Defense-in-depth: never persist a known secret shape (discovery
         // already skips such files; this covers parser-produced text).
         let text = crate::ignore::redact_secret_content(&chunk.text);
@@ -893,6 +1008,22 @@ fn reparse_file(
             line_end: chunk.line_end,
             byte_start,
             byte_end,
+        });
+    }
+    if let Some(cache) = artifacts {
+        // Storing the artifact never fails the build; a failure only costs a
+        // future reparse of this file in a sibling worktree.
+        let _ = cache.put(&crate::shared::ParseArtifact {
+            version: crate::shared::ARTIFACT_VERSION,
+            content_hash: file.content_hash.clone(),
+            language: file.language.clone(),
+            parser_version: scope.parser_version.to_string(),
+            corpus: corpus_name,
+            path: scope.path.to_string(),
+            chunks: artifact_chunks,
+            symbols: Vec::new(),
+            imports: Vec::new(),
+            refs: Vec::new(),
         });
     }
     Ok(())
@@ -1122,6 +1253,7 @@ fn chunk_id_for_line(chunk_ids: &[String], units: &[code::CodeUnit], line: u32) 
 /// Reparses one code file: grammar chunks (or line windows), symbols and
 /// reference edges. Chunk rows are appended with their stable ids; the raw
 /// edge data is deferred to generation-wide resolution.
+#[allow(clippy::too_many_arguments)]
 fn reparse_code_file(
     scope: &CodeFileScope<'_>,
     language: &str,
@@ -1130,6 +1262,7 @@ fn reparse_code_file(
     prev: Option<&Vec<store::StoredChunk>>,
     out: &mut ReparseOutput<'_>,
     code_files: &mut Vec<FileCodeData>,
+    artifacts: Option<&crate::shared::ArtifactCache>,
 ) -> Result<()> {
     *out.files_reparsed += 1;
     *out.chunks_removed += prev.map(Vec::len).unwrap_or(0);
@@ -1139,6 +1272,7 @@ fn reparse_code_file(
     let corpus_name = enum_name(Corpus::Code);
     let mut unit_chunk_ids: Vec<String> = Vec::new();
     let mut parent_ids: HashMap<u32, String> = HashMap::new();
+    let mut artifact_chunks: Vec<crate::shared::ArtifactChunk> = Vec::new();
     for unit in &parse.units {
         let address = chunk_address(unit.ordinal, unit.parent);
         let id = chunk_id(
@@ -1179,6 +1313,20 @@ fn reparse_code_file(
             byte_start,
             byte_end,
         });
+        // The family artifact keeps the pre-redaction parser text; the
+        // destination re-applies its own policy below.
+        artifact_chunks.push(crate::shared::ArtifactChunk {
+            ordinal: unit.ordinal,
+            parent: unit.parent,
+            heading_path: unit.heading_path.clone(),
+            text: unit.text.clone(),
+            line_start: unit.line_start,
+            line_end: unit.line_end,
+            byte_start,
+            byte_end,
+            symbol: unit.symbol.clone(),
+            context: unit.context.clone(),
+        });
         unit_chunk_ids.push(id);
     }
     let mut symbols: Vec<store::SymbolRow> = Vec::new();
@@ -1213,6 +1361,49 @@ fn reparse_code_file(
             chunk_id: chunk_id_for_line(&unit_chunk_ids, &parse.units, symbol.line_start),
         });
     }
+    if let Some(cache) = artifacts {
+        // Storing the artifact never fails the build; a failure only costs a
+        // future reparse of this file in a sibling worktree.
+        let _ = cache.put(&crate::shared::ParseArtifact {
+            version: crate::shared::ARTIFACT_VERSION,
+            content_hash: file.content_hash.clone(),
+            language: file.language.clone(),
+            parser_version: scope.parser_version.to_string(),
+            corpus: corpus_name.clone(),
+            path: scope.path.to_string(),
+            chunks: artifact_chunks,
+            symbols: parse
+                .symbols
+                .iter()
+                .map(|symbol| crate::shared::ArtifactSymbol {
+                    name: symbol.name.clone(),
+                    kind: enum_name(symbol.kind),
+                    line_start: symbol.line_start,
+                    line_end: symbol.line_end,
+                    parent: symbol.parent,
+                    exported: symbol.exported,
+                })
+                .collect(),
+            imports: parse
+                .imports
+                .iter()
+                .map(|import| crate::shared::ArtifactImport {
+                    module: import.module.clone(),
+                    local_name: import.local_name.clone(),
+                    line: import.line,
+                })
+                .collect(),
+            refs: parse
+                .refs
+                .iter()
+                .map(|reference| crate::shared::ArtifactRef {
+                    line: reference.line,
+                    name: reference.name.clone(),
+                    kind: enum_name(reference.kind),
+                })
+                .collect(),
+        });
+    }
     code_files.push(FileCodeData {
         path: scope.path.to_string(),
         symbols,
@@ -1229,4 +1420,139 @@ pub fn write_state(path: &std::path::Path, state: &StateFile) -> Result<()> {
     }
     std::fs::write(path, serde_json::to_string_pretty(state)?)?;
     Ok(())
+}
+
+/// Rematerializes one family parse artifact into destination-scope rows:
+/// chunk/symbol ids are recomputed for this scope (donor ids are never
+/// served), destination redaction is re-applied and text hashes re-derived.
+/// Returns the code edge data (empty for docs/config) and the reused/added
+/// chunk counters (matched against the previous generation by identity).
+fn rematerialize_artifact(
+    scope_key: &str,
+    parser_version: &str,
+    corpus_name: &str,
+    artifact: &crate::shared::ParseArtifact,
+    prev: Option<&Vec<store::StoredChunk>>,
+    chunk_rows: &mut Vec<ChunkRow>,
+) -> (FileCodeData, usize, usize) {
+    let mut chunk_ids: Vec<String> = Vec::new();
+    let mut parent_ids: HashMap<u32, String> = HashMap::new();
+    let mut reused = 0usize;
+    let mut added = 0usize;
+    for chunk in &artifact.chunks {
+        let address = chunk_address(chunk.ordinal, chunk.parent);
+        let id = chunk_id(
+            scope_key,
+            parser_version,
+            &artifact.path,
+            &address,
+            &chunk.text,
+        );
+        let parent_chunk_id = chunk
+            .parent
+            .and_then(|parent| parent_ids.get(&parent).cloned());
+        if chunk.parent.is_none() {
+            parent_ids.insert(chunk.ordinal, id.clone());
+            if prev.is_some_and(|prev| prev.iter().any(|p| p.chunk_id == id)) {
+                reused += 1;
+            } else {
+                added += 1;
+            }
+        }
+        // Destination policy re-applied: redaction and text hashes are never
+        // trusted from the donor.
+        let text = crate::ignore::redact_secret_content(&chunk.text);
+        let text_hash = hash::sha256_hex(&text);
+        chunk_rows.push(ChunkRow {
+            chunk_id: id.clone(),
+            parent_chunk_id,
+            path: artifact.path.clone(),
+            heading_path: chunk.heading_path.join(" > "),
+            corpus: corpus_name.to_string(),
+            text,
+            text_hash,
+            symbol: chunk.symbol.clone(),
+            context: chunk.context.clone(),
+            line_start: chunk.line_start,
+            line_end: chunk.line_end,
+            byte_start: chunk.byte_start,
+            byte_end: chunk.byte_end,
+        });
+        chunk_ids.push(id);
+    }
+    let chunk_id_at = |line: u32| -> Option<String> {
+        chunk_ids
+            .iter()
+            .zip(artifact.chunks.iter())
+            .find(|(_, chunk)| chunk.line_start <= line && line <= chunk.line_end)
+            .map(|(id, _)| id.clone())
+    };
+    let mut symbols: Vec<store::SymbolRow> = Vec::new();
+    for symbol in &artifact.symbols {
+        let parent_symbol_id = symbol
+            .parent
+            .and_then(|parent| artifact.symbols.get(parent))
+            .map(|parent| {
+                symbol_id(
+                    scope_key,
+                    &artifact.path,
+                    &parent.name,
+                    &parent.kind,
+                    parent.line_start,
+                )
+            });
+        symbols.push(store::SymbolRow {
+            symbol_id: symbol_id(
+                scope_key,
+                &artifact.path,
+                &symbol.name,
+                &symbol.kind,
+                symbol.line_start,
+            ),
+            path: artifact.path.clone(),
+            name: symbol.name.clone(),
+            kind: symbol.kind.clone(),
+            line_start: symbol.line_start,
+            line_end: symbol.line_end,
+            parent_symbol_id,
+            exported: symbol.exported,
+            chunk_id: chunk_id_at(symbol.line_start),
+        });
+    }
+    let imports = artifact
+        .imports
+        .iter()
+        .map(|import| code::CodeImport {
+            line: import.line,
+            local_name: import.local_name.clone(),
+            module: import.module.clone(),
+        })
+        .collect();
+    let refs = artifact
+        .refs
+        .iter()
+        .filter_map(|reference| {
+            Some(code::CodeRef {
+                line: reference.line,
+                name: reference.name.clone(),
+                kind: ref_kind_from_name(&reference.kind)?,
+            })
+        })
+        .collect();
+    (
+        FileCodeData {
+            path: artifact.path.clone(),
+            symbols,
+            imports,
+            refs,
+        },
+        reused,
+        added,
+    )
+}
+
+/// Reverses the canonical enum name of a reference kind stored in an
+/// artifact; unknown names are rejected (the file is reparsed locally).
+fn ref_kind_from_name(name: &str) -> Option<code::RefKind> {
+    serde_json::from_value::<code::RefKind>(serde_json::Value::String(name.to_string())).ok()
 }

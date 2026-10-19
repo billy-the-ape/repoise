@@ -24,6 +24,28 @@ pub fn print_doctor(report: &DoctorReport) {
             .join(", ")
     );
     println!("mode: {:?}", report.mode);
+    match report.sharing.state.as_str() {
+        "shared" => println!(
+            "sharing: shared (family {}, store {})",
+            report.sharing.family_id.as_deref().unwrap_or("(none)"),
+            report
+                .sharing
+                .store
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "(none)".into())
+        ),
+        _ => println!(
+            "sharing: {}{}",
+            report.sharing.state,
+            report
+                .sharing
+                .note
+                .as_deref()
+                .map(|note| format!(" ({note})"))
+                .unwrap_or_default()
+        ),
+    }
     println!(
         "remote: {}",
         report.remote_identity.as_deref().unwrap_or("(none)")

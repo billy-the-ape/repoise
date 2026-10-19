@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::adapter::{
-    AdapterError, Capabilities, Capability, Revision, RevisionId, SnapshotMode, SourceAdapter,
-    SourceEntry, SourceKind,
+    AdapterError, Capabilities, Capability, ReuseFamily, Revision, RevisionId, SnapshotMode,
+    SourceAdapter, SourceEntry, SourceKind,
     filesystem::{read_within_root, scan_directory},
-    normalize_relative,
+    normalize_relative, to_posix,
 };
 use crate::hash;
 use crate::provenance::sanitize_remote_identity;
@@ -58,6 +58,45 @@ impl GitAdapter {
     pub fn dirty_count(&self) -> Result<usize, AdapterError> {
         let out = self.run_git(&["status", "--porcelain"])?;
         Ok(out.lines().filter(|line| !line.trim().is_empty()).count())
+    }
+
+    /// The canonical Git common directory of this repository (the directory
+    /// shared by the primary checkout and every linked worktree).
+    ///
+    /// Git itself resolves the common directory (`rev-parse
+    /// --git-common-dir`); the result may be absolute or relative to the
+    /// worktree root, and a linked worktree's `.git` marker is a file, not a
+    /// directory — both cases resolve through Git, never by path guessing.
+    /// Submodules and nested repositories have their own common directories,
+    /// so they are naturally separate families.
+    pub fn common_dir(&self) -> Result<PathBuf, AdapterError> {
+        let out = self.run_git(&["rev-parse", "--git-common-dir"])?;
+        let raw = out.trim();
+        if raw.is_empty() || raw.contains('\n') {
+            return Err(AdapterError::Other(
+                "git returned no common directory".into(),
+            ));
+        }
+        let raw = PathBuf::from(raw);
+        let candidate = if raw.is_absolute() {
+            raw
+        } else {
+            // Relative output is relative to the worktree's top level.
+            self.canonical_root.join(raw)
+        };
+        let canonical = fs::canonicalize(&candidate).map_err(|err| {
+            AdapterError::Other(format!(
+                "cannot resolve Git common directory {}: {err}",
+                candidate.display()
+            ))
+        })?;
+        if !canonical.is_dir() {
+            return Err(AdapterError::Other(format!(
+                "Git common directory is not a directory: {}",
+                canonical.display()
+            )));
+        }
+        Ok(canonical)
     }
 
     /// Resolves `git:<object id>` style revisions to a commit id.
@@ -519,6 +558,15 @@ impl SourceAdapter for GitAdapter {
 
     fn history_provider(&self) -> Option<&dyn crate::history::HistoryProvider> {
         Some(self)
+    }
+
+    fn reuse_family(&self) -> Result<Option<ReuseFamily>, AdapterError> {
+        let anchor = self.common_dir()?;
+        let id = format!(
+            "family-{}",
+            hash::sha256_hex(format!("git-common-dir|{}", to_posix(&anchor)))
+        );
+        Ok(Some(ReuseFamily { id, anchor }))
     }
 
     fn resolve(

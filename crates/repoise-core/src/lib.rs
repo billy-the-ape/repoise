@@ -34,6 +34,7 @@ pub mod purge;
 pub mod read;
 pub mod related;
 pub mod search;
+pub mod shared;
 pub mod status;
 pub mod store;
 pub mod watch;
