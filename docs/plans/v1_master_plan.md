@@ -21,6 +21,14 @@ See the [publishing guides](../publish/README.md), the [alpha execution record](
 (historical) and [preview readiness](../publish/alpha-1-readiness.md).
 Read [AGENTS.md](../../AGENTS.md) for repository working rules.
 
+Follow-on program (proposed October 19, 2026): the
+[agent platform roadmap](agent-platform/README.md) records the workspace/CI
+transition, CLI lifecycle contracts, consumer-owned agent adapters, live benchmark
+execution/grading/reporting, staged cross-repository/model/harness experiments,
+and VS Code extension. The workspace foundation is its first implementation PR.
+These plans extend this document without changing section 11 adoption gates or
+claiming shipped commands, completed benchmarks, or an implemented extension.
+
 ## 1. Outcome and boundaries
 
 Give an AI coding agent a cheap, reliable way to discover where repository knowledge lives:
