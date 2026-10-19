@@ -57,7 +57,7 @@ For maintainers: edit `skills/repoise/SKILL.md` and its bundled references,
 keeping the main instructions concise. Keep CLI flags/MCP arguments aligned
 with implemented behavior and update examples when interfaces change. The
 root install command reads the default branch, so additions become available
-after merge; test an unmerged skill using the branch's full GitHub tree URL
+after merge; test an unmerged skill using a full GitHub tree URL with a commit SHA
 or a local checkout with `npx skills@latest add ./skills/repoise --list`.
 
 ## Terminal agents and AGENTS.md
