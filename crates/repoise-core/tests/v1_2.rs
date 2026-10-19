@@ -1132,3 +1132,109 @@ fn query_and_index_profiles_must_share_the_input_profile() {
     let hybrid = run_search(&built, "gizmo", SearchMode::Hybrid, Some(&eg2_embedder)).unwrap();
     assert_eq!(hybrid.retrieval_mode, "hybrid");
 }
+
+#[test]
+fn raw_profile_mixed_corpus_keeps_the_global_cosine_rank() {
+    let files: Vec<(&str, &str)> = vec![
+        (
+            "docs/a.md",
+            "# Guide\n\nMultiply two numbers with the gizmo bearing.\n",
+        ),
+        ("src/math.ts", MATH_TS),
+    ];
+    let built = build_scope_with_scope(
+        "raw-global-rank",
+        &files,
+        Some(&client_of(RecordingProvider::new(
+            "v1",
+            8,
+            InputProfile::RAW,
+        ))),
+        "all",
+    );
+    let query = "gizmo multiply";
+    let provider = RecordingProvider::new("v1", 8, InputProfile::RAW);
+    let embedder = RecordingQueryEmbedder {
+        provider: provider.clone(),
+    };
+
+    // The raw templates are identity: one query space, one provider batch of
+    // two identical inputs.
+    let response = run_search(&built, query, SearchMode::VectorsOnly, Some(&embedder)).unwrap();
+    assert_eq!(response.retrieval_mode, "vectors-only");
+    assert_eq!(
+        provider.received(),
+        vec![query.to_string(), query.to_string()]
+    );
+
+    // Expected pre-profile behavior: one global cosine rank over every stored
+    // vector, both corpora together.
+    let conn = built.store.open().unwrap();
+    let fingerprint = embedder.profile_fingerprint();
+    let rows = store::vectors_for_generation_with_corpus(
+        &conn,
+        built.generation_id,
+        &fingerprint,
+        None,
+        None,
+    )
+    .unwrap();
+    let query_vector = vector_for(query, 8);
+    let mut expected: Vec<(String, f64)> = rows
+        .iter()
+        .map(|(chunk_id, _corpus, vector)| {
+            (
+                chunk_id.clone(),
+                repoise_core::embed::cosine(&query_vector, vector),
+            )
+        })
+        .collect();
+    expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    assert!(!expected.is_empty());
+
+    // The vectors-only page starts at the global cosine maximum and stays in
+    // global cosine order (the per-file cap may skip later chunks).
+    let page_ids: Vec<&str> = response
+        .results
+        .iter()
+        .map(|hit| hit.source_id.as_str())
+        .collect();
+    assert_eq!(page_ids.first().copied(), Some(expected[0].0.as_str()));
+    let mut last = 0usize;
+    for id in page_ids {
+        let position = expected
+            .iter()
+            .position(|(chunk_id, _score)| chunk_id == id)
+            .expect("vector result must be a stored chunk");
+        assert!(
+            position >= last,
+            "vectors-only order must follow the global cosine rank: {id:?} at {position}, after {last}"
+        );
+        last = position + 1;
+    }
+
+    // Hybrid keeps the single-space fusion and the original global-rank
+    // attribution (no per-corpus split for raw).
+    let hybrid = run_search(&built, query, SearchMode::Hybrid, Some(&embedder)).unwrap();
+    assert_eq!(hybrid.retrieval_mode, "hybrid");
+    for hit in &hybrid.results {
+        assert!(
+            !hit.explanation.contains("docs vector rank")
+                && !hit.explanation.contains("code vector rank"),
+            "raw hybrid results must use the global rank attribution: {:?}",
+            hit.explanation
+        );
+    }
+    assert!(
+        hybrid
+            .results
+            .iter()
+            .any(|hit| hit.explanation.contains("vector rank ")),
+        "a hybrid result must carry the global vector rank attribution: {:?}",
+        hybrid
+            .results
+            .iter()
+            .map(|hit| hit.explanation.clone())
+            .collect::<Vec<_>>()
+    );
+}
