@@ -32,16 +32,41 @@ Native packages were published/verified before launcher approval.
 | repoise | fd2ef127-388e-47ad-bb33-7ba9aad060d1 | a8e66fe14903e798cddca8cb7e11a35736c4afff |
 
 Registry metadata supplied by the maintainer matched each tarball SHA-1.
-All next tags resolve to 0.1.0-alpha.1. The launcher's three optional native
-dependencies are pinned exactly to that version. latest was left unchanged:
-0.0.0-stage for Linux/macOS/launcher and 0.0.1-security for Windows.
-Use an explicit version or the next channel; unversioned installation is not
-a functional preview installation path.
+At initial publication, all next tags resolved to 0.1.0-alpha.1 and the
+launcher's three optional native dependencies were pinned exactly to that
+version. latest was initially left at 0.0.0-stage for Linux/macOS/launcher
+and 0.0.1-security for Windows. The October 19 promotion below supersedes
+that initial default-install state.
 
 Windows approval initially returned E409 while npm automated review was still
 running; retrying the same stage after review completed succeeded. No restaging
 or version change was needed. npm support's name clearance is confirmed by
 successful Windows publication.
+
+## October 19 default-version promotion
+
+The maintainer used authenticated npm dist-tag operations to move latest to
+0.1.0-alpha.1 for all three native packages, then the launcher. next remains
+0.1.0-alpha.1. No package bytes, versions or Git tags were republished or changed.
+This makes the alpha preview the default npm install; it is not a stable v1
+release and the native release remains marked as a prerelease.
+
+Registry metadata for the launcher's latest version was independently checked:
+
+- repository: git+https://github.com/billy-the-ape/repoise.git
+  (directory npm/repoise)
+- homepage: https://github.com/billy-the-ape/repoise#readme
+- issues: https://github.com/billy-the-ape/repoise/issues
+
+The prior placeholder default lacked these links; the functional version
+already carried them, so changing latest required no metadata republish.
+npm website rendering may lag registry metadata.
+
+A fresh macOS directory installed with npm install --ignore-scripts repoise,
+without an explicit version. Installation added the wrapper and matching native
+package, and the installed local executable reported repoise 0.1.0-alpha.1.
+This complements the original pinned CLI/MCP tests below; Linux/Windows fresh
+registry-install testing remains unmeasured.
 
 ## Native publication
 

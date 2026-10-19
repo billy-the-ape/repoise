@@ -19,8 +19,9 @@ or the master-plan section 11 adoption gates have passed.
 
 ## Pinned installation
 
-The functional 0.1.0-alpha.1 preview is published. Pin it explicitly; npm
-`latest` remains a placeholder. Do not use the scaffold 0.1.0-alpha.0.
+The functional 0.1.0-alpha.1 preview is published under both npm `latest` and
+`next`. Default installation selects this alpha; pin it explicitly for repeatable
+CI. Do not use the scaffold 0.1.0-alpha.0.
 
     npm install --ignore-scripts --no-audit --no-fund \
       repoise@0.1.0-alpha.1
