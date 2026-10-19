@@ -34,7 +34,9 @@ fn temp_dir(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!("repoise-xw-{tag}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    // Canonicalize so checkout-relative store resolution matches across
+    // platforms (macOS /var -> /private/var, Windows short paths).
+    dir.canonicalize().unwrap()
 }
 
 fn run_git(root: &Path, args: &[&str]) {
@@ -1116,4 +1118,42 @@ fn purge_and_gc_preserve_siblings() {
         root_shared.join("parse-cache").is_dir(),
         "the common-directory family store is outside the default cache root"
     );
+}
+
+/// Regression: a non-canonical checkout spelling (symlinked root) must
+/// select the same family store as its canonical siblings, so linked
+/// worktrees still share artifacts. (macOS /var -> /private/var and
+/// Windows short paths produce the same mismatch for plain temp dirs.)
+#[cfg(unix)]
+#[test]
+fn non_canonical_checkout_spelling_shares_the_family_store() {
+    let base = temp_dir("symlink");
+    let root_a = base.join("a");
+    std::fs::create_dir_all(&root_a).unwrap();
+    run_git(&root_a, &["init", "-b", "main"]);
+    write_corpus(&root_a, "{}");
+    let a = harness(&root_a, None);
+    build(&a, SnapshotMode::WorkingTree, Some(&client("v1")));
+    let store_a = shared_root(&a);
+
+    // Rebuild the same checkout through a symlinked (non-canonical) root.
+    let link = base.join("a-link");
+    std::os::unix::fs::symlink(&root_a, &link).unwrap();
+    let a_link = harness(&link, None);
+    assert_eq!(a_link.repo_id, a.repo_id, "same scope through the symlink");
+    let store_link = shared_root(&a_link);
+    assert_eq!(store_link, store_a, "same family store through the symlink");
+    let out_link = build(&a_link, SnapshotMode::WorkingTree, Some(&client("v1")));
+    assert_eq!(
+        out_link.files_reused, out_link.files_indexed,
+        "same-worktree reuse"
+    );
+
+    // A linked worktree created from the canonical root shares with both.
+    let root_b = linked_worktree(&root_a, "b");
+    let b = harness(&root_b, None);
+    assert_eq!(shared_root(&b), store_a, "linked worktree joins the family");
+    let out_b = build(&b, SnapshotMode::WorkingTree, Some(&client("v1")));
+    assert_eq!(out_b.files_family_reused, out_b.files_indexed);
+    assert_eq!(out_b.files_reparsed, 0);
 }

@@ -599,6 +599,11 @@ pub fn index(
             }
         }
     }
+    // Enforce the artifact retention bound once per build (not per put), so
+    // cold builds stay linear in the number of reparsed files.
+    if let Some(cache) = &artifacts {
+        cache.enforce_bound();
+    }
     // Files that existed before but are no longer eligible: tombstone chunks.
     for (path, chunks) in &prev_chunks {
         if !file_rows.iter().any(|f| &f.path == path) {

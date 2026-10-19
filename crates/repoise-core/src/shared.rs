@@ -256,8 +256,8 @@ impl ArtifactCache {
         }
     }
 
-    /// Atomically stores one artifact, then enforces the bounded retention
-    /// cap (best effort; evicting an artifact only costs a future reparse).
+    /// Atomically stores one artifact. Bounded retention is enforced once
+    /// per build via `enforce_bound`, not on every write.
     pub fn put(&self, artifact: &ParseArtifact) -> Result<()> {
         let key = key_for(
             &artifact.content_hash,
@@ -282,14 +282,15 @@ impl ArtifactCache {
             let _ = fs::remove_file(&target);
         }
         fs::rename(&tmp, &target).map_err(Error::Io)?;
-        self.enforce_bound();
         Ok(())
     }
 
     /// Keeps the store within `MAX_PARSE_ARTIFACTS` by evicting the oldest
     /// entries (best effort; eviction is always safe because artifacts are
-    /// reparseable).
-    fn enforce_bound(&self) {
+    /// reparseable). Callers run this once per build, after the file loop, so
+    /// a cold build is linear in the number of reparsed files rather than
+    /// quadratic in the store size.
+    pub fn enforce_bound(&self) {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
             Err(_) => return,
@@ -341,6 +342,38 @@ pub enum SharingState {
     Fallback(String),
 }
 
+/// Canonicalizes `path` as far as its existing prefix goes, so equivalent
+/// spellings of the same location (symlinked prefixes such as macOS
+/// `/var` vs `/private/var`, short Windows paths, `..` components) compare
+/// equal. Components beyond the deepest existing ancestor are re-joined
+/// lexically; the input is returned unchanged when no ancestor exists.
+fn canonicalize_existing(path: &Path) -> PathBuf {
+    if path.exists() {
+        return fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    }
+    let mut remainder: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = path;
+    while let Some(name) = current.file_name() {
+        remainder.push(name.to_os_string());
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        if parent.exists() {
+            let base = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+            let mut out = base;
+            for name in remainder.iter().rev() {
+                out.push(name);
+            }
+            return out;
+        }
+        current = parent;
+    }
+    path.to_path_buf()
+}
+
 /// Resolves the sharing state for one declared scope. This probe never
 /// creates anything (read-only operations must not create shared state);
 /// builds create the store directory after resolving.
@@ -358,7 +391,12 @@ pub fn resolve_sharing(
     let canonical_root = adapter.canonical_root()?;
     let version = PathBuf::from(SHARED_STORE_VERSION.to_string());
     let checkout_local_default = canonical_root.join(DEFAULT_CACHE_DIR);
-    let root = if cache.root == checkout_local_default {
+    // Compare canonicalized locations, never raw spellings: a non-canonical
+    // checkout root (symlink, short path) must still select the same store
+    // as its siblings.
+    let is_default =
+        canonicalize_existing(&cache.root) == canonicalize_existing(&checkout_local_default);
+    let root = if is_default {
         // Default checkout-local cache: shared data lives with the
         // repository itself, under the canonical Git common directory
         // (always outside the corpus). Explicit cache locations

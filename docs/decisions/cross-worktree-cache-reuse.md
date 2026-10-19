@@ -36,6 +36,15 @@ concurrency case).
   unchanged; the checkout-local embedding cache remains the fallback for
   non-family worktrees (plain directories, opt-out, unavailable common
   directory).
+- The default-vs-explicit store check canonicalizes both sides (deepest
+  existing path prefix), never raw string equality: a non-canonical checkout
+  spelling (macOS `/var` vs `/private/var`, Windows short paths, symlinks,
+  `..` components) still selects the same family store. Fixed after the
+  first cross-platform CI run, where text comparison silently split the
+  store per worktree.
+- The parse-artifact retention bound is enforced once per build (after the
+  file loop), not on every `put`; a cold build is linear in reparsed files
+  rather than quadratic in store size.
 
 ## Artifact compatibility
 

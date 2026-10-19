@@ -55,8 +55,15 @@ Invariants specific to the family store:
   carry no scope-bound chunk or source ids. Destination builds rematerialize
   them into their own scope and re-resolve all references against the
   destination's eligible files.
-- Artifact publication is atomic per file; the embedding database uses the
-  usual SQLite WAL discipline (no copying of a live database file).
+- Artifact publication is atomic per file, and the artifact retention bound
+  is enforced once per build (after the file loop), not per write; the
+  embedding database uses the usual SQLite WAL discipline (no copying of a
+  live database file).
+- Default-versus-explicit store selection compares canonicalized locations
+  (canonicalizing the deepest existing path prefix), so equivalent
+  spellings of the same checkout-local cache root — symlinked prefixes,
+  Windows short paths, `..` components — select the same family store as
+  the checkout's siblings.
 - Family GC runs only when a member-registered store is healthy; it retains
   entries referenced by any member's retained generations and removes the rest,
   with a bounded sweep (oldest artifacts first, capped per run). Members whose
