@@ -21,7 +21,11 @@
 //! provider failure, missing configuration, or cancellation during a
 //! publication leaves the generation lexically complete with partial or no
 //! vector coverage, which `status`/`check` report through their existing
-//! coverage semantics.
+//! coverage semantics. The watcher does not re-run a publication solely to
+//! retry failed or pending embedding inputs: once the corpus and
+//! configuration match the published generation it goes idle. Failed or
+//! pending inputs are retried by the next publication (triggered by a
+//! content or configuration change) or by an explicit `repoise index`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

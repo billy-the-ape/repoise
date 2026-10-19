@@ -397,7 +397,10 @@ runs the shared cache-first embedding pass, so unchanged chunk inputs never
 reach the provider and provider failures/cancellation leave lexical coverage
 with reported pending work. An asynchronous embedding queue (separate worker
 pool publishing vector batches after the lexical generation) remains an
-explicitly deferred follow-up, not shipped in v1. Pending/failed semantic chunks must not serve vectors for replaced text; report vector coverage
+explicitly deferred follow-up, not shipped in v1. Watch likewise does not
+re-run a completed publication: failed or pending embedding inputs are
+retried by the next content/configuration-triggered publication or by an
+explicit `repoise index`. Pending/failed semantic chunks must not serve vectors for replaced text; report vector coverage
 and use lexical fallback. Vector jobs publish only if their expected scope/content/config hashes
 still match; discard superseded work. Search exposes pending paths and last scan time; strict
 freshness performs reconciliation or fails clearly without implicitly calling remote providers.

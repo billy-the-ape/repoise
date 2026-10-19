@@ -802,6 +802,68 @@ fn watch_provider_failure_keeps_lexical_and_reports_pending_coverage() {
 }
 
 #[test]
+fn watch_idle_after_failed_embedding_retries_on_next_publication() {
+    let repo = DirRepo::new(
+        "watch-emb-idle",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    write_embedding_config(&repo, "v1");
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let first = build_with_embeddings(&repo, Some(&client));
+    assert_eq!(
+        first.embedding.as_ref().unwrap().embedded,
+        first.vectors_total
+    );
+
+    // The provider now fails: the generation still publishes lexically with
+    // reported failed embedding work.
+    repo.write("docs/a.md", WATCH_DOC_A_V2);
+    let (client, requested, _) = recording_client(
+        "v1",
+        true,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_embed(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+    );
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(outcome.embedding.as_ref().unwrap().failed > 0);
+
+    // Documented limitation: with no content/config change the watcher goes
+    // idle and does not re-run the publication to retry the failed inputs.
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+
+    // A content change triggers the next publication, which re-attempts the
+    // previously failed inputs (the provider still fails, so the work stays
+    // failed and is reported rather than silently succeeding).
+    let failed_before = requested.lock().unwrap().len();
+    repo.write("docs/b.md", WATCH_DOC_B_V2);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(outcome.embedding.as_ref().unwrap().failed > 0);
+    let all = requested.lock().unwrap().clone();
+    let previous = &all[..failed_before];
+    let retried = &all[failed_before..];
+    assert!(
+        previous.iter().all(|input| retried.contains(input)),
+        "previously failed inputs must be re-attempted"
+    );
+}
+
+#[test]
 fn watch_reembeds_all_inputs_when_profile_or_config_changes() {
     let repo = DirRepo::new(
         "watch-emb-model",
