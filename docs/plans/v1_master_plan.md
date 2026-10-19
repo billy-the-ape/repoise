@@ -390,8 +390,14 @@ inventory after branch switches/overflow; ignored outputs cannot cause self-inde
 Persist source/chunk hashes so incremental behavior survives process restarts. Retained parse
 trees are disposable acceleration, not required for correctness.
 
-Publish current lexical/symbol coverage promptly while optional embeddings queue separately.
-Pending/failed semantic chunks must not serve vectors for replaced text; report vector coverage
+Publish current lexical/symbol coverage promptly while optional embeddings run
+in the same debounced publication. Implemented first stage (synchronous): the
+watch process builds the configured embedding client once and each publication
+runs the shared cache-first embedding pass, so unchanged chunk inputs never
+reach the provider and provider failures/cancellation leave lexical coverage
+with reported pending work. An asynchronous embedding queue (separate worker
+pool publishing vector batches after the lexical generation) remains an
+explicitly deferred follow-up, not shipped in v1. Pending/failed semantic chunks must not serve vectors for replaced text; report vector coverage
 and use lexical fallback. Vector jobs publish only if their expected scope/content/config hashes
 still match; discard superseded work. Search exposes pending paths and last scan time; strict
 freshness performs reconciliation or fails clearly without implicitly calling remote providers.
