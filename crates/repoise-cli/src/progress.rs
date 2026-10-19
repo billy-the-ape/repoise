@@ -7,7 +7,9 @@
 //! progress to stderr instead. Rendering is throttled (at most one line per
 //! 100 ms within a phase; phase changes and phase ends always render) and
 //! never emits per-file noise. On a TTY the current phase line is rewritten
-//! in place; otherwise new lines are appended.
+//! in place and terminated when the phase finishes (or via `finish`), so the
+//! final summary or an error always starts on a new line; otherwise new
+//! lines are appended.
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::Mutex;
@@ -80,63 +82,86 @@ impl ProgressReporter {
 
 impl IndexProgressReporter for ProgressReporter {
     fn phase_started(&self, phase: IndexPhase, total: Option<u64>) {
-        let mut state = self.inner.lock().unwrap();
-        state.phase = Some(phase);
-        state.phase_started = Instant::now();
-        state.done = 0;
-        state.total = total;
-        state.last_render = Instant::now();
-        state.render();
+        self.emit(|state, stream| {
+            state.phase = Some(phase);
+            state.phase_started = Instant::now();
+            state.done = 0;
+            state.total = total;
+            state.last_render = Instant::now();
+            state.render(stream);
+        });
     }
 
     fn progress(&self, phase: IndexPhase, done: u64, total: u64) {
-        let mut state = self.inner.lock().unwrap();
-        state.phase = Some(phase);
-        state.done = done;
-        state.total = Some(total);
-        let now = Instant::now();
-        // Completion always renders; otherwise stay within the throttle.
-        if done == total || now.duration_since(state.last_render) >= UPDATE_INTERVAL {
-            state.last_render = now;
-            state.render();
-        }
+        self.emit(|state, stream| {
+            state.phase = Some(phase);
+            state.done = done;
+            state.total = Some(total);
+            let now = Instant::now();
+            // Completion always renders; otherwise stay within the throttle.
+            if done == total || now.duration_since(state.last_render) >= UPDATE_INTERVAL {
+                state.last_render = now;
+                state.render(stream);
+            }
+        });
     }
 
     fn phase_finished(&self, phase: IndexPhase) {
+        self.emit(|state, stream| {
+            state.phase = Some(phase);
+            state.last_render = Instant::now();
+            state.render(stream);
+            // A finished phase stays visible: terminate its in-place line so
+            // the next phase starts on a new line.
+            state.finish_line(stream);
+        });
+    }
+}
+
+impl ProgressReporter {
+    /// Runs `action` against the active stream, then flushes it.
+    fn emit(&self, action: impl FnOnce(&mut Inner, &mut dyn Write)) {
         let mut state = self.inner.lock().unwrap();
-        state.phase = Some(phase);
-        state.last_render = Instant::now();
-        state.render();
+        if state.stderr {
+            action(&mut state, &mut io::stderr());
+            let _ = io::stderr().flush();
+        } else {
+            action(&mut state, &mut io::stdout());
+            let _ = io::stdout().flush();
+        }
+    }
+
+    /// Terminates any unterminated in-place progress line (idempotent) so
+    /// the final summary or an error prints on a fresh line. No-op when
+    /// lines are appended or no in-place line is open.
+    pub fn finish(&self) {
+        self.emit(|state, stream| state.finish_line(stream));
     }
 }
 
 impl Inner {
-    fn render(&mut self) {
+    fn render(&mut self, stream: &mut dyn Write) {
         let line = self.line();
         if line.is_empty() {
             return;
         }
-        let pad = if self.in_place {
-            " ".repeat(self.last_line.len().saturating_sub(line.len()))
+        if self.in_place {
+            let pad = " ".repeat(self.last_line.len().saturating_sub(line.len()));
+            let _ = write!(stream, "\r{line}{pad}");
         } else {
-            String::new()
-        };
-        if self.stderr {
-            if self.in_place {
-                let _ = write!(io::stderr(), "\r{line}{pad}");
-            } else {
-                let _ = writeln!(io::stderr(), "{line}");
-            }
-            let _ = io::stderr().flush();
-        } else {
-            if self.in_place {
-                let _ = write!(io::stdout(), "\r{line}{pad}");
-            } else {
-                let _ = writeln!(io::stdout(), "{line}");
-            }
-            let _ = io::stdout().flush();
+            let _ = writeln!(stream, "{line}");
         }
         self.last_line = if self.in_place { line } else { String::new() };
+    }
+
+    /// Terminates an unterminated in-place line so subsequent output (the
+    /// final summary or an error) starts on a new line. Idempotent: append
+    /// mode lines already carry their own newline.
+    fn finish_line(&mut self, stream: &mut dyn Write) {
+        if self.in_place && !self.last_line.is_empty() {
+            let _ = writeln!(stream);
+            self.last_line = String::new();
+        }
     }
 
     /// The current phase line: phase, counts and percent when a reliable
@@ -224,5 +249,66 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(250)), "0.2s");
         assert_eq!(format_duration(Duration::from_secs(59)), "59.0s");
         assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
+    }
+
+    /// Drives the in-place (TTY) line lifecycle against an in-memory sink:
+    /// updates rewrite the line without terminating it, phase finish and
+    /// `finish` terminate it exactly once, and append mode never holds an
+    /// open line.
+    #[test]
+    fn in_place_lifecycle_terminates_the_line() {
+        let reporter = ProgressReporter::new(false);
+        let mut buf: Vec<u8> = Vec::new();
+
+        {
+            let mut state = reporter.inner.lock().unwrap();
+            state.in_place = true;
+            state.phase = Some(IndexPhase::Reconcile);
+            state.total = Some(10);
+            state.done = 4;
+            // Two in-place updates: carriage-return rewrites, no newline.
+            state.render(&mut buf);
+            state.render(&mut buf);
+        }
+        let text = String::from_utf8(buf.clone()).unwrap();
+        assert!(text.contains('\r'), "in-place renders rewrite the line");
+        assert!(!text.contains('\n'), "updates must not terminate the line");
+
+        // Finishing the phase terminates the open line exactly once.
+        {
+            let mut state = reporter.inner.lock().unwrap();
+            state.render(&mut buf);
+            state.finish_line(&mut buf);
+        }
+        let text = String::from_utf8(buf.clone()).unwrap();
+        assert!(
+            text.ends_with('\n'),
+            "the finished phase line is terminated"
+        );
+        assert_eq!(
+            text.matches('\n').count(),
+            1,
+            "phase finish adds exactly one newline"
+        );
+
+        // Termination is idempotent once the line is cleared.
+        let before = buf.len();
+        reporter.inner.lock().unwrap().finish_line(&mut buf);
+        assert_eq!(buf.len(), before, "no extra newline after termination");
+
+        // Append (non-TTY) mode already terminates every line, so
+        // finish adds nothing.
+        let mut state = reporter.inner.lock().unwrap();
+        state.in_place = false;
+        state.last_line = String::new();
+        let before = buf.len();
+        state.render(&mut buf);
+        state.finish_line(&mut buf);
+        let added = String::from_utf8(buf[before..].to_vec()).unwrap();
+        assert_eq!(
+            added.matches('\n').count(),
+            1,
+            "append mode contributes only its own line terminator: {added:?}"
+        );
     }
 }

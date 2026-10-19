@@ -774,7 +774,10 @@ pub fn embed_chunks(
         let cache_hits = stats.cache_hits as u64;
         let (results, session) = match on_progress {
             Some(forward) => {
-                let mut bridge = move |done: u64, total: u64| {
+                // The inner total is the miss count; the outer `total` is the
+                // full work size, which is the denominator this callback
+                // promises.
+                let mut bridge = move |done: u64, _miss_total: u64| {
                     forward(cache_hits + done, total);
                 };
                 client.embed_all(&miss_inputs, Some(&mut bridge))

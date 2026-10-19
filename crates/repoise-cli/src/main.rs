@@ -579,7 +579,7 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
         println!("{started}");
     }
     let progress: Option<&dyn repoise_core::progress::IndexProgressReporter> = Some(&reporter);
-    let outcome = repoise_core::indexing::index(
+    let result = repoise_core::indexing::index(
         ctx.adapter.as_ref(),
         ctx.mode,
         &ctx.effective,
@@ -589,8 +589,11 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
         session,
         enrichment_session,
         progress,
-    )
-    .map_err(|err| err.to_string())?;
+    );
+    // Terminate any unterminated in-place progress line so the final summary
+    // or an error starts on a fresh line (no-op when piped).
+    reporter.finish();
+    let outcome = result.map_err(|err| err.to_string())?;
     if opts.json {
         println!("{}", json(&outcome)?);
     } else {

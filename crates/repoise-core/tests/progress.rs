@@ -362,6 +362,60 @@ fn embed_chunks_reports_cache_then_provider_progress() {
 }
 
 #[test]
+fn embed_chunks_mixed_cache_keeps_stable_denominator() {
+    let dir = temp_dir("embed-mixed");
+    let cache = EmbeddingCache::open(dir.join("embeddings.sqlite")).unwrap();
+    let client = EmbeddingClient::new(
+        Box::new(HashProvider {
+            model: "v1".into(),
+            dimension: 8,
+        }),
+        EmbeddingBudgets::default(),
+        CancellationToken::new(),
+    );
+    let work = embedding_work(&["alpha", "beta", "gamma"]);
+
+    // Warm exactly one input so the next run is mixed hit/miss.
+    embed_chunks(&cache, &client, &work[..1], 1, None).unwrap();
+
+    // Mixed run: 1 cache hit, 2 misses. The denominator must stay the full
+    // work size, never the miss count.
+    let seen = Arc::new(Mutex::new(Vec::<(u64, u64)>::new()));
+    let outcome = {
+        let updates = seen.clone();
+        embed_chunks(
+            &cache,
+            &client,
+            &work,
+            2,
+            Some(&mut |done, total| {
+                updates.lock().unwrap().push((done, total));
+            }),
+        )
+        .unwrap()
+    };
+    let updates = seen.lock().unwrap().clone();
+    assert!(
+        updates.iter().all(|(_, total)| *total == 3),
+        "denominator must stay the work size: {updates:?}"
+    );
+    assert_eq!(
+        updates.first(),
+        Some(&(1, 3)),
+        "cache hits report before any provider work"
+    );
+    assert_eq!(updates.last(), Some(&(3, 3)));
+    assert!(
+        updates
+            .windows(2)
+            .all(|w| w[0].1 == w[1].1 && w[0].0 <= w[1].0)
+    );
+    assert_eq!(outcome.stats.cache_hits, 1);
+    assert_eq!(outcome.stats.embedded, 2);
+    assert_eq!(outcome.vectors.len(), 3);
+}
+
+#[test]
 fn embed_all_reports_per_batch_and_stops_at_budget() {
     let budgets = EmbeddingBudgets {
         batch_size: 2,
