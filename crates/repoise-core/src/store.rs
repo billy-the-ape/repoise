@@ -1535,6 +1535,84 @@ pub fn vectors_for_generation_filtered(
     Ok(out)
 }
 
+/// Reads one (chunk id, corpus, dimension, vector bytes) row.
+fn read_chunk_vec_row(row: &rusqlite::Row) -> rusqlite::Result<(String, String, i64, Vec<u8>)> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, i64>(2)?,
+        row.get::<_, Vec<u8>>(3)?,
+    ))
+}
+
+/// Validated vectors of one generation and profile with each chunk's corpus,
+/// restricted to chunks whose path matches `path_filter` (SQLite GLOB) and/or
+/// whose file role matches `role_filter` — the same semantics as the lexical
+/// query. Used by hybrid search to keep corpus-scoped cosine ranks (the
+/// document-search vector only ranks non-code chunks, the code-retrieval
+/// vector only ranks code chunks).
+pub fn vectors_for_generation_with_corpus(
+    conn: &Connection,
+    generation_id: i64,
+    fingerprint: &str,
+    path_filter: Option<&str>,
+    role_filter: Option<&str>,
+) -> Result<Vec<(String, String, Vec<f32>)>> {
+    let mut sql = String::from(
+        "SELECT v.chunk_id, c.corpus, v.dimension, v.vector FROM chunk_vec v JOIN chunk c ON c.generation_id = v.generation_id AND c.chunk_id = v.chunk_id JOIN file fr ON fr.generation_id = v.generation_id AND fr.path = c.path WHERE v.generation_id = ?1 AND v.fingerprint = ?2",
+    );
+    if path_filter.is_some() {
+        sql.push_str(" AND c.path GLOB ?3");
+    }
+    if role_filter.is_some() {
+        sql.push_str(if path_filter.is_some() {
+            " AND fr.role = ?4"
+        } else {
+            " AND fr.role = ?3"
+        });
+    }
+    sql.push_str(" ORDER BY v.chunk_id");
+    let mut stmt = conn.prepare(&sql).map_err(Error::Sqlite)?;
+    let rows = match (path_filter, role_filter) {
+        (Some(path), Some(role)) => stmt
+            .query_map(
+                params![generation_id, fingerprint, path, role],
+                read_chunk_vec_row,
+            )
+            .map_err(Error::Sqlite)?,
+        (Some(path), None) => stmt
+            .query_map(
+                params![generation_id, fingerprint, path],
+                read_chunk_vec_row,
+            )
+            .map_err(Error::Sqlite)?,
+        (None, Some(role)) => stmt
+            .query_map(
+                params![generation_id, fingerprint, role],
+                read_chunk_vec_row,
+            )
+            .map_err(Error::Sqlite)?,
+        (None, None) => stmt
+            .query_map(params![generation_id, fingerprint], read_chunk_vec_row)
+            .map_err(Error::Sqlite)?,
+    };
+    let mut out: Vec<(String, String, Vec<f32>)> = Vec::new();
+    for row in rows {
+        let (chunk_id, corpus, dimension, bytes) = row.map_err(Error::Sqlite)?;
+        match crate::embed::decode_vector(&bytes, dimension as u32) {
+            Some(vector) => {
+                out.push((chunk_id, corpus, vector));
+            }
+            None => {
+                return Err(Error::IndexState(format!(
+                    "corrupt stored vector for chunk {chunk_id}"
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The (input hash, fingerprint) pairs referenced by every retained
 /// generation of one repository — the reference set for embedding-cache GC.
 pub fn referenced_embedding_keys(

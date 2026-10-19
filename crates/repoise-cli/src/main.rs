@@ -138,6 +138,10 @@ RETRIEVAL WORKFLOW:
     return zero results even when relevant evidence is indexed. For empty or
     irrelevant results, try a shorter identifier/symbol query with
     --path-filter/--role before concluding indexed evidence is insufficient.
+    Hybrid mode (with a complete embedding profile) templates the query with
+    the configured input profile, ranks corpus-scoped stored vectors and fuses
+    them with the lexical rank (RRF); a missing profile, credential or failed
+    embedding degrades to lexical and the response reports `lexical`.
     Results carry short excerpts that locate evidence, not the full source;
     use `read --source-id <ID>` to inspect the exact implementation. A short
     excerpt is not evidence the indexed source is unavailable. When results
@@ -1514,6 +1518,7 @@ fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, St
             &api_key,
             &profile.model,
             profile.dimension,
+            profile.input_profile,
             budgets.timeout,
         )
         .map_err(|err| err.to_string())?;
@@ -1531,28 +1536,40 @@ fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, St
     }
 }
 
-/// Wraps a provider as a query-time embedder (single-input batch).
+/// Wraps a provider as a query-time embedder (one provider batch per call).
 #[cfg(feature = "remote-embedding")]
 struct ProviderQueryEmbedder {
     provider: std::sync::Arc<dyn repoise_core::embed::EmbeddingProvider>,
-    profile_fingerprint: String,
+    profile: repoise_core::embed::EmbeddingProfile,
 }
 
 #[cfg(feature = "remote-embedding")]
 impl QueryEmbedder for ProviderQueryEmbedder {
-    fn embed_query(&self, query: &str) -> repoise_core::Result<Option<Vec<f32>>> {
-        let batch = self.provider.embed(&[query.to_string()])?;
-        let dimension = self.provider.profile().dimension;
-        match batch.vectors.first() {
-            Some(vector) if repoise_core::embed::validate_vector(vector, dimension) => {
-                Ok(Some(vector.clone()))
-            }
-            _ => Ok(None),
+    fn embed_queries(&self, inputs: &[String]) -> repoise_core::Result<Vec<Option<Vec<f32>>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
         }
+        let batch = self.provider.embed(inputs)?;
+        let dimension = self.profile.dimension;
+        Ok(batch
+            .vectors
+            .into_iter()
+            .map(|vector| {
+                if repoise_core::embed::validate_vector(&vector, dimension) {
+                    Some(vector)
+                } else {
+                    None
+                }
+            })
+            .collect())
     }
 
     fn profile_fingerprint(&self) -> String {
-        self.profile_fingerprint.clone()
+        self.profile.fingerprint()
+    }
+
+    fn input_profile(&self) -> repoise_core::embed::InputProfile {
+        self.profile.input_profile
     }
 }
 
@@ -1578,12 +1595,13 @@ fn query_embedder_from_config(
             &api_key,
             &profile.model,
             profile.dimension,
+            profile.input_profile,
             budgets.timeout,
         )
         .map_err(|err| err.to_string())?;
         Ok(Some(Box::new(ProviderQueryEmbedder {
             provider: std::sync::Arc::new(provider),
-            profile_fingerprint: profile.fingerprint(),
+            profile: profile.clone(),
         })))
     }
     #[cfg(not(feature = "remote-embedding"))]

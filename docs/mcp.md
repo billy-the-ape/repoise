@@ -64,6 +64,16 @@ The tool descriptions carry bounded guidance for agents; the CLI help text
   query and appropriate `pathFilter`/`role` filters before concluding the
   indexed evidence is insufficient. Focused queries (one identifier, one
   file) are the reliable pattern.
+- **Hybrid degrades explicitly.** `hybrid` and `vectors-only` require a
+  complete embedding profile (provider, model, dimensions, endpoint env
+  reference, API-key env) in the effective config. The query is templated
+  with the configured input profile (`embedding.inputProfile`; `raw` by
+  default, `embeddinggemma-2` for the local EmbeddingGemma 2 endpoint) and
+  ranked against corpus-scoped stored vectors (document-search vector for
+  non-code chunks, code-retrieval vector for code chunks), fused with the
+  lexical rank via RRF. When the profile, a credential or an embedding call
+  is missing or fails, the response reports `lexical` — hybrid degrades to
+  the offline baseline and vectors-only degrades with it.
 - **Truncation has one meaning.** `truncated: true` on a `read` result means
   the exact text exceeded `maxOutputTokens` and was cut at a line
   boundary; `truncated: true` on a `search` result marks remaining results,
