@@ -41,7 +41,7 @@ registry install). The offline lexical evaluation harness
 (frozen synthetic fixtures, 60 labeled queries with 12 held-out, per-hit
 provenance validation, recall@5/exact/policy/timing metrics, replay-evidence
 import format and runbook under scripts/eval/) has landed; hybrid evaluation
-remain unmeasured; an initial live lexical pilot verified functionality but did
+remains unmeasured; an initial live lexical pilot verified functionality but did
 not establish consistent agent speed/token gains. Package release
 validation ships in the CI/release matrices: the packed-consumer smoke runs the
 same offline docs+code fixture (init, index, search, read, status, check, stdio MCP

@@ -12,8 +12,9 @@ not complete the v1 indexing acceptance criteria.
 | [Alpha-1 status](alpha-1-status.md)       | Alpha.1 publication execution record and verified checks         |
 | [Alpha-1 readiness](alpha-1-readiness.md) | Preview readiness verification and registry-install status       |
 
-The functional [0.1.0-alpha.1 preview](alpha-1-status.md) is published under npm
-`next` and as native prerelease archives. Read execution records before any
+The functional [0.1.0-alpha.1 preview](alpha-1-status.md) is published as native
+prerelease archives and under both npm `latest` and `next` (the `latest`
+dist-tag was promoted on October 19, 2026). Read execution records before any
 recovery operation; do not replay completed publications. The alpha.0 record
 is historical.
 Update it after verified registry changes. For later versions, follow the repeatable runbooks.

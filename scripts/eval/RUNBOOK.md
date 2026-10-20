@@ -139,8 +139,10 @@ required. Generated results under `eval-results/` can be deleted at any time.
   in their path can outrank longer docs that match more terms. Role
   assertions therefore check classification (roles present and correct) and
   top-5 gold presence rather than strict current-over-plan ordering.
-- Multi-word FTS queries are OR-per-term across columns (the shipped
-  `fts_match_expression` builds unparenthesized OR chains joined by AND), so
-  policy queries are authored with terms absent from the whole corpus.
+- Multi-word FTS queries are strict: every whitespace term must co-occur in
+  one chunk's searchable fields (the shipped `fts_match_expression` joins
+  parenthesized per-term OR groups with a top-level AND), so broad
+  multi-term queries may legitimately return zero hits and policy queries
+  are authored with terms absent from the whole corpus.
 - `search` pages default to 5 results; the harness requests the cap (20) to
   expose the full ranking and evaluates the top 5.

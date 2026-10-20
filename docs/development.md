@@ -45,7 +45,11 @@ repoise index [ROOT]                  # build and publish the offline index (inc
 repoise status [ROOT]                 # scope, snapshot, index and freshness (exit 3 when missing/stale)
 repoise search --query <Q> [ROOT]     # offline lexical search over the current index
 repoise read --source-id <ID> [ROOT]  # exact read-back of a search result
+repoise related --source-id <ID> [ROOT]  # structural links from a source chunk
+repoise check [OPTIONS] [ROOT]        # offline coverage/freshness check (stable exit codes)
 repoise init [ROOT]                   # idempotent, non-interactive configuration
+repoise watch [OPTIONS] [ROOT]        # incremental watch loop (Ctrl+C to stop)
+repoise overlay <uninstall|update> [ROOT]  # manage the agent-guidance overlay
 repoise purge                         # remove generated cache data (--all or one scope)
 repoise mcp [ROOT]                    # stdio MCP server (JSON-RPC 2.0; --allow-refresh to expose refresh)
 repoise greet | help | version
@@ -56,10 +60,13 @@ Global options: `--json` (machine-readable output), `--config <PATH>` and
 `--committed` (use the committed Git snapshot instead of the working tree).
 Search options: `--path-filter <GLOB>`, `--role <ROLE>`, `--max-results <N>`
 (default 5, cap 20), `--max-output-tokens <N>`, `--cursor <TOKEN>`,
-`--mode <lexical|hybrid|vectors-only>` (default lexical), `--rrf-k <N>`.
+`--mode <lexical|hybrid|vectors-only>` (default lexical), `--rrf-k <N>`,
+`--lane <search|history>` (default search).
+Check options: `--fresh` (also fail when the index is stale).
 Purge options: `--all` or both `--repo-id <ID>` and `--worktree-id <ID>`.
 Init options: `--preset docs-only|docs-code-lexical|hybrid`, `--provider <NAME>`
-(required for hybrid), `--adopt-managed-block <FILE>`, `--dry-run`, `--yes`.
+(required for hybrid), `--agents-snippet`, `--adopt-managed-block <FILE>`,
+`--dry-run`, `--yes`.
 Unsupported arguments exit 2 with the usage on stderr; I/O and service failures
 exit 1; a missing or stale index exits 3 for `status`, `search` and `read`.
 

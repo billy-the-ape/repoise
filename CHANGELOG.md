@@ -33,7 +33,8 @@ incremental docs/code indexing, lexical search, hash-validated exact reads,
 related links, freshness checks, watch, managed agent guidance, stdio MCP,
 and opt-in embeddings/history. See [preview readiness](docs/publish/alpha-1-readiness.md).
 
-Published under npm `next` with native prerelease archives; see the
+Published under npm `next` with native prerelease archives; the `latest`
+dist-tag was promoted to this version on October 19, 2026. See the
 [publication record](docs/publish/alpha-1-status.md). This is not a stable v1 release. Pilot runs verify basic operation but do not
 establish consistent agent speed or token savings. Exact-identifier ranking
 and agent retrieval strategy remain follow-up work. Fresh registry installation and CLI/MCP checks passed on macOS ARM64;
@@ -104,8 +105,9 @@ publication stays disabled.
 - The versioned config schema (`schemas/repoise.config.v1.schema.json`) ships in both
   installed forms and is verified against the committed source; tree-sitter parser grammars
   remain compiled into the native binary.
-- The smoke runs in the Linux/macOS/Windows CI and release matrices. The public registry
-  install path remains unvalidated pending the registry name review.
+- The smoke runs in the Linux/macOS/Windows CI and release matrices. Fresh
+  public-registry install checks passed on macOS ARM64; Linux/Windows
+  registry installs remain unmeasured.
 
 ### Card K6 — offline lexical evaluation harness
 
@@ -157,8 +159,9 @@ publication stays disabled.
 
 - `docs/build-ci.md` consumer guide for the offline `docs-code-lexical` baseline: pinned
   registry install using the explicitly labeled `REPLACE_WITH_VALIDATED_RELEASE_VERSION`
-  placeholder (no functional release is published yet; the scaffold `0.1.0-alpha.0` is not
-  a usable path), reviewed schema-version-1 config, a generated-cache ignore policy
+  placeholder (at that PR the functional release was not yet published; the
+  build/CI guide documents the current pin), reviewed schema-version-1 config,
+  a generated-cache ignore policy
   (`.repoise/` and `repoise.local.json` stay out of version control), opt-in
   owner-invoked package scripts, and the `index`-then-`check --fresh` sequence with stable
   failure-stop exit codes. It separates the agent's startup refresh (one explicit
