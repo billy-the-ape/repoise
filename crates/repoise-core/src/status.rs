@@ -139,6 +139,8 @@ pub struct StatusView {
     pub freshness: StatusFreshness,
     /// Cache location and sizes.
     pub cache: StatusCache,
+    /// Linked-worktree sharing state (shared store, opt-out, fallback).
+    pub sharing: crate::shared::SharingInfo,
     /// Last recorded build error, if any.
     pub last_error: Option<String>,
 }
@@ -183,6 +185,7 @@ pub fn status(
         dirty_count,
     };
 
+    let sharing = crate::shared::describe(&crate::shared::resolve_sharing(adapter, eff, cache)?);
     let conn = store.open()?;
     let current = store::current_generation(&conn, &record.repo_id, &worktree)?;
     let schema_version = store::meta_value(&conn, "schema_version")?
@@ -274,6 +277,7 @@ pub fn status(
             branch: inventory.snapshot.branch,
             dirty_count,
         },
+        sharing,
         cache: StatusCache {
             root: cache.root.clone(),
             db_path: db_path.clone(),

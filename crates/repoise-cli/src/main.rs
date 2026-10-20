@@ -761,6 +761,7 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
     } else {
         println!("root: {}", view.scope.root.display());
         println!("adapter: {} mode: {}", view.scope.adapter, view.scope.mode);
+        output::print_sharing(&view.sharing);
         println!("scope: {}/{}", view.scope.repo_id, view.scope.worktree_id);
         println!(
             "remote: {}",

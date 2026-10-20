@@ -3,10 +3,35 @@
 use repoise_core::doctor::DoctorReport;
 use repoise_core::ignore::{Decision, MatchedRule};
 use repoise_core::init::{FileAction, InitOutcome, InitPlan};
+use repoise_core::shared::SharingInfo;
 
 /// Pretty-serializes any serializable value.
 pub fn json<T: serde::Serialize>(value: &T) -> Result<String, String> {
     serde_json::to_string_pretty(value).map_err(|err| err.to_string())
+}
+
+/// Prints one shared-store sharing diagnostic line (doctor and status).
+pub fn print_sharing(sharing: &SharingInfo) {
+    match sharing.state.as_str() {
+        "shared" => println!(
+            "sharing: shared (family {}, store {})",
+            sharing.family_id.as_deref().unwrap_or("(none)"),
+            sharing
+                .store
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "(none)".into())
+        ),
+        _ => println!(
+            "sharing: {}{}",
+            sharing.state,
+            sharing
+                .note
+                .as_deref()
+                .map(|note| format!(" ({note})"))
+                .unwrap_or_default()
+        ),
+    }
 }
 
 /// Prints the doctor report for humans.
@@ -24,28 +49,7 @@ pub fn print_doctor(report: &DoctorReport) {
             .join(", ")
     );
     println!("mode: {:?}", report.mode);
-    match report.sharing.state.as_str() {
-        "shared" => println!(
-            "sharing: shared (family {}, store {})",
-            report.sharing.family_id.as_deref().unwrap_or("(none)"),
-            report
-                .sharing
-                .store
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "(none)".into())
-        ),
-        _ => println!(
-            "sharing: {}{}",
-            report.sharing.state,
-            report
-                .sharing
-                .note
-                .as_deref()
-                .map(|note| format!(" ({note})"))
-                .unwrap_or_default()
-        ),
-    }
+    print_sharing(&report.sharing);
     println!(
         "remote: {}",
         report.remote_identity.as_deref().unwrap_or("(none)")

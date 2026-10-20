@@ -35,8 +35,24 @@ fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("repoise-xw-{tag}-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // Canonicalize so checkout-relative store resolution matches across
-    // platforms (macOS /var -> /private/var, Windows short paths).
-    dir.canonicalize().unwrap()
+    // platforms (macOS /var -> /private/var, Windows short paths), keeping
+    // the ordinary spelling Git for Windows accepts.
+    regular_canonical(&dir)
+}
+
+/// Canonicalizes `path` and strips the Windows verbatim `\\?\` prefix, so
+/// the result names the same canonical location in the ordinary form that
+/// Git for Windows accepts in arguments and current directories.
+fn regular_canonical(path: &Path) -> PathBuf {
+    let canon = path.canonicalize().unwrap();
+    let text = canon.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        if let Some(unc) = rest.strip_prefix("UNC\\") {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
+        return PathBuf::from(rest);
+    }
+    canon
 }
 
 fn run_git(root: &Path, args: &[&str]) {
@@ -83,7 +99,7 @@ fn linked_worktree(root: &Path, name: &str) -> PathBuf {
         .join(name);
     let path_str = path.to_string_lossy().into_owned();
     run_git(root, &["worktree", "add", "--detach", &path_str, "HEAD"]);
-    path.canonicalize().expect("worktree exists")
+    regular_canonical(&path)
 }
 
 const GUIDE: &str = "# Guide\n\nThe assembly uses a unique gizmo bearing.\n\n## Steps\n\nWrench the widget until it clicks.\n";
@@ -428,6 +444,28 @@ fn small_delta_reparses_only_affected_files() {
     );
     assert!(search_hits(&a, "zorgon").is_empty());
     assert!(search_hits(&a, "quixotic").is_empty());
+    // A delta served by a sibling's artifact accounts the destination's
+    // superseded chunks as removed: B reverts its guide to the original
+    // text, which A's first build already stored in the family store.
+    std::fs::write(root_b.join("docs/guide.md"), GUIDE).unwrap();
+    let out_b2 = build(&b, SnapshotMode::WorkingTree, Some(&client("v1")));
+    assert_eq!(
+        out_b2.files_family_reused, 1,
+        "only the reverted guide is served by the sibling's artifact"
+    );
+    assert_eq!(
+        out_b2.files_reused, 3,
+        "unchanged files keep same-worktree reuse"
+    );
+    assert_eq!(out_b2.files_reparsed, 0);
+    assert_eq!(
+        out_b2.chunks_added, 1,
+        "only the restored steps chunk is new to B"
+    );
+    assert_eq!(
+        out_b2.chunks_removed, 1,
+        "B's superseded steps chunk is accounted as removed"
+    );
 }
 
 /// Behavior 3: dirty twins with different content at the same relative path

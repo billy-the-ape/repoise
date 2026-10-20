@@ -535,6 +535,10 @@ pub fn index(
             if let Some(artifact) = artifact.filter(|artifact| artifact.refs_have_known_kinds()) {
                 files_family_reused += 1;
                 chunks_family_reused += artifact.chunks.len();
+                // The file's previous chunks leave this generation exactly
+                // as in the reparse path (superseded by the rematerialized
+                // ones); chunks with unchanged identity are carried over.
+                chunks_removed += prev_chunks.get(&posix_path).map(Vec::len).unwrap_or(0);
                 let (data, reused, added) = rematerialize_artifact(
                     &scope_key,
                     &parser_version,
@@ -545,6 +549,7 @@ pub fn index(
                 );
                 chunks_reused += reused;
                 chunks_added += added;
+                chunks_removed -= reused;
                 if is_code {
                     code_files.push(data);
                 }
