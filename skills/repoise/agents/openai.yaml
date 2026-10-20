@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repoise"
+  short_description: "Find repository evidence and keep changes searchable"
+  default_prompt: "Use $repoise to investigate and change this repository, updating relevant documentation and tests."

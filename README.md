@@ -221,6 +221,18 @@ it as `npx --no-install repoise`.
 
 ## Use with an agent
 
+Install the Repoise skill for Claude Code, Codex, Cursor, and other supported
+agents from the repository where you will use it:
+
+```sh
+npx skills@latest add billy-the-ape/repoise
+```
+
+The installer lets you select agents and installation scope. The skill teaches
+bounded CLI/MCP retrieval and how to keep changed code, documentation, and tests
+useful for indexing. It installs guidance; install the Repoise executable and
+configure MCP separately if needed. See [skill setup and updates](docs/agents.md#install-the-agent-skill).
+
 **Terminal access plus AGENTS.md guidance is enough for CLI use.** The client
 does not need Repoise-specific code. The executable must be available to the
 agent, and commands must target its actual checkout. Whether a client loads
