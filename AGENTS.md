@@ -51,6 +51,12 @@ Windows. The local inference embedding preset is evaluated, not shipped; OIDC st
 requires authentication diagnosis.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
+Follow-on planning for the polyglot workspace, CLI automation contracts, external
+agent adapters, real-agent benchmarks and VS Code UI lives in the
+[agent platform roadmap](docs/plans/agent-platform/README.md). Start there for
+implementation order, open questions and per-PR acceptance criteria. This is
+proposed work; no benchmark command or editor extension ships from that plan.
+
 ## Read only the context relevant to the task
 
 | Need                                               | Authoritative starting point                                                                                           |
