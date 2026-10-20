@@ -72,14 +72,22 @@ do not use empty native packages or rename manifests to evade a registry rejecti
    git push origin v<version>
    ```
 
-3. Dispatch **Release preparation and staging** from main with the tag and both options false.
-   Inspect all three platform builds and download/extract `release-bundle`. Compare release.json's
-   SHA with the resolved tag. Verify all seven payloads: macOS `shasum -a 256 -c SHA256SUMS`,
-   Linux `sha256sum -c SHA256SUMS`, or Windows `Get-FileHash -Algorithm SHA256` for each payload.
-4. With all four publishers configured, dispatch the same reviewed tag with `stage_npm` checked.
-   Approve `npm-release` through **Review deployments**. The run rebuilds, verifies its bundle
-   and stages natives first, launcher last, with provenance. Use this run's bundle when reviewing
-   its stages; separate builds are not guaranteed byte-identical. `draft_native` is independent.
+3. Dispatch **Release preparation and staging** from main with the tag,
+   `stage_npm` checked and `draft_native` checked (omit `draft_native` for
+   npm-only work). One dispatch is the normal safe sequence: the run builds
+   on all three platforms, assembles `release-bundle` and then pauses — both
+   privileged jobs require `npm-release` approval in **Review deployments**
+   before they start. Download `release-bundle` from this same run, compare
+   release.json's SHA with the resolved tag, and verify all seven payloads:
+   macOS `shasum -a 256 -c SHA256SUMS`, Linux `sha256sum -c SHA256SUMS`, or
+   Windows `Get-FileHash -Algorithm SHA256` for each payload. Staged and
+   uploaded payloads come from this exact artifact, which the privileged jobs
+   re-validate before any write. Cancelling before approving publishes
+   nothing.
+4. Approve the staging job's `npm-release` review. It stages natives first,
+   launcher last, with provenance. Staging is not publication. The
+   `draft_native` job waits on its own separate approval and creates only an
+   unpublished native release draft.
 
 Prereleases use `next`, stable releases `latest`. The stage's tag is immutable. No workflow
 auto-approves npm stages. A pushed version tag alone never publishes anything.
@@ -94,6 +102,16 @@ npx --yes --package=npm@11.21.0 npm stage view <stage-id> --registry=https://reg
 ```
 
 The npm staged-package page or `npm stage download <stage-id>` allows payload inspection.
+With this run's bundle extracted to `./dist/bundle`, the read-only helper also checks
+that every package has exactly one pending stage at the release version and prints
+the stage IDs in approval order. Run it through the pinned npm (npx sets
+`npm_execpath`, so the helper uses npm 11.21.0, which has the `stage` subcommand),
+with the maintainer's local session:
+
+```sh
+npx --yes --package=npm@11.21.0 -- node scripts/release/verify-registry.mjs stage ./dist/bundle <sha>
+```
+
 Approve **all three native versions first**, one at a time with local 2FA:
 
 ```sh
@@ -107,6 +125,14 @@ npx --yes --package=npm@11.21.0 npm view <native-package>@<version> version dist
 npx --yes --package=npm@11.21.0 npm view <native-package> dist-tags --json --registry=https://registry.npmjs.org/
 ```
 
+After each approval, one read-only pass re-checks every published tarball against
+the reviewed bundle (`dist.shasum`, expected dist-tag and the launcher's exact
+optional pins):
+
+```sh
+node scripts/release/verify-registry.mjs published ./dist/bundle <sha>
+```
+
 Only then approve the launcher stage with the same approval command. Missing optional native
 dependencies can be silently skipped by npm, leaving an installed wrapper without an executable.
 In a fresh temporary consumer on each supported platform:
@@ -116,6 +142,14 @@ npm init -y
 npm install --save-exact --ignore-scripts repoise@<version>
 npx --no-install repoise --version
 npx --no-install repoise --help
+```
+
+On a supported platform, the equivalent automated check installs the pinned
+version in a temporary consumer and verifies version/help, invalid-argument
+failure and optional-binary resolution:
+
+```sh
+node scripts/release/verify-registry.mjs install ./dist/bundle <sha>
 ```
 
 Expect `repoise <version>` and successful help; verify invalid arguments return nonzero.
@@ -158,6 +192,11 @@ tarballs; scripts fail on duplicates rather than guess equivalence.
 | Package name triggered spam detection        | Request [npm support](https://npmjs.com/support) review with account, package/version, source repo, timestamp and redacted log. Keep names/version unchanged pending review. |
 | Auth/OIDC rejection                          | Check maintainer session/2FA or trust fields, hosted runner, main dispatch and environment approval. Do not add bypass tokens.                                               |
 | Native draft/upload failure                  | Follow [native recovery](native.md#recovery); npm state is independent.                                                                                                      |
+
+Staging-job authentication failure (the alpha.1 OIDC ENEEDAUTH remains
+unresolved) is recovered by maintainer-local staging from this run's verified
+bundle, exactly as alpha.1 did; never add bypass tokens or CI direct-publish
+rights.
 
 Support's optional package SHA-512 can be computed with `shasum -a 512 <tarball>`; notices
 truncate integrity values. Normal maintainer `npm publish <tarball> --access public --tag next`

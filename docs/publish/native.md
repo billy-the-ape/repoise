@@ -8,8 +8,10 @@ LICENSE and readiness README; no Node/npm runtime is needed. See the [target mat
 1. Complete version synchronization, checks, review and annotated tagging from the
    [npm preparation procedure](npm.md#prepare-and-stage-a-subsequent-release). npm publication
    itself is not required for native distribution.
-2. Dispatch **Release preparation and staging** from main with `v<version>`, `stage_npm`
-   unchecked for native-only work and `draft_native` checked.
+2. Dispatch **Release preparation and staging** from main with `v<version>`,
+   `stage_npm` unchecked for native-only work and `draft_native` checked (one
+   dispatch may also set `stage_npm`; each gated job waits on its own
+   `npm-release` approval).
 3. After builds/assembly, select **Review deployments**, choose `npm-release`, then
    **Approve and deploy**. This authorizes draft creation/upload only. The native job uses
    `contents: write` and GitHub's automatic `GITHUB_TOKEN`; no stored PAT/npm token is required.

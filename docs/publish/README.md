@@ -54,6 +54,44 @@ Both options false performs validation/build/assembly only — validation runs n
 publish: no npm package is published and no GitHub release is created. `stage_npm`
 explicitly stages the four npm packages through OIDC, and `draft_native` explicitly
 creates an unpublished native release draft. Channels can run independently.
+
+## Happy-path release checklist
+
+One dispatch does the build, assembly and staging; the maintainer's approvals and
+2FA actions finish the release. Details live in the [npm runbook](npm.md) and the
+[native runbook](native.md).
+
+1. Synchronize versions (workspace Cargo.toml, Cargo.lock, root package.json,
+   `npm/repoise/package.json` and its exact optional pins), update
+   CHANGELOG/readiness, run the checks below, merge into main and tag the
+   merged commit `v<version>`. See [npm preparation](npm.md#prepare-and-stage-a-subsequent-release).
+2. Dispatch **Release preparation and staging** from `main` with `tag`,
+   `stage_npm` and `draft_native`. Builds and assembly finish first, then the
+   `stage` and `native-draft` jobs pause in **Review deployments** for separate
+   `npm-release` approvals.
+3. While the run is paused, download `release-bundle` from that same run,
+   compare `release.json`'s SHA with the tag and verify all seven payload
+   checksums. Cancelling before approving publishes nothing.
+4. Approve the staging job. It stages the four npm packages (natives first,
+   launcher last, OIDC provenance); staging publishes nothing.
+5. Approve the three native stages one at a time with 2FA, verify each
+   published version, then approve the launcher stage. Use the read-only
+   `verify-registry` checks in [npm review](npm.md#review-approve-and-verify).
+6. Approve the native-draft job, review the unpublished draft and publish it
+   manually in the editor. See [native releases](native.md).
+7. Verify a fresh pinned registry install on a supported platform; update the
+   status docs, CHANGELOG and this index with verified results.
+
+One dispatch is safe because the bundle is immutable per run: `assemble`
+uploads `release-bundle` before any privileged job starts, the privileged jobs
+only start after `npm-release` approval, and both re-download that same run's
+artifact and re-validate the exact file list, SHA-256 checksums, package order
+and source SHA (`scripts/release/bundle.mjs`) before any registry write or
+upload. The bundle the maintainer inspects while the run is paused is exactly
+the bundle that gets staged and uploaded. The two-dispatch sequence used for
+alpha.1 was a fallback for local staging after the OIDC failure, not a
+workflow requirement.
+
 Tag validation checks synchronized versions/main ancestry and resolves an immutable commit.
 Builds use pinned Rust, Cargo.lock, Node 24 and fixed hosted runner labels. They run formatting,
 release-tool tests, Clippy, Rust tests and packed-consumer smoke on all three platforms.
@@ -87,6 +125,7 @@ detect corruption; independent native signing/attestations remain future work.
 | [publish.mjs](../../scripts/release/publish.mjs)                                                     | Native-first, launcher-last staging                |
 | [github-draft.mjs](../../scripts/release/github-draft.mjs)                                           | Native draft/assets                                |
 | [claim.mjs](../../scripts/release/claim.mjs)                                                         | Pack the nonfunctional ownership bootstrap locally |
+| [verify-registry.mjs](../../scripts/release/verify-registry.mjs)                                    | Read-only staged/published/registry-install checks |
 
 Checks for a reviewed checkout:
 

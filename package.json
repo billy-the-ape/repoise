@@ -8,6 +8,9 @@
     "format:check": "prettier --check \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
     "test": "node --test scripts/release/*.test.mjs scripts/eval/*.test.mjs",
     "release:claim": "node scripts/release/claim.mjs",
+    "release:verify-stage": "node scripts/release/verify-registry.mjs stage",
+    "release:verify-published": "node scripts/release/verify-registry.mjs published",
+    "release:verify-install": "node scripts/release/verify-registry.mjs install",
     "build-sh": "./scripts/build.sh",
     "build-win": "./scripts/build.ps1"
   },
