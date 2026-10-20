@@ -261,6 +261,7 @@ impl EmbeddingProvider for HashProvider {
             model: self.model.clone(),
             dimension: self.dimension,
             profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: repoise_core::embed::InputProfile::RAW,
         }
     }
     fn embed(&self, inputs: &[String]) -> repoise_core::Result<EmbeddingBatch> {

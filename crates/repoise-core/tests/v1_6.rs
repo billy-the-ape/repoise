@@ -537,6 +537,7 @@ impl repoise_core::embed::EmbeddingProvider for RecordingProvider {
             model: self.model.clone(),
             dimension: self.dimension,
             profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: repoise_core::embed::InputProfile::RAW,
         }
     }
 
@@ -614,6 +615,7 @@ fn build_with_embeddings(
         &cache,
         &IndexRequest::default(),
         client,
+        None,
         None,
     )
     .unwrap()

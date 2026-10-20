@@ -832,6 +832,7 @@ fn build_scope_with_scope(
         &IndexRequest::default(),
         session,
         None,
+        None,
     )
     .unwrap();
     assert!(outcome.chunks_total > 0);
@@ -963,7 +964,7 @@ fn embedding_cache_never_reuses_vectors_across_templates_or_profiles() {
         input: text.to_string(),
         input_hash: hash::sha256_hex(text),
     }];
-    let first = embed_chunks(&cache, &raw_session, &raw_work, 1).unwrap();
+    let first = embed_chunks(&cache, &raw_session, &raw_work, 1, None).unwrap();
     assert_eq!(first.stats.embedded, 1);
 
     // Same profile, changed title template: the exact input differs, so the
@@ -975,7 +976,7 @@ fn embedding_cache_never_reuses_vectors_across_templates_or_profiles() {
         input: formatted.clone(),
         input_hash: hash::sha256_hex(&formatted),
     }];
-    let second = embed_chunks(&cache, &raw_session, &formatted_work, 2).unwrap();
+    let second = embed_chunks(&cache, &raw_session, &formatted_work, 2, None).unwrap();
     assert_eq!(
         second.stats.embedded, 1,
         "a template change must miss the cache"
@@ -984,7 +985,7 @@ fn embedding_cache_never_reuses_vectors_across_templates_or_profiles() {
 
     // Same template again: cache hit without a provider call.
     let calls_before = raw.received().len();
-    let third = embed_chunks(&cache, &raw_session, &formatted_work, 3).unwrap();
+    let third = embed_chunks(&cache, &raw_session, &formatted_work, 3, None).unwrap();
     assert_eq!(third.stats.cache_hits, 1);
     assert_eq!(third.stats.embedded, 0);
     assert_eq!(raw.received().len(), calls_before);
@@ -992,7 +993,7 @@ fn embedding_cache_never_reuses_vectors_across_templates_or_profiles() {
     // Same exact input, different profile identity (input profile in the
     // fingerprint): must not compare or reuse vectors.
     let eg2_session = client_of(RecordingProvider::new("v1", 8, eg2));
-    let fourth = embed_chunks(&cache, &eg2_session, &formatted_work, 4).unwrap();
+    let fourth = embed_chunks(&cache, &eg2_session, &formatted_work, 4, None).unwrap();
     assert_eq!(
         fourth.stats.embedded, 1,
         "a different input profile must miss the cache"
@@ -1001,7 +1002,7 @@ fn embedding_cache_never_reuses_vectors_across_templates_or_profiles() {
 
     // And a different model revision with the same template: also a miss.
     let other_session = client_of(RecordingProvider::new("v2", 8, eg2));
-    let fifth = embed_chunks(&cache, &other_session, &formatted_work, 5).unwrap();
+    let fifth = embed_chunks(&cache, &other_session, &formatted_work, 5, None).unwrap();
     assert_eq!(fifth.stats.embedded, 1);
     assert_eq!(fifth.stats.cache_hits, 0);
 }
