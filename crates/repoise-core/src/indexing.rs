@@ -437,11 +437,12 @@ pub fn index(
     if let Some(reporter) = progress {
         reporter.phase_started(IndexPhase::Reconcile, Some(reconcile_total));
     }
-    let mut reconciled = 0u64;
-    for file in &inventory.files {
-        reconciled += 1;
+    for (reconciled, file) in inventory.files.iter().enumerate() {
+        // The loop position is the number of units completed before this one,
+        // honoring the reporter's "units complete" contract (the final line is
+        // rendered by phase_finished after the last file is reconciled).
         if let Some(reporter) = progress {
-            reporter.progress(IndexPhase::Reconcile, reconciled, reconcile_total);
+            reporter.progress(IndexPhase::Reconcile, reconciled as u64, reconcile_total);
         }
         let posix_path = crate::adapter::to_posix(&file.path);
         let is_code = file.role == Role::Code;
@@ -627,6 +628,9 @@ pub fn index(
         &mut reference_rows,
     );
     if let Some(reporter) = progress {
+        // Every inventoried file is reconciled by here; report completion so
+        // the phase's final line reflects it.
+        reporter.progress(IndexPhase::Reconcile, reconcile_total, reconcile_total);
         reporter.phase_finished(IndexPhase::Reconcile);
     }
 

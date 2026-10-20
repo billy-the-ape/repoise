@@ -33,10 +33,13 @@ Cargo crates remain publish=false; this release does not publish to crates.io.
 - Source-build pilot evidence does not substitute for candidate artifact smoke
   or fresh registry-install verification.
 
-## Release procedure
+## Release procedure (historical)
 
 Follow [npm.md](npm.md) and [native.md](native.md), using the reviewed
-0.1.0-alpha.1 commit. Never reuse or move v0.1.0-alpha.0.
+0.1.0-alpha.1 commit. Never reuse or move v0.1.0-alpha.0. The steps below were
+carried out before the October 19, 2026 default-version promotion recorded in
+[alpha-1-status.md](alpha-1-status.md); "do not change latest" applied to the
+initial publication only.
 
 1. Merge the version/readiness PR after CI and review.
 2. Create annotated v0.1.0-alpha.1 at the verified merged commit.

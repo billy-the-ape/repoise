@@ -180,12 +180,12 @@ pub fn inventory(
     let mut entries: Vec<SourceEntry> = Vec::new();
     let mut files: Vec<FileRecord> = Vec::new();
     let mut skips: Vec<SkipDiagnostic> = Vec::new();
-    let mut discovered = 0u64;
-
-    for entry in raw {
-        discovered += 1;
+    for (discovered, entry) in raw.into_iter().enumerate() {
+        // The loop position is the number of units completed before this one,
+        // honoring the reporter's "units complete" contract (the final line is
+        // rendered by phase_finished after the last entry is processed).
         if let Some(reporter) = progress {
-            reporter.progress(IndexPhase::Discovery, discovered, discovery_total);
+            reporter.progress(IndexPhase::Discovery, discovered as u64, discovery_total);
         }
         let decision = policy.decide(&entry.path);
         if !decision.included {
@@ -250,6 +250,9 @@ pub fn inventory(
     }
 
     if let Some(reporter) = progress {
+        // Every enumerated entry is processed by here; report completion so
+        // the phase's final line reflects it.
+        reporter.progress(IndexPhase::Discovery, discovery_total, discovery_total);
         reporter.phase_finished(IndexPhase::Discovery);
     }
     let manifest = SnapshotManifest::build(entries);
