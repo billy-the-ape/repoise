@@ -224,12 +224,7 @@ pub fn pr_hint_from_message(message: &str) -> Vec<u32> {
 /// A validated GitHub commit permalink, only for a validated GitHub remote
 /// and a `git:<40-hex>` revision (never a guessed URL).
 pub fn github_commit_url(remote_identity: &Option<String>, revision: &str) -> Option<String> {
-    let remote = remote_identity.as_deref()?;
-    let (owner, repo) = remote.strip_prefix("github.com/")?.split_once('/')?;
-    let hex = revision.strip_prefix("git:")?;
-    if hex.len() != 40 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
+    let (owner, repo, hex) = crate::search::github_remote_and_sha(remote_identity, revision)?;
     Some(format!("https://github.com/{owner}/{repo}/commit/{hex}"))
 }
 
@@ -816,24 +811,7 @@ fn read_history_row(row: &rusqlite::Row) -> rusqlite::Result<HistoryRow> {
 /// term must match at least one history field (message, revision id,
 /// affected paths, or host metadata).
 pub fn history_fts_match_expression(query: &str) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
-    for term in query.split_whitespace() {
-        if term.is_empty() {
-            continue;
-        }
-        let quoted = format!("\"{}\"", term.replace('"', "\"\""));
-        // Parenthesize each per-term OR group: without them the top-level
-        // AND binds only the last group's first field (e.g. a two-term
-        // query silently became `... OR paths:"t2"` and dropped `t1`).
-        parts.push(format!(
-            "(message :{quoted} OR revision_id :{quoted} OR paths :{quoted} OR host :{quoted})"
-        ));
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" AND "))
-    }
+    crate::search::fts_match_expression_fields(query, &["message", "revision_id", "paths", "host"])
 }
 
 /// Searches the history lane of the current published generation. This is a
@@ -845,13 +823,13 @@ pub fn search_history(
     store: &crate::store::Store,
     request: &HistorySearchRequest,
 ) -> Result<HistorySearchResponse> {
-    let (repo_id, worktree_id, remote_identity) = crate::search::scope_for_search(adapter, mode)?;
-    let conn = store.open()?;
-    let Some(meta) = crate::store::current_generation(&conn, &repo_id, &worktree_id)? else {
-        return Err(Error::IndexState(
-            "no published index for this scope; run `repoise index`".into(),
-        ));
-    };
+    let crate::search::CurrentIndex {
+        conn,
+        repo_id,
+        worktree_id,
+        remote_identity,
+        meta,
+    } = crate::search::open_current_index(adapter, mode, store)?;
     let now = crate::indexing::now_ms();
     // Lane coverage state: an agent must see gaps (horizon, shallow) and
     // enrichment stops even when a query returns zero hits.

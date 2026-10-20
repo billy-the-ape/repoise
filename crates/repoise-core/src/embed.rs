@@ -638,6 +638,12 @@ impl EmbeddingCache {
         CREATE INDEX IF NOT EXISTS idx_embedding_lookup
           ON embedding(input_hash, fingerprint);
     "#;
+    /// Shared upsert for single (`put`) and batch (`put_many`) writes.
+    const UPSERT: &str = "INSERT INTO embedding \
+             (cache_key, input_hash, fingerprint, dimension, model_revision, vector, created_at_ms) \
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+           ON CONFLICT(cache_key) DO UPDATE SET \
+               vector = excluded.vector, model_revision = excluded.model_revision";
 
     /// Opens (creating if needed) the cache database at `path`.
     pub fn open(path: PathBuf) -> Result<Self> {
@@ -737,13 +743,7 @@ impl EmbeddingCache {
         }
         let conn = self.conn()?;
         let tx = conn.unchecked_transaction()?;
-        let mut stmt = tx.prepare(
-            "INSERT INTO embedding \
-                 (cache_key, input_hash, fingerprint, dimension, model_revision, vector, created_at_ms) \
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-              ON CONFLICT(cache_key) DO UPDATE SET \
-                  vector = excluded.vector, model_revision = excluded.model_revision",
-        )?;
+        let mut stmt = tx.prepare(Self::UPSERT)?;
         for (input_hash, vector) in items {
             stmt.execute(params![
                 Self::cache_key(input_hash, fingerprint),
@@ -802,11 +802,7 @@ impl EmbeddingCache {
         let conn = self.conn()?;
         let key = Self::cache_key(input_hash, fingerprint);
         conn.execute(
-            "INSERT INTO embedding \
-                 (cache_key, input_hash, fingerprint, dimension, model_revision, vector, created_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-             ON CONFLICT(cache_key) DO UPDATE SET \
-                 vector = excluded.vector, model_revision = excluded.model_revision",
+            Self::UPSERT,
             params![
                 key,
                 input_hash,
