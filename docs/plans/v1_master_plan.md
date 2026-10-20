@@ -1,7 +1,7 @@
 # Repoise v1 — master implementation plan
 
 Status: v1 engine implemented; 0.1.0-alpha.1 is the first functional preview, now published.
-Progress snapshot: October 16, 2026 (America/Denver); offline docs+code indexing,
+Progress snapshot: October 20, 2026 (America/Denver); offline docs+code indexing,
 search, reads, the opt-in history lane, MCP and watch are implemented and tested;
 hybrid evaluation and the owner-approved live agent pilot remain pending.
 Project: [billy-the-ape/repoise](https://github.com/billy-the-ape/repoise).
@@ -15,8 +15,9 @@ is pilot context, not a dependency of Repoise. At intake the repository containe
 and a Rust .gitignore. It now has the native CLI, tested packaging, the functional
 engine and the published 0.1.0-alpha.0 scaffold. Windows npm name clearance is
 complete (trusted-publisher verification remains); the 0.1.0-alpha.1 functional
-preview is published under npm `next` and as native archives, and npm `latest`
-is still a placeholder. Measured adoption benchmarks are not yet available.
+preview is published as native archives and all four npm packages under both
+`latest` and `next` (promoted October 19, 2026). Measured adoption benchmarks
+are not yet available.
 See the [publishing guides](../publish/README.md), the [alpha execution record](../publish/alpha-0-status.md)
 (historical) and [preview readiness](../publish/alpha-1-readiness.md).
 Read [AGENTS.md](../../AGENTS.md) for repository working rules.

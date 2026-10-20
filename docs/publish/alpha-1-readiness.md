@@ -1,7 +1,8 @@
 # 0.1.0-alpha.1 preview readiness
 
 Status: published on October 15, 2026 under npm `next` and as native prerelease
-archives. See the [execution record](alpha-1-status.md) for checks, checksums,
+archives (the October 19, 2026 promotion also moved npm `latest` to this
+version). See the [execution record](alpha-1-status.md) for checks, checksums,
 manual staging, and remaining limits. This is a functional preview, not stable v1.
 
 ## Included
