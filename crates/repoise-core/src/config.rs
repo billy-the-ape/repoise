@@ -154,6 +154,10 @@ pub struct EmbeddingConfig {
     /// Which chunks are embedded: `docs` (default) or `docs+code`.
     #[serde(default)]
     pub scope: Option<String>,
+    /// Explicit versioned model input profile (e.g. `embeddinggemma-2:1`;
+    /// default `raw:1`). Never inferred from the model name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_profile: Option<String>,
     /// Endpoint URL reference; must be an `env:` reference when present.
     #[serde(default)]
     pub endpoint: Option<String>,
@@ -293,6 +297,8 @@ pub struct EffectiveConfig {
     pub embedding: Option<EmbeddingConfig>,
     /// Which chunks the enabled embedding profile applies to (default docs).
     pub embedding_scope: crate::embed::EmbeddingScope,
+    /// Explicit versioned model input profile (default `raw:1`).
+    pub embedding_input_profile: crate::embed::InputProfile,
     /// Resolved reciprocal-rank-fusion `k` (default 60).
     pub rrf_k: u32,
     /// Resolved history-lane settings (card K5).
@@ -425,6 +431,14 @@ impl EffectiveConfig {
                 .ok_or_else(|| Error::Config(format!("unknown embedding scope: {name}")))?,
             None => crate::embed::EmbeddingScope::Docs,
         };
+        // Explicit versioned model input profile (never inferred from the model).
+        let embedding_input_profile = match embedding
+            .as_ref()
+            .and_then(|settings| settings.input_profile.as_deref())
+        {
+            Some(value) => crate::embed::InputProfile::parse(value)?,
+            None => crate::embed::InputProfile::RAW,
+        };
 
         // Resolve history-lane settings (defaults fill operator gaps).
         let history_settings = history.map(|settings| HistorySettings {
@@ -455,6 +469,7 @@ impl EffectiveConfig {
             cache_dir,
             embedding,
             embedding_scope,
+            embedding_input_profile,
             rrf_k,
             history,
             mcp_refresh,
@@ -598,7 +613,7 @@ impl EffectiveConfig {
         if let Some(settings) = &self.embedding {
             key.push('\n');
             key.push_str(&format!(
-                "embed|{}|{}|{:?}|{}|{}|{}|{}|{}|{}\n",
+                "embed|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}\n",
                 settings.provider.as_deref().unwrap_or(""),
                 settings.model.as_deref().unwrap_or(""),
                 settings.dimensions,
@@ -608,6 +623,7 @@ impl EffectiveConfig {
                 settings.max_retries.unwrap_or(0),
                 settings.max_requests_per_build.unwrap_or(0),
                 settings.max_input_chars_per_build.unwrap_or(0),
+                self.embedding_input_profile.identity()
             ));
         }
         if self.history.enabled {
@@ -686,11 +702,20 @@ pub fn profile_from_config(settings: &EmbeddingConfig) -> Option<crate::embed::E
     if dimension == 0 {
         return None;
     }
+    // An unknown input profile cannot form a profile (lexical-only operation).
+    let input_profile = match settings.input_profile.as_deref() {
+        Some(value) => match crate::embed::InputProfile::parse(value) {
+            Ok(profile) => profile,
+            Err(_) => return None,
+        },
+        None => crate::embed::InputProfile::RAW,
+    };
     Some(crate::embed::EmbeddingProfile {
         provider: provider.to_string(),
         model: model.to_string(),
         dimension,
         profile_version: crate::embed::PROFILE_VERSION,
+        input_profile,
     })
 }
 

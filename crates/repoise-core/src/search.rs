@@ -15,11 +15,19 @@
 //! with an expiry.
 //!
 //! When the served generation stores vectors for one profile, hybrid mode
-//! embeds the query once (provider failure degrades to lexical) and fuses the
-//! lexical rank with an exact cosine rank using reciprocal rank fusion (RRF,
-//! configurable `k`). `--mode lexical` forces the offline baseline (no query
-//! embedding call, no vector candidate scan); `--mode vectors-only` serves
-//! the cosine rank alone.
+//! templates the query with the profile's explicit input profile (the
+//! document-search and code-retrieval templates), embeds the needed
+//! query vector(s) in one provider batch (a missing or failed embedding
+//! degrades to lexical), and fuses the lexical rank with the cosine ranks
+//! using reciprocal rank fusion (RRF, configurable `k`). When the profile
+//! yields a single query space — always true for `raw`, whose query
+//! templates are identity — the stored vectors form one global cosine rank
+//! (the pre-profile behavior); the `embeddinggemma-2` profile's distinct
+//! document-search and code-retrieval vectors each rank their own corpus
+//! (non-code chunks and code chunks respectively). `--mode lexical` forces
+//! the offline baseline (no query embedding call, no vector candidate
+//! scan); `--mode vectors-only` serves the cosine ranks alone, ordered by
+//! cosine across corpora.
 
 use serde::{Deserialize, Serialize};
 
@@ -67,13 +75,41 @@ pub enum SearchMode {
 /// One seam for embedding the query itself (a provider call). A `None`
 /// result, or an error, degrades the search to the lexical baseline.
 pub trait QueryEmbedder {
-    /// Embeds one natural-language query (validated vector or `None`).
-    fn embed_query(&self, query: &str) -> Result<Option<Vec<f32>>>;
+    /// Embeds the given query inputs in one provider batch, in order,
+    /// returning one validated vector (or `None`) per input.
+    fn embed_queries(&self, inputs: &[String]) -> Result<Vec<Option<Vec<f32>>>>;
 
     /// Fingerprint of the embedding space this embedder produces. Search
     /// compares it against the generation's stored profile and degrades to
     /// lexical when the spaces are incompatible.
     fn profile_fingerprint(&self) -> String;
+
+    /// Explicit versioned input profile used to template the query inputs.
+    fn input_profile(&self) -> crate::embed::InputProfile;
+}
+
+/// Which corpus query vector(s) a request needs.
+///
+/// A role filter to code (or to any non-code role) restricts the request to
+/// one corpus, so only the matching query vector is computed; an unfiltered
+/// mixed-corpus request computes both vectors in one provider batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CorpusTarget {
+    /// Document-search vector only.
+    Docs,
+    /// Code-retrieval vector only.
+    Code,
+    /// Both vectors (unfiltered mixed corpus).
+    Mixed,
+}
+
+/// Derives the query-vector target from the request's role filter.
+fn corpus_target(role_filter: Option<Role>) -> CorpusTarget {
+    match role_filter {
+        Some(Role::Code) => CorpusTarget::Code,
+        Some(_) => CorpusTarget::Docs,
+        None => CorpusTarget::Mixed,
+    }
 }
 
 /// Words that mark history/rationale-oriented questions.
@@ -510,30 +546,89 @@ pub fn search(
         })
         .unwrap_or(false)
         && has_vectors;
-    let query_vector: Option<Vec<f32>> = match request.mode {
-        SearchMode::Lexical => None,
+    // Query vectors, per corpus. An unfiltered mixed-corpus request embeds
+    // the document-search and code-retrieval vectors in one provider batch
+    // (a single shared input when the profile's templates agree, as with
+    // raw); a role-filtered request embeds only the relevant one. Any
+    // provider failure, or an invalid vector, degrades that corpus's rank
+    // (with no vector left at all, the search degrades to lexical).
+    let target = corpus_target(request.role_filter);
+    let query_vectors: (Option<Vec<f32>>, Option<Vec<f32>>) = match request.mode {
+        SearchMode::Lexical => (None, None),
         _ if has_vectors && !profile_mismatch => match query_embedder {
-            Some(embedder) => embedder.embed_query(&request.query).ok().flatten(),
-            None => None,
+            Some(embedder) => {
+                let profile = embedder.input_profile();
+                let docs_query = crate::embed::format_docs_query(profile, &request.query);
+                let code_query = crate::embed::format_code_query(profile, &request.query);
+                let mut inputs: Vec<String> = Vec::new();
+                let docs_index = (target != CorpusTarget::Code).then(|| {
+                    inputs.push(docs_query.clone());
+                    inputs.len() - 1
+                });
+                let code_index = (target != CorpusTarget::Docs).then(|| {
+                    if inputs.last() == Some(&code_query) {
+                        // Identity templates (raw): reuse the shared input.
+                        0
+                    } else {
+                        inputs.push(code_query.clone());
+                        inputs.len() - 1
+                    }
+                });
+                let results = embedder.embed_queries(&inputs).unwrap_or_default();
+                (
+                    docs_index.and_then(|index| results.get(index).cloned().flatten()),
+                    code_index.and_then(|index| results.get(index).cloned().flatten()),
+                )
+            }
+            None => (None, None),
         },
-        _ => None,
+        _ => (None, None),
     };
-    let run_mode = match (request.mode, has_vectors, query_vector.is_some()) {
+    let run_mode = match (
+        request.mode,
+        has_vectors,
+        query_vectors.0.is_some() || query_vectors.1.is_some(),
+    ) {
         (SearchMode::Lexical, _, _) => RunMode::Lexical,
         (SearchMode::Hybrid, true, true) => RunMode::Hybrid,
         (SearchMode::VectorsOnly, true, true) => RunMode::Vectors,
         (_, _, _) => RunMode::Lexical,
     };
 
-    // Exact cosine rank over this generation's stored vectors (one profile),
+    // Exact cosine ranks over this generation's stored vectors (one profile),
     // restricted to the requested path/role filters (same semantics as the
-    // lexical query).
-    let mut vector_rank: Vec<(String, f64)> = Vec::new();
-    if let (Some(query_vector), Some(fingerprint)) =
-        (query_vector.as_ref(), meta.vector_profile.as_deref())
+    // lexical query). When the request has one query space — always true
+    // for single-corpus requests and for the raw profile (identity query
+    // templates) — all stored vectors share one global cosine rank (the
+    // pre-profile behavior). A templated profile's distinct vectors rank per
+    // corpus instead, so vectors from different input templates are never
+    // compared against the wrong corpus; a corpus whose query vector failed
+    // validation simply contributes no rank.
+    let single_space = match (&query_vectors.0, &query_vectors.1) {
+        (Some(docs), Some(code)) => docs == code,
+        // Zero or one surviving vector: one query space for a single-corpus
+        // request, or for a raw profile whose templates are identity. A
+        // partially failed mixed request on a templated profile must keep
+        // the per-corpus split, so the surviving vector only ranks its own
+        // corpus.
+        _ => {
+            target != CorpusTarget::Mixed
+                || query_embedder.is_some_and(|embedder| {
+                    matches!(
+                        embedder.input_profile().kind,
+                        crate::embed::InputProfileKind::Raw
+                    )
+                })
+        }
+    };
+    let mut global_rank: Vec<(String, f64)> = Vec::new();
+    let mut docs_rank: Vec<(String, f64)> = Vec::new();
+    let mut code_rank: Vec<(String, f64)> = Vec::new();
+    if (query_vectors.0.is_some() || query_vectors.1.is_some())
+        && let Some(fingerprint) = meta.vector_profile.as_deref()
     {
-        let vectors = if request.path_filter.is_some() || request.role_filter.is_some() {
-            store::vectors_for_generation_filtered(
+        let rows = if request.path_filter.is_some() || request.role_filter.is_some() {
+            store::vectors_for_generation_with_corpus(
                 &conn,
                 meta.generation_id,
                 fingerprint,
@@ -541,14 +636,38 @@ pub fn search(
                 request.role_filter.as_ref().map(|role| role.name()),
             )?
         } else {
-            store::vectors_for_generation(&conn, meta.generation_id, fingerprint)?
+            store::vectors_for_generation_with_corpus(
+                &conn,
+                meta.generation_id,
+                fingerprint,
+                None,
+                None,
+            )?
         };
-        vector_rank = vectors
-            .into_iter()
-            .map(|(chunk_id, vector)| (chunk_id, crate::embed::cosine(query_vector, &vector)))
-            .collect();
-        vector_rank.sort_by(|a, b| b.1.total_cmp(&a.1));
-        vector_rank.truncate(VECTOR_RANK_CAP);
+        for (chunk_id, corpus, vector) in rows {
+            let query = if single_space {
+                query_vectors.0.as_ref().or(query_vectors.1.as_ref())
+            } else if corpus == "code" {
+                query_vectors.1.as_ref()
+            } else {
+                query_vectors.0.as_ref()
+            };
+            let Some(query) = query else {
+                continue;
+            };
+            let score = crate::embed::cosine(query, &vector);
+            if single_space {
+                global_rank.push((chunk_id, score));
+            } else if corpus == "code" {
+                code_rank.push((chunk_id, score));
+            } else {
+                docs_rank.push((chunk_id, score));
+            }
+        }
+    }
+    for rank in [&mut global_rank, &mut docs_rank, &mut code_rank] {
+        rank.sort_by(|a, b| b.1.total_cmp(&a.1));
+        rank.truncate(VECTOR_RANK_CAP);
     }
 
     if matched_any && run_mode != RunMode::Vectors {
@@ -682,7 +801,17 @@ pub fn search(
         .iter()
         .map(|(_, reasons, candidate)| (candidate.chunk_id.as_str(), reasons.clone()))
         .collect();
-    let vector_rank_index: std::collections::HashMap<&str, (usize, f64)> = vector_rank
+    let global_rank_index: std::collections::HashMap<&str, (usize, f64)> = global_rank
+        .iter()
+        .enumerate()
+        .map(|(index, (chunk_id, score))| (chunk_id.as_str(), (index, *score)))
+        .collect();
+    let docs_rank_index: std::collections::HashMap<&str, (usize, f64)> = docs_rank
+        .iter()
+        .enumerate()
+        .map(|(index, (chunk_id, score))| (chunk_id.as_str(), (index, *score)))
+        .collect();
+    let code_rank_index: std::collections::HashMap<&str, (usize, f64)> = code_rank
         .iter()
         .enumerate()
         .map(|(index, (chunk_id, score))| (chunk_id.as_str(), (index, *score)))
@@ -697,8 +826,29 @@ pub fn search(
         }
     }
     if run_mode != RunMode::Lexical {
-        for (rank, (chunk_id, _score)) in vector_rank.iter().enumerate() {
-            *fused.entry(chunk_id.clone()).or_default() += 1.0 / (rrf_k + rank as f64 + 1.0);
+        if run_mode == RunMode::Vectors {
+            // Vectors-only orders by cosine (across corpora when the profile
+            // splits the query space), so cross-corpus position ties never
+            // mask a higher-cosine chunk.
+            for rank in [&global_rank, &docs_rank, &code_rank] {
+                for (chunk_id, score) in rank.iter() {
+                    // Cosine can be negative, so compare against an explicit
+                    // minimum, not the map default; a chunk appears in exactly
+                    // one non-empty rank (the max keeps this safe anyway).
+                    let current = fused
+                        .get(chunk_id.as_str())
+                        .copied()
+                        .unwrap_or(f64::NEG_INFINITY);
+                    fused.insert(chunk_id.clone(), current.max(*score));
+                }
+            }
+        } else {
+            for rank in [&global_rank, &docs_rank, &code_rank] {
+                for (position, (chunk_id, _score)) in rank.iter().enumerate() {
+                    *fused.entry(chunk_id.clone()).or_default() +=
+                        1.0 / (rrf_k + position as f64 + 1.0);
+                }
+            }
         }
     }
     let mut ordered: Vec<(String, f64)> = fused.into_iter().collect();
@@ -749,8 +899,19 @@ pub fn search(
                 if let Some(rank) = lexical_rank.get(&candidate.chunk_id) {
                     parts.push(format!("rrf: lexical rank {}", rank + 1));
                 }
-                if let Some((rank, score)) = vector_rank_index.get(candidate.chunk_id.as_str()) {
-                    parts.push(format!("vector rank {} (cosine {score:.4})", rank + 1));
+                if single_space {
+                    // Single query space: the original global-rank attribution.
+                    if let Some((rank, score)) = global_rank_index.get(candidate.chunk_id.as_str())
+                    {
+                        parts.push(format!("vector rank {} (cosine {score:.4})", rank + 1));
+                    }
+                } else {
+                    if let Some((rank, score)) = docs_rank_index.get(candidate.chunk_id.as_str()) {
+                        parts.push(format!("docs vector rank {} (cosine {score:.4})", rank + 1));
+                    }
+                    if let Some((rank, score)) = code_rank_index.get(candidate.chunk_id.as_str()) {
+                        parts.push(format!("code vector rank {} (cosine {score:.4})", rank + 1));
+                    }
                 }
                 if let Some(reasons) = reasons_by_id.get(candidate.chunk_id.as_str()) {
                     parts.push(reasons.clone());
@@ -761,7 +922,11 @@ pub fn search(
                     parts.join("; ")
                 }
             }
-            RunMode::Vectors => match vector_rank_index.get(candidate.chunk_id.as_str()) {
+            RunMode::Vectors => match global_rank_index
+                .get(candidate.chunk_id.as_str())
+                .or_else(|| code_rank_index.get(candidate.chunk_id.as_str()))
+                .or_else(|| docs_rank_index.get(candidate.chunk_id.as_str()))
+            {
                 Some((_rank, score)) => format!("vector cosine similarity {score:.4}"),
                 None => "vector candidate".to_string(),
             },

@@ -28,6 +28,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::Result;
+use crate::error::Error;
 use crate::hash;
 
 /// Version of the embedding provider protocol (the versioned interface).
@@ -51,22 +52,179 @@ pub struct EmbeddingProfile {
     pub dimension: u32,
     /// Profile/tokenizer contract version.
     pub profile_version: u32,
+    /// Explicit versioned model input profile (template) in use.
+    pub input_profile: InputProfile,
 }
 
 impl EmbeddingProfile {
-    /// Full embedding fingerprint: provider/model revision, dimension and
-    /// profile version. Cache keys and vector collections key on this.
+    /// Full embedding fingerprint: provider/model revision, dimension,
+    /// profile version and input-profile identity. Cache keys and vector
+    /// collections key on this, so vectors produced under different input
+    /// templates are never compared or reused.
     pub fn fingerprint(&self) -> String {
         let key = format!(
-            "emb-v{}|{}|{}|dim={}",
-            self.profile_version, self.provider, self.model, self.dimension
+            "emb-v{}|{}|{}|dim={}|input={}",
+            self.profile_version,
+            self.provider,
+            self.model,
+            self.dimension,
+            self.input_profile.identity()
         );
         hash::sha256_hex(key)
     }
 
     /// Short human-readable name for reports.
     pub fn name(&self) -> String {
-        format!("{}:{} (dim {})", self.provider, self.model, self.dimension)
+        format!(
+            "{}:{} (dim {}, input {})",
+            self.provider,
+            self.model,
+            self.dimension,
+            self.input_profile.identity()
+        )
+    }
+}
+
+/// Kind of a versioned model input profile (input template).
+///
+/// The profile is an explicit operator setting: it is never inferred from
+/// the model name (local serving aliases may vary for the same model).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputProfileKind {
+    /// Pass chunk text and query text through unchanged (the generic
+    /// OpenAI-compatible behavior, the default).
+    #[default]
+    Raw,
+    /// Task/template formatting for the local EmbeddingGemma 2 endpoint
+    /// (ggml-org GGUF serving).
+    EmbeddingGemma2,
+}
+
+/// One explicit, versioned model input profile. The identity folds the
+/// template version in, so a changed template is a different embedding
+/// space and never shares a cache entry or vector collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct InputProfile {
+    /// Template kind.
+    pub kind: InputProfileKind,
+    /// Template version (starting at 1).
+    pub version: u32,
+}
+
+impl InputProfile {
+    /// The pass-through profile (default).
+    pub const RAW: InputProfile = InputProfile {
+        kind: InputProfileKind::Raw,
+        version: 1,
+    };
+
+    /// Parses an explicit profile setting like `raw`, `raw:1` or
+    /// `embeddinggemma-2:1` (a missing version defaults to 1).
+    pub fn parse(value: &str) -> Result<Self> {
+        let (name, version) = value.split_once(':').unwrap_or((value, "1"));
+        let kind = match name {
+            "raw" => InputProfileKind::Raw,
+            "embeddinggemma-2" => InputProfileKind::EmbeddingGemma2,
+            _ => {
+                return Err(Error::Config(format!(
+                    "unknown embedding input profile: {value}"
+                )));
+            }
+        };
+        let version = version
+            .parse::<u32>()
+            .map_err(|_| Error::Config(format!("invalid embedding input profile: {value}")))?;
+        if version == 0 {
+            return Err(Error::Config(format!(
+                "embedding input profile version must be positive: {value}"
+            )));
+        }
+        Ok(Self { kind, version })
+    }
+
+    /// Stable identity string folded into the embedding fingerprint.
+    pub fn identity(&self) -> String {
+        match self.kind {
+            InputProfileKind::Raw => format!("raw:{}", self.version),
+            InputProfileKind::EmbeddingGemma2 => {
+                format!("embeddinggemma-2:{}", self.version)
+            }
+        }
+    }
+}
+
+/// Title for a document corpus chunk's embedding input: the heading when
+/// available, else the file name, else the repository path.
+pub fn docs_chunk_title(heading_path: &str, path: &str) -> String {
+    if !heading_path.is_empty() {
+        return heading_path.to_string();
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// Formatted embedding input for one document chunk.
+///
+/// `raw` keeps the chunk text exactly as stored; `embeddinggemma-2`
+/// uses `title: {title} | text: {content}`.
+pub fn format_docs_input(profile: InputProfile, title: &str, text: &str) -> String {
+    match profile.kind {
+        InputProfileKind::Raw => text.to_string(),
+        InputProfileKind::EmbeddingGemma2 => format!("title: {title} | text: {text}"),
+    }
+}
+
+/// Formatted embedding input for one code chunk.
+///
+/// `raw` keeps the chunk text exactly as stored; `embeddinggemma-2`
+/// uses the file path as title and includes the existing symbol and
+/// context metadata (when available) followed by the code text.
+pub fn format_code_input(
+    profile: InputProfile,
+    path: &str,
+    symbol: &str,
+    context: Option<&str>,
+    text: &str,
+) -> String {
+    match profile.kind {
+        InputProfileKind::Raw => text.to_string(),
+        InputProfileKind::EmbeddingGemma2 => {
+            let mut parts: Vec<String> = Vec::new();
+            if !symbol.is_empty() {
+                parts.push(format!("symbol: {symbol}"));
+            }
+            if let Some(context) = context.filter(|context| !context.is_empty()) {
+                parts.push(format!("context: {context}"));
+            }
+            parts.push(format!("code: {text}"));
+            format!("title: {path} | text: {}", parts.join(" | "))
+        }
+    }
+}
+
+/// Formatted document-search query for one input profile.
+///
+/// `raw` sends the query unchanged; `embeddinggemma-2` uses
+/// `task: search result | query: {query}`.
+pub fn format_docs_query(profile: InputProfile, query: &str) -> String {
+    match profile.kind {
+        InputProfileKind::Raw => query.to_string(),
+        InputProfileKind::EmbeddingGemma2 => format!("task: search result | query: {query}"),
+    }
+}
+
+/// Formatted code-search query for one input profile.
+///
+/// `raw` sends the query unchanged; `embeddinggemma-2` uses
+/// `task: code retrieval | query: {query}`.
+pub fn format_code_query(profile: InputProfile, query: &str) -> String {
+    match profile.kind {
+        InputProfileKind::Raw => query.to_string(),
+        InputProfileKind::EmbeddingGemma2 => format!("task: code retrieval | query: {query}"),
     }
 }
 

@@ -19,6 +19,9 @@ pub struct OpenAiCompatibleProvider {
     api_key: String,
     model: String,
     dimension: u32,
+    /// Explicit versioned model input profile (template) the operator
+    /// selected for this endpoint.
+    input_profile: repoise_core::embed::InputProfile,
     timeout: Duration,
 }
 
@@ -56,6 +59,7 @@ impl OpenAiCompatibleProvider {
         api_key: &str,
         model: &str,
         dimension: u32,
+        input_profile: repoise_core::embed::InputProfile,
         timeout: Duration,
     ) -> Result<Self> {
         let endpoint = endpoint.trim().trim_end_matches('/').to_string();
@@ -69,6 +73,7 @@ impl OpenAiCompatibleProvider {
             api_key: api_key.to_string(),
             model: model.to_string(),
             dimension,
+            input_profile,
             timeout,
         })
     }
@@ -89,6 +94,7 @@ impl EmbeddingProvider for OpenAiCompatibleProvider {
             model: self.model.clone(),
             dimension: self.dimension,
             profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: self.input_profile,
         }
     }
 

@@ -90,13 +90,85 @@ never stored in Git). See [storage.md](storage.md) for the persistent index layo
 the effective config has a complete profile: `embedding.provider`, `model`,
 `dimensions`, `endpoint` (must be an `env:` reference) and `apiKeyEnv`. Endpoint and
 API-key values resolve from the referenced environment variables at runtime and never
-enter config or caches; missing values degrade to the lexical baseline with an
-explicit note. Budgets (`batchSize`, `timeoutMs`, `maxRetries`,
-`maxRequestsPerBuild`, `maxInputCharsPerBuild`) and `search.rrfK` are configurable.
-The HTTPS transport is built into the CLI behind the default `remote-embedding`
-feature; `cargo check -p repoise-cli --no-default-features` produces the lexical-only
-binary. `doctor` additionally warns (without failing) when `endpoint` resolves to a
-non-TLS `http://` remote host: source text and the API key would travel in cleartext.
+enter config or caches; missing values, timeouts, partial batches and invalid responses
+degrade to the lexical baseline with an explicit note. Budgets (`batchSize`,
+`timeoutMs`, `maxRetries`, `maxRequestsPerBuild`, `maxInputCharsPerBuild`) and
+`search.rrfK` are configurable. The HTTPS transport is built into the CLI behind the
+default `remote-embedding` feature; `cargo check -p repoise-cli --no-default-features`
+produces the lexical-only binary. `doctor` additionally warns (without failing) when
+`endpoint` resolves to a non-TLS `http://` remote host: source text and the API key
+would travel in cleartext.
+
+### Model input profiles
+
+`embedding.inputProfile` selects the explicit, versioned input template for the
+selected endpoint: `raw` (default — chunk and query text pass through unchanged, the
+generic OpenAI-compatible behavior) or `embeddinggemma-2` (task/template formatting
+for the local Google EmbeddingGemma 2 endpoint served by llama.cpp). A template
+version can be pinned explicitly (`raw:2`, `embeddinggemma-2:1`); the profile is
+never inferred from the model name, because local serving aliases may vary.
+
+With `embeddinggemma-2` the exact inputs are:
+
+- Document chunks: `title: {title} | text: {content}`, where the title is the
+  heading when available, else the file name, else the repository path.
+- Code chunks: `title: {path} | text: symbol: {symbol} | context: {context} | code: {content}`,
+  including the existing symbol and context metadata only where available.
+- Document-search queries: `task: search result | query: {query}`.
+- Code-search queries: `task: code retrieval | query: {query}`.
+
+For an unfiltered hybrid query both query vectors are produced in one provider batch:
+the document-search vector ranks non-code chunks and the code-retrieval vector ranks
+code chunks, and the two corpus-scoped cosine ranks are each fused with the lexical
+rank using the standard RRF approach. A request filtered to one corpus computes only
+the relevant query vector. The input-profile identity is folded into the embedding
+fingerprint and the embedding-cache key is the exact formatted input, so changing the
+title/context formatting or the profile never reuses or compares vectors produced
+under a different template. The initial EmbeddingGemma 2 support uses 768 dimensions;
+output-dimension truncation is not claimed because the serving adapter must return
+and normalize the selected dimension correctly. Code chunks are embedded only when
+`embedding.scope` is `all` (docs and code).
+
+### Local EmbeddingGemma 2 endpoint (llama.cpp)
+
+EmbeddingGemma 2 ships as a GGUF embedding model; serve it with llama.cpp's
+`llama-server` in OpenAI-compatible mode. Download the 2B instruct GGUF (Q8_0) from
+the [ggml-org EmbeddingGemma-2b-it-GGUF model card](https://huggingface.co/ggml-org/EmbeddingGemma-2b-it-GGUF),
+then start a local endpoint (768 dimensions, no API key required locally — a
+placeholder value still satisfies the transport's header):
+
+```sh
+llama-server \
+  --model /path/to/EmbeddingGemma-2b-it-Q8_0.gguf \
+  --embedding \
+  --port 8080
+export EMBEDDING_ENDPOINT=http://127.0.0.1:8080
+export EMBEDDING_API_KEY=local
+```
+
+Point the repo config at the endpoint with the explicit input profile:
+
+```json
+{
+  "schemaVersion": 1,
+  "embedding": {
+    "provider": "openai-compatible",
+    "scope": "all",
+    "inputProfile": "embeddinggemma-2:1",
+    "endpoint": "env:EMBEDDING_ENDPOINT",
+    "model": "EmbeddingGemma-2b-it",
+    "dimensions": 768,
+    "apiKeyEnv": "EMBEDDING_API_KEY"
+  }
+}
+```
+
+Manual smoke procedure: with the endpoint running, run `repoise index`, then
+`repoise status` (vector coverage should report every in-scope chunk vectorized),
+then `repoise search --mode hybrid "how do I configure the indexer"` — hybrid results
+carry RRF explanations attributing lexical and corpus-scoped vector ranks. A stopped
+endpoint degrades the same search to the lexical baseline (the response reports
+`lexical`) without failing.
 
 ## Optional history lane
 
