@@ -19,9 +19,10 @@ store location; `index` reports `files_family_reused`/`chunks_family_reused`
 (JSON and human output). No new environment variables, secrets, or migration
 steps are required; existing caches keep working (legacy checkout-local
 embedding caches are re-embedded on the next embedding build, not migrated).
-Worktree-scoped `purge` never touches the family store; `purge --all` removes
-`families/` only when the family store lives under the explicitly selected
-cache root. Independent clones, plain directories, and opted-out worktrees
+Worktree-scoped `purge` removes only that scope's member registration under the
+family store's `members/` directory (sibling shared data untouched); `purge --all`
+removes `families/` only when the family store lives under the explicitly
+selected cache root. Independent clones, plain directories, and opted-out worktrees
 remain isolated. See [storage.md](docs/storage.md#cross-worktree-reuse-family-store)
 and [agents.md](docs/agents.md#linked-worktrees).
 

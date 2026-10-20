@@ -64,15 +64,26 @@ Invariants specific to the family store:
   spellings of the same checkout-local cache root — symlinked prefixes,
   Windows short paths, `..` components — select the same family store as
   the checkout's siblings.
-- Family GC runs only when a member-registered store is healthy; it retains
-  entries referenced by any member's retained generations and removes the rest,
-  with a bounded sweep (oldest artifacts first, capped per run). Members whose
-  index database is gone (worktree removed) are skipped, so their retained
-  entries stay until a later sweep can prove them unreferenced.
-- Worktree-scoped `purge` never touches the family store; `purge --all` removes
-  everything under the selected cache root, including `families/` when the
-  family store lives under an explicit cache root, but never the
-  common-directory default store and never Git metadata.
+- Family GC runs only when a member-registered store is healthy. It collects
+  the embedding keys referenced by each registered member's retained
+  generations and reclaims unreferenced entries once they are older than the
+  1-hour grace window (`GC_GRACE_MS`); entries created within the window are
+  never reclaimed, so an in-flight sibling build cannot lose vectors it is
+  about to reference. A member whose index database is gone (purged or removed
+  worktree) contributes no references, so its older unreferenced vectors are
+  reclaimed; when such a worktree returns, the next embedding build
+  re-embeds them, and its already-published generation stays valid (vectors
+  are stored in the scope index as well as the shared cache). If an existing member
+  database cannot be opened, or member data is malformed, the sweep is skipped
+  entirely (fail closed). Parse artifacts additionally have an explicit
+  per-run cap (`MAX_PARSE_ARTIFACTS`, oldest first); embedding reclamation has
+  no per-run cap but is bounded by the live members' retained generations and
+  the grace window.
+- Worktree-scoped `purge` removes only that scope's member registration under
+  the family store's `members/` directory (sibling shared data is untouched);
+  `purge --all` removes everything under the selected cache root, including
+  `families/` when the family store lives under an explicit cache root, but
+  never the common-directory default store and never Git metadata.
 - Read-only operations (search, read, status, read-only MCP) never create or
   migrate family-store data.
 
@@ -107,8 +118,10 @@ Invariants:
   the opt-in history lane; the v5 upgrade adds the `generation.history_meta`
   persisted lane-coverage summary column.
 - Shared embedding-cache entries are reference-counted against the retained worktree
-  generations of the repository scope after each publication; unreferenced entries are
-  reclaimed, so a failed or superseded embedding job never serves a vector.
+  generations of the repository scope after each publication; unreferenced entries
+  older than the grace window are reclaimed (recent entries are retained, so an
+  in-flight build cannot lose vectors it is about to reference), so a failed or
+  superseded embedding job never serves a vector.
 - Retention keeps the current generation plus the previous one; older rows are deleted
   in the same scope after each successful publish.
 - Chunk ids bind scope, parser version, path, structural address and text hash, so

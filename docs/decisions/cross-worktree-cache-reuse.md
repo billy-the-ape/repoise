@@ -75,13 +75,18 @@ concurrency case).
   is serialized by SQLite (WAL), never copied live.
 - GC is driven by member registration: one JSON file per live worktree
   scope records its index database; the family sweep collects embedding keys
-  referenced by each member's retained generations and deletes the rest,
-  bounded per run. Members with an inaccessible database are skipped, so
-  temporarily missing worktrees never lose retained data (conservative
-  retention; sweep is bounded so growth stays controlled).
-- Worktree-scoped purge never touches the family store; `purge --all`
-  removes everything under the selected cache root, including `families/`
-  only when that is where the store lives. Deletion is limited to
+  referenced by each member's retained generations and reclaims the rest
+  once past the 1-hour grace window (recent entries are never reclaimed,
+  protecting in-flight sibling builds). A member whose database is gone
+  contributes no references (bounded retention); an existing database that
+  cannot be opened, or malformed member data, fails the sweep closed
+  (conservative retention). Parse artifacts are additionally capped per run;
+  embedding reclamation is not capped but is bounded by the live members'
+  retained generations plus the grace window.
+- Worktree-scoped purge removes only that scope's member registration under
+  the family store's `members/` directory (sibling shared data untouched);
+  `purge --all` removes everything under the selected cache root, including
+  `families/` only when that is where the store lives. Deletion is limited to
   Repoise-owned paths (validated scope ids, no `..`, no symlink-following
   escapes into Git metadata).
 - A failed build never leaves a publishable partial destination generation

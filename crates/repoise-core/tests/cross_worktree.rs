@@ -163,6 +163,7 @@ fn build(
         &IndexRequest::default(),
         session,
         None,
+        None,
     )
     .unwrap()
 }
@@ -240,6 +241,7 @@ impl EmbeddingProvider for HashProvider {
             model: self.model.clone(),
             dimension: self.dimension,
             profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: repoise_core::embed::InputProfile::RAW,
         }
     }
 
@@ -284,6 +286,7 @@ fn fingerprint_for(model: &str) -> String {
         model: model.to_string(),
         dimension: 8,
         profile_version: repoise_core::embed::PROFILE_VERSION,
+        input_profile: repoise_core::embed::InputProfile::RAW,
     }
     .fingerprint()
 }
@@ -786,6 +789,7 @@ fn scope_separation_clones_plain_dirs_submodules() {
         &plain_cache,
         &IndexRequest::default(),
         Some(&client("v1")),
+        None,
         None,
     )
     .unwrap();
