@@ -377,9 +377,50 @@ pub fn scope_for_search(
     Ok((record.repo_id, worktree, remote_identity))
 }
 
-/// Builds the FTS5 MATCH expression: every whitespace term must match at
-/// least one field; terms are quoted with doubled inner quotes.
-pub fn fts_match_expression(query: &str) -> Option<String> {
+/// Error message when the declared scope has no published generation yet.
+pub const NO_INDEX_MESSAGE: &str = "no published index for this scope; run `repoise index`";
+
+/// The declared scope plus an open store and its current published
+/// generation: the shared preamble of every lane entry point (search,
+/// history, read, related).
+pub struct CurrentIndex {
+    /// Open store connection.
+    pub conn: rusqlite::Connection,
+    /// Repository scope id.
+    pub repo_id: String,
+    /// Worktree scope id.
+    pub worktree_id: String,
+    /// Sanitized remote identity, when the adapter has one.
+    pub remote_identity: Option<String>,
+    /// Current published generation.
+    pub meta: crate::store::GenerationMeta,
+}
+
+/// Resolves the declared scope, opens the store, and loads the current
+/// published generation. A missing generation is an actionable error, not a
+/// silent empty result.
+pub fn open_current_index(
+    adapter: &dyn crate::adapter::SourceAdapter,
+    mode: SnapshotMode,
+    store: &Store,
+) -> Result<CurrentIndex> {
+    let (repo_id, worktree_id, remote_identity) = scope_for_search(adapter, mode)?;
+    let conn = store.open()?;
+    let meta = crate::store::current_generation(&conn, &repo_id, &worktree_id)?
+        .ok_or_else(|| Error::IndexState(NO_INDEX_MESSAGE.to_string()))?;
+    Ok(CurrentIndex {
+        conn,
+        repo_id,
+        worktree_id,
+        remote_identity,
+        meta,
+    })
+}
+
+/// Builds an FTS5 MATCH expression over the named fields: every whitespace
+/// term must match at least one field; terms are quoted with doubled inner
+/// quotes.
+pub fn fts_match_expression_fields(query: &str, fields: &[&str]) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for term in query.split_whitespace() {
         if term.is_empty() {
@@ -390,15 +431,23 @@ pub fn fts_match_expression(query: &str) -> Option<String> {
         // AND binds only the last group's first field (FTS5 precedence:
         // AND binds tighter than OR), silently relaxing the query to a
         // mostly-OR match.
-        parts.push(format!(
-            "(path :{quoted} OR heading :{quoted} OR symbol :{quoted} OR body :{quoted})"
-        ));
+        let group = fields
+            .iter()
+            .map(|field| format!("{field} :{quoted}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        parts.push(format!("({group})"));
     }
     if parts.is_empty() {
         None
     } else {
         Some(parts.join(" AND "))
     }
+}
+
+/// Builds the chunk-lane FTS5 MATCH expression (path, heading, symbol, body).
+pub fn fts_match_expression(query: &str) -> Option<String> {
+    fts_match_expression_fields(query, &["path", "heading", "symbol", "body"])
 }
 
 /// One FTS candidate row before ranking.
@@ -449,6 +498,21 @@ pub fn excerpt(text: &str, terms: &[String]) -> String {
     out
 }
 
+/// Validates that the remote is a GitHub repo and the revision a
+/// `git:<40-hex>` SHA, returning (owner, repo, sha). Never guessed.
+pub fn github_remote_and_sha<'a>(
+    remote_identity: &'a Option<String>,
+    revision: &'a str,
+) -> Option<(&'a str, &'a str, &'a str)> {
+    let remote = remote_identity.as_deref()?;
+    let (owner, repo) = remote.strip_prefix("github.com/")?.split_once('/')?;
+    let hex = revision.strip_prefix("git:")?;
+    if hex.len() != 40 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((owner, repo, hex))
+}
+
 /// A validated GitHub permalink for a result, when the remote and revision
 /// make one safe to construct.
 pub fn github_url(
@@ -458,13 +522,8 @@ pub fn github_url(
     line_start: u32,
     line_end: u32,
 ) -> Option<String> {
-    let remote = remote_identity.as_deref()?;
-    let (owner, repo) = remote.strip_prefix("github.com/")?.split_once('/')?;
     let revision = revision.as_deref()?;
-    let hex = revision.strip_prefix("git:")?;
-    if hex.len() != 40 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
+    let (owner, repo, hex) = github_remote_and_sha(remote_identity, revision)?;
     Some(format!(
         "https://github.com/{owner}/{repo}/blob/{hex}/{path}#L{line_start}-L{line_end}"
     ))
@@ -500,13 +559,13 @@ pub fn search(
     request: &SearchRequest,
     query_embedder: Option<&dyn QueryEmbedder>,
 ) -> Result<SearchResponse> {
-    let (repo_id, worktree_id, remote_identity) = scope_for_search(adapter, mode)?;
-    let conn = store.open()?;
-    let Some(meta) = store::current_generation(&conn, &repo_id, &worktree_id)? else {
-        return Err(Error::IndexState(
-            "no published index for this scope; run `repoise index`".into(),
-        ));
-    };
+    let CurrentIndex {
+        conn,
+        repo_id,
+        worktree_id,
+        remote_identity,
+        meta,
+    } = open_current_index(adapter, mode, store)?;
     let now = crate::indexing::now_ms();
     let filters = format!(
         "{:?}|{:?}|{:?}|{:?}|{:?}",

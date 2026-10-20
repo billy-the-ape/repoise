@@ -17,8 +17,8 @@ use rusqlite::OptionalExtension;
 use crate::Result;
 use crate::adapter::SnapshotMode;
 use crate::error::Error;
-use crate::search::{ScopeView, estimate_tokens, github_url, scope_for_search};
-use crate::store::{self, Store};
+use crate::search::{ScopeView, estimate_tokens, github_url};
+use crate::store::Store;
 
 /// Related-response schema version.
 pub const RESPONSE_SCHEMA_VERSION: u32 = 1;
@@ -169,13 +169,13 @@ pub fn related(
     store: &Store,
     request: &RelatedRequest,
 ) -> Result<RelatedResponse> {
-    let (repo_id, worktree_id, remote_identity) = scope_for_search(adapter, mode)?;
-    let conn = store.open()?;
-    let Some(meta) = store::current_generation(&conn, &repo_id, &worktree_id)? else {
-        return Err(Error::IndexState(
-            "no published index for this scope; run `repoise index`".into(),
-        ));
-    };
+    let crate::search::CurrentIndex {
+        conn,
+        repo_id,
+        worktree_id,
+        remote_identity,
+        meta,
+    } = crate::search::open_current_index(adapter, mode, store)?;
     let gen_id = meta.generation_id;
 
     // The source chunk (current generation only).
