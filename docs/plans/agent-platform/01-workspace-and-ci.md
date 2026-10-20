@@ -159,7 +159,8 @@ substituting an unreviewed build system.
 
 ## Implementation record (2026-10-20)
 
-Implemented as one reviewable PR against `main`. Pinned versions: pnpm 12.3.4
+Implemented as one reviewable PR against `main`
+([#36](https://github.com/billy-the-ape/repoise/pull/36)). Pinned versions: pnpm 12.3.4
 (root `packageManager`, Corepack-managed), Turborepo 2.11.9 and Prettier 3.9.9
 as root dev dependencies, Node 24 in CI; Rust stays pinned at 1.99.0.
 

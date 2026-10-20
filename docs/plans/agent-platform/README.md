@@ -44,7 +44,7 @@ reviewable scope, retaining the same interfaces and acceptance requirements.
 
 | ID    | Plan                                                        | Depends on                              | Intended result                                                                   | Status                          |
 | ----- | ----------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------- |
-| AP-01 | [Workspace and CI](01-workspace-and-ci.md)                  | This plan                               | Incremental Cargo + pnpm/Turbo workspace, affected checks, packaging preservation | Implemented (2026-10-20)        |
+| AP-01 | [Workspace and CI](01-workspace-and-ci.md)                  | This plan                               | Incremental Cargo + pnpm/Turbo workspace, affected checks, packaging preservation | Implemented (2026-10-20, [#36](https://github.com/billy-the-ape/repoise/pull/36))        |
 | AP-02 | [CLI automation contracts](02-cli-contracts.md)             | AP-01                                   | Versioned events, capabilities, progress and cancellation for automation/UI       | Proposed                       |
 | AP-03 | [Agent adapter protocol](03-agent-adapters.md)              | AP-01, AP-02                            | External runner protocol, conformance fixtures and first Cline adapter            | Proposed                       |
 | AP-04 | [Benchmark execution](04-benchmark-runner.md)               | AP-02, AP-03                            | Isolated trials and verified retrieval conditions with budgets/artifacts          | Proposed                       |
