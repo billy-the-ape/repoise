@@ -33,7 +33,7 @@ export function parseNameStatusZ(output) {
   let index = 0;
   while (index < tokens.length) {
     const status = tokens[index++];
-    if (!/^[ACMRUD][0-9]*$/.test(status)) {
+    if (!/^[ACDMRTU][0-9]*$/.test(status)) {
       throw new Error(`Unrecognized diff status: ${JSON.stringify(status)}`);
     }
     const oldPath = tokens[index++];

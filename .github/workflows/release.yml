@@ -56,8 +56,16 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
+      # Lifecycle scripts must run so pnpm 12's postinstall swaps the
+      # shebang-less placeholder bin for the native binary (see the CI
+      # check jobs); runs outside the checkout so the root .npmrc
+      # ignore-scripts setting cannot apply.
       - name: Install pinned pnpm
-        run: npm install --global pnpm@12.3.4 --ignore-scripts
+        working-directory: ${{ runner.temp }}
+        run: npm install --global pnpm@12.3.4
+      - name: Verify pnpm provisioning
+        shell: bash
+        run: test "$(pnpm --version)" = "12.3.4"
       - run: rustup show
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm run format:check

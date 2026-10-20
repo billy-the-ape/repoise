@@ -31,6 +31,7 @@ test("parses NUL name-status output including renames and spaces", () => {
     "M\0crates/repoise-core/src/a.rs",
     "A\0new dir/file with spaces.js",
     "D\0gone/doc.md",
+    "T\0links/README.md",
     "R100\0old name.rs\0new name.rs",
     "C066\0src/orig.ts\0src/copy.ts",
     "",
@@ -48,10 +49,21 @@ test("parses NUL name-status output including renames and spaces", () => {
       newPath: "new dir/file with spaces.js",
     },
     { status: "D", oldPath: "gone/doc.md", newPath: "gone/doc.md" },
+    { status: "T", oldPath: "links/README.md", newPath: "links/README.md" },
     { status: "R", oldPath: "old name.rs", newPath: "new name.rs" },
     { status: "C", oldPath: "src/orig.ts", newPath: "src/copy.ts" },
   ]);
   assert.throws(() => parseNameStatusZ("X\0broken\0"));
+});
+
+test("type changes classify like modifications", () => {
+  const result = classifyPaths(
+    [entry("T", "crates/repoise-core/src/main.rs")],
+    map,
+  );
+  assert.equal(result.full, false);
+  assert.deepEqual(result.jobs, ["check"]);
+  assert.deepEqual([...result.components.keys()], ["core"]);
 });
 
 test("core changes select only the Check jobs", () => {

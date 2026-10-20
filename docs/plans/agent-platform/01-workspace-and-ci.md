@@ -189,9 +189,10 @@ Shipped changes:
   `check`/`docs` job groups; reserved adapter/extension homes and the
   `root` component default to broad checks until their packages ship.
 - `scripts/ci/select-checks.mjs` — PR merge-base diff via `git diff -z
-  --name-status` (rename/copy and delete entries, paths with spaces),
-  component classification, `GITHUB_OUTPUT` (`ok`, `run_check`, `run_docs`,
-  `components`, `reason`). Empty diffs, unknown paths, missing merge bases
+  --name-status` (rename/copy/delete/type-change entries, paths with
+  spaces), component classification, `GITHUB_OUTPUT` (`ok`, `run_check`,
+  `run_docs`, `components`, `reason`). Type changes (`T`) classify like
+  modifications. Empty diffs, unknown paths, missing merge bases
   and any script failure select the full suite; failures also exit nonzero.
 - `scripts/ci/gate.mjs` — stable aggregate gate: a skipped selection means
   the full suite was required; a selection error fails the gate (the full
@@ -203,11 +204,16 @@ Shipped changes:
   `if:` can read the selection outputs) and is guarded by a quoted
   `!cancelled() &&` expression so superseded runs under `cancel-in-progress`
   do not start macOS/Windows runners; `CI gate` keeps `always()`. Every job
-  that uses pnpm installs it with `npm install --global pnpm@12.3.4
-  --ignore-scripts` after `setup-node` (npm's standard global shim generation
-  works on Linux, macOS and Windows; the earlier `pnpm/action-setup@v4` shims
-  broke with pnpm 12 on the hosted Windows runner, and `setup-node` therefore
-  does not use its pnpm store cache). Frozen
+  that uses pnpm installs it with `npm install --global pnpm@12.3.4`
+  (lifecycle scripts enabled, run from `runner.temp` outside the checkout)
+  after `setup-node`: pnpm 12's postinstall swaps the shebang-less
+  placeholder bin for the native `@pnpm/exe` binary, and a follow-up step
+  asserts `pnpm --version` equals the pinned version so a broken or no-op
+  shim can never report green. Skipping scripts was tried first and failed:
+  the placeholder is unrunnable under direct `execve` (Turbo's task spawn;
+  `Exec format error` on Linux) and a silent exit-0 no-op on Windows, while
+  `pnpm/action-setup@v4` shims broke with pnpm 12 on Windows. `setup-node`
+  uses no pnpm store cache. Frozen
   `pnpm install`, Turbo for format, tests and the per-platform native bridge
   tasks, and separate `actions/cache` entries for `target` and `~/.cargo`
   keyed by OS/arch/`Cargo.lock` (Turbo caches no native task outputs).
@@ -227,7 +233,7 @@ Shipped changes:
 
 Validated locally (Linux x86_64, Node 24, pnpm 12.3.4, pinned Rust 1.99):
 fresh frozen `pnpm install`; `pnpm run format`, `pnpm run format:check`,
-`pnpm test` (55 tests, 14 new); Turbo dry-run proving root tasks execute and
+`pnpm test` (56 tests, 15 new); Turbo dry-run proving root tasks execute and
 native bridge tasks are declared with caching disabled and full Rust input
 coverage; live selection runs against repository history (multi-component,
 empty-diff and missing-base behavior); `pnpm run release:claim` proving the
@@ -244,8 +250,10 @@ Deferred / not shipped with this PR:
   workflow change is required for it).
 - Live GitHub PR runs demonstrating skipped vs executed jobs; selection and
   gate semantics are covered by the unit/E2E tests above.
-- Live confirmation of the `npm install --global pnpm@12.3.4` provisioning
-  path on the hosted Windows runner (the `pnpm/action-setup@v4` shim failure
-  was observed in the Windows CI run; the npm-global replacement is verified
-  locally on Linux and uses npm's own standard shim generation).
+- Live confirmation of the scripts-enabled `npm install --global
+  pnpm@12.3.4` provisioning path on the hosted Linux and Windows runners
+  (earlier attempts observed the `pnpm/action-setup@v4` shim failure and,
+  with scripts skipped, Turbo's `Exec format error` on Linux and silent
+  exit-0 pnpm no-ops on Windows; the current install is verified locally on
+  Linux via a raw-`execve` run of `pnpm exec turbo`).
 - Hybrid evaluation and the AP-02–AP-07 scope.

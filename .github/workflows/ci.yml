@@ -56,12 +56,19 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      # Provision pnpm through npm's standard global shim generation, which
-      # works on Linux, macOS and Windows (pnpm/action-setup@v4 shims break
-      # with pnpm 12 on Windows). The version must match the root
-      # packageManager pin.
+      # Provision pnpm with lifecycle scripts enabled: pnpm 12's postinstall
+      # swaps the shebang-less placeholder bin for the native @pnpm/exe
+      # binary. Skipping scripts leaves a stub that shells tolerate but
+      # direct exec (e.g. Turbo spawning task commands) cannot run, and on
+      # Windows the stub is a silent no-op. Runs outside the checkout so the
+      # root .npmrc ignore-scripts setting cannot apply. The version must
+      # match the root packageManager pin.
       - name: Install pinned pnpm
-        run: npm install --global pnpm@12.3.4 --ignore-scripts
+        working-directory: ${{ runner.temp }}
+        run: npm install --global pnpm@12.3.4
+      - name: Verify pnpm provisioning
+        shell: bash
+        run: test "$(pnpm --version)" = "12.3.4"
       - name: Frozen pnpm install
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: JS/TS format check
@@ -152,7 +159,11 @@ jobs:
           node-version: "24"
           package-manager-cache: false
       - name: Install pinned pnpm
-        run: npm install --global pnpm@12.3.4 --ignore-scripts
+        working-directory: ${{ runner.temp }}
+        run: npm install --global pnpm@12.3.4
+      - name: Verify pnpm provisioning
+        shell: bash
+        run: test "$(pnpm --version)" = "12.3.4"
       - name: Frozen pnpm install
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Documentation and tooling format check
