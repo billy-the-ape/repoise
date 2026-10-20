@@ -59,10 +59,13 @@ do not use empty native packages or rename manifests to evade a registry rejecti
 
 ## Prepare and stage a subsequent release
 
-1. Update workspace Cargo.toml, Cargo.lock workspace entries, root package.json/pnpm-lock.yaml,
-   `npm/repoise/package.json` and its exact optional dependency versions together. Native
-   manifests are generated from the version. Update CHANGELOG/readiness; review dependencies,
-   licenses and target support. Run [release checks](README.md#workflow-and-validation), get
+1. Update workspace Cargo.toml, Cargo.lock workspace entries, root package.json,
+   `npm/repoise/package.json` and its exact optional dependency versions together. The
+   launcher stays outside the pnpm workspace, so `pnpm-lock.yaml` tracks only root
+   development dependencies and needs no bump-time update (a bump PR's frozen CI
+   install must never resolve the not-yet-published platform packages). Native
+   manifests are generated from the version. Update CHANGELOG/readiness; review
+   dependencies, licenses and target support. Run [release checks](README.md#workflow-and-validation), get
    PR review/CI and merge into main.
 2. From an up-to-date local checkout, tag the verified merged commit. Substitute version/SHA:
 

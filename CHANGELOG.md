@@ -4,7 +4,7 @@
 
 ### Workspace and CI foundation (AP-01)
 
-The development tooling became a Cargo + pnpm workspace. pnpm 12.3.4 is pinned by the root `packageManager` field; the committed `pnpm-lock.yaml` replaces `package-lock.json` for development installs (`pnpm install --frozen-lockfile --ignore-scripts`). Turborepo 2.11.9 declares the root development tasks (`format`, `format:check`, `test`) and single per-platform native bridge tasks (`check:native`, `build:native` and their `:windows` variants) with output caching disabled; Cargo remains authoritative for Rust and keeps working without Node.
+The development tooling became a Cargo + pnpm workspace. pnpm 12.3.4 is pinned by the root `packageManager` field; the committed `pnpm-lock.yaml` replaces `package-lock.json` for development installs (`pnpm install --frozen-lockfile --ignore-scripts`). Turborepo 2.11.9 declares the root development tasks (`format`, `format:check`, `test`) and single per-platform native bridge tasks (`check:native`, `build:native` and their `:windows` variants) with output caching disabled; Cargo remains authoritative for Rust and keeps working without Node. The published launcher stays outside the pnpm workspace, so root frozen installs never resolve its optional platform-package pins; CI jobs provision the pinned pnpm through npm's standard global install on all three runner platforms.
 
 CI now selects affected check sets for pull requests through `scripts/ci/impact-map.json` and `scripts/ci/select-checks.mjs` (unknown paths, empty diffs and selection failures run the full suite), and a stable aggregate `CI gate` job enforces expected results, failures and cancellations. Pushes to main always run the full suite, and the required `Check (OS)` job names are unchanged.
 

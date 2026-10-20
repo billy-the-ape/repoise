@@ -168,8 +168,12 @@ Shipped changes:
 
 - `pnpm-workspace.yaml` — explicit membership: the root development package
   (listed so Turbo schedules its scripts; pnpm already treats the root as a
-  member), `npm/repoise`, and the reserved `apps/*`/`packages/*` homes.
-  Generated staging (`dist/`), evaluation fixtures and examples stay out.
+  member) and the reserved `apps/*`/`packages/*` homes. The published launcher
+  (`npm/repoise`) deliberately stays outside the workspace: its optional
+  platform-package pins only resolve once those versions are published, so a
+  root frozen install (bump PRs and the release build job) must never depend
+  on them. Generated staging (`dist/`), evaluation fixtures and examples stay
+  out.
 - Root `package.json` — `packageManager` pin, Turbo task scripts
   (`format`, `format:check`, `test`, `check:native`, `build:native` and their
   `:windows` variants), and Prettier globs extended to `scripts/ci`,
@@ -199,9 +203,11 @@ Shipped changes:
   `if:` can read the selection outputs) and is guarded by a quoted
   `!cancelled() &&` expression so superseded runs under `cancel-in-progress`
   do not start macOS/Windows runners; `CI gate` keeps `always()`. Every job
-  that uses pnpm runs SHA-pinned `pnpm/action-setup@v4` before
-  `setup-node` (it reads the root `packageManager` pin, so `cache: pnpm` and
-  `pnpm install` resolve the same version on every runner OS). Frozen
+  that uses pnpm installs it with `npm install --global pnpm@12.3.4
+  --ignore-scripts` after `setup-node` (npm's standard global shim generation
+  works on Linux, macOS and Windows; the earlier `pnpm/action-setup@v4` shims
+  broke with pnpm 12 on the hosted Windows runner, and `setup-node` therefore
+  does not use its pnpm store cache). Frozen
   `pnpm install`, Turbo for format, tests and the per-platform native bridge
   tasks, and separate `actions/cache` entries for `target` and `~/.cargo`
   keyed by OS/arch/`Cargo.lock` (Turbo caches no native task outputs).
@@ -238,4 +244,8 @@ Deferred / not shipped with this PR:
   workflow change is required for it).
 - Live GitHub PR runs demonstrating skipped vs executed jobs; selection and
   gate semantics are covered by the unit/E2E tests above.
+- Live confirmation of the `npm install --global pnpm@12.3.4` provisioning
+  path on the hosted Windows runner (the `pnpm/action-setup@v4` shim failure
+  was observed in the Windows CI run; the npm-global replacement is verified
+  locally on Linux and uses npm's own standard shim generation).
 - Hybrid evaluation and the AP-02–AP-07 scope.

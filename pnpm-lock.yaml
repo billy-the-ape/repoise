@@ -116,18 +116,6 @@ importers:
         specifier: ^2.11.9
         version: 2.11.9
 
-  npm/repoise:
-    optionalDependencies:
-      repoise-darwin-arm64:
-        specifier: 0.1.0-alpha.1
-        version: 0.1.0-alpha.1
-      repoise-linux-x64-gnu:
-        specifier: 0.1.0-alpha.1
-        version: 0.1.0-alpha.1
-      repoise-win32-x64:
-        specifier: 0.1.0-alpha.1
-        version: 0.1.0-alpha.1
-
 packages:
 
   '@turbo/darwin-64@2.11.9':
@@ -165,22 +153,6 @@ packages:
     engines: {node: '>=14'}
     hasBin: true
 
-  repoise-darwin-arm64@0.1.0-alpha.1:
-    resolution: {integrity: sha512-/1LtmZVY2JxhXmYaCHqV7x/7hwVlIsRN0ologTNof6qhQWdD5oNHS43oyqNU36CEGSm4W4Q2VWiNczHp2QRoDA==}
-    cpu: [arm64]
-    os: [darwin]
-
-  repoise-linux-x64-gnu@0.1.0-alpha.1:
-    resolution: {integrity: sha512-fZ66WThlabeN0lMkxDyOlCTANOZ4RfB70zZdnCPlAktl9eMjVJFmsjdVA2LlTuyBqXCzWZt5kNdrU2fV6j/RRg==}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  repoise-win32-x64@0.1.0-alpha.1:
-    resolution: {integrity: sha512-QDpDkNDIOQIWwV7rvoMuNwD5p91Wu8YzQsgtX259sOsWGnCRd5kdGbz7/y/zD9G2U+1WDOF78WGMSh9eHSor7w==}
-    cpu: [x64]
-    os: [win32]
-
   turbo@2.11.9:
     resolution: {integrity: sha512-k2ev5dv9OgP2pJwaPuydkZdid+haX2U5TDGcPtpAz0gb0nbRR3eXY/cpfrlvHih52YRTxWIcRVKc0ri3C2Scrg==}
     hasBin: true
@@ -206,15 +178,6 @@ snapshots:
     optional: true
 
   prettier@3.9.9: {}
-
-  repoise-darwin-arm64@0.1.0-alpha.1:
-    optional: true
-
-  repoise-linux-x64-gnu@0.1.0-alpha.1:
-    optional: true
-
-  repoise-win32-x64@0.1.0-alpha.1:
-    optional: true
 
   turbo@2.11.9:
     optionalDependencies:

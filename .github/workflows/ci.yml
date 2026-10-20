@@ -52,14 +52,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Deterministic pnpm provisioning on every runner OS: reads the
-      # root packageManager pin (pnpm@12.3.4); setup-node's pnpm store
-      # cache then resolves the same binary.
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          cache: pnpm
+          package-manager-cache: false
+      # Provision pnpm through npm's standard global shim generation, which
+      # works on Linux, macOS and Windows (pnpm/action-setup@v4 shims break
+      # with pnpm 12 on Windows). The version must match the root
+      # packageManager pin.
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@12.3.4 --ignore-scripts
       - name: Frozen pnpm install
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: JS/TS format check
@@ -145,11 +147,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-          cache: pnpm
+          package-manager-cache: false
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@12.3.4 --ignore-scripts
       - name: Frozen pnpm install
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Documentation and tooling format check
