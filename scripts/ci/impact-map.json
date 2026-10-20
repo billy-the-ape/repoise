@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "description": "Versioned component-impact map bridging repository paths (including non-package inputs) into CI check sets. See docs/plans/agent-platform/01-workspace-and-ci.md. Unknown paths, missing merge bases, empty diffs and selection failures all resolve to the full check set; this map never produces a no-op success.",
+  "jobs": {
+    "check": [
+      "Check (ubuntu-24.04)",
+      "Check (macos-15)",
+      "Check (windows-2025)"
+    ],
+    "docs": ["Docs"]
+  },
+  "components": {
+    "core": {
+      "patterns": ["crates/repoise-core/"],
+      "jobs": ["check"],
+      "note": "Rust workspace checks plus CLI/MCP contracts and packaged consumer smoke; dependent adapter/extension contract tests join here once present"
+    },
+    "cli": {
+      "patterns": ["crates/repoise-cli/"],
+      "jobs": ["check"],
+      "note": "CLI/MCP tests and native packaging smoke"
+    },
+    "launcher": {
+      "patterns": ["npm/repoise/"],
+      "jobs": ["check"],
+      "note": "Launcher tests and three-platform packed-install/native archive smoke"
+    },
+    "release": {
+      "patterns": ["scripts/release/"],
+      "jobs": ["check"],
+      "note": "Release tooling tests run in the Check jobs via the root test task"
+    },
+    "eval": {
+      "patterns": ["scripts/eval/"],
+      "jobs": ["check"],
+      "note": "Frozen evaluation harness tests run in the Check jobs via the root test task"
+    },
+    "schemas": {
+      "patterns": ["schemas/"],
+      "jobs": ["check"],
+      "note": "Producer validation plus consumer contract tests and schema-copy checks (smoke verifies bundled copies)"
+    },
+    "adapter": {
+      "patterns": ["packages/agent-adapter-cline/"],
+      "jobs": ["check"],
+      "note": "Reserved home; no package exists yet, so until it ships this maps to the broad checks"
+    },
+    "extension": {
+      "patterns": ["apps/vscode/"],
+      "jobs": ["check"],
+      "note": "Reserved home; no package exists yet, so until it ships this maps to the broad checks"
+    },
+    "docs": {
+      "patterns": [
+        "docs/",
+        "README.md",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "skills/",
+        "examples/"
+      ],
+      "jobs": ["docs"],
+      "note": "Applicable formatting plus example consistency; no link checker or skill-discovery validator ships yet"
+    },
+    "ci": {
+      "patterns": [".github/workflows/", "scripts/ci/"],
+      "jobs": ["check", "docs"],
+      "note": "Workflows and impact-map changes run broad relevant checks"
+    },
+    "root": {
+      "patterns": [
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "turbo.json",
+        ".npmrc",
+        ".gitignore",
+        ".gitattributes",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "LICENSE",
+        "crates/",
+        "scripts/check.sh",
+        "scripts/check.ps1",
+        "scripts/build.sh",
+        "scripts/build.ps1",
+        "scripts/install.sh",
+        "scripts/install.ps1"
+      ],
+      "jobs": ["check", "docs"],
+      "note": "Lockfiles, toolchains, root configs and shared Rust paths default to the full suite until a narrower rule is proven"
+    }
+  },
+  "default": {
+    "jobs": ["check", "docs"],
+    "note": "Unknown paths and unlisted components select the full suite"
+  }
+}

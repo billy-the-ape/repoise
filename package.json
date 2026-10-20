@@ -3,18 +3,22 @@
   "private": true,
   "version": "0.1.0-alpha.1",
   "type": "module",
+  "packageManager": "pnpm@12.3.4",
   "scripts": {
-    "format": "prettier --write \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
-    "format:check": "prettier --check \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \".github/workflows/*.yml\"",
-    "test": "node --test scripts/release/*.test.mjs scripts/eval/*.test.mjs",
+    "format": "prettier --write \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"scripts/ci/*.mjs\" \"scripts/ci/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \"turbo.json\" \"pnpm-workspace.yaml\" \".github/workflows/*.yml\"",
+    "format:check": "prettier --check \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"scripts/ci/*.mjs\" \"scripts/ci/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \"turbo.json\" \"pnpm-workspace.yaml\" \".github/workflows/*.yml\"",
+    "test": "node --test scripts/release/*.test.mjs scripts/eval/*.test.mjs scripts/ci/*.test.mjs",
+    "check:native": "bash scripts/check.sh",
+    "check:native:windows": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1",
+    "build:native": "bash scripts/build.sh",
+    "build:native:windows": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1",
     "release:claim": "node scripts/release/claim.mjs",
     "release:verify-stage": "node scripts/release/verify-registry.mjs stage",
     "release:verify-published": "node scripts/release/verify-registry.mjs published",
-    "release:verify-install": "node scripts/release/verify-registry.mjs install",
-    "build-sh": "./scripts/build.sh",
-    "build-win": "./scripts/build.ps1"
+    "release:verify-install": "node scripts/release/verify-registry.mjs install"
   },
   "devDependencies": {
-    "prettier": "3.9.9"
+    "prettier": "3.9.9",
+    "turbo": "^2.11.9"
   }
 }

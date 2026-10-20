@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Workspace and CI foundation (AP-01)
+
+The development tooling became a Cargo + pnpm workspace. pnpm 12.3.4 is pinned by the root `packageManager` field; the committed `pnpm-lock.yaml` replaces `package-lock.json` for development installs (`pnpm install --frozen-lockfile --ignore-scripts`). Turborepo 2.11.9 declares the root development tasks (`format`, `format:check`, `test`) and single per-platform native bridge tasks (`check:native`, `build:native` and their `:windows` variants) with output caching disabled; Cargo remains authoritative for Rust and keeps working without Node.
+
+CI now selects affected check sets for pull requests through `scripts/ci/impact-map.json` and `scripts/ci/select-checks.mjs` (unknown paths, empty diffs and selection failures run the full suite), and a stable aggregate `CI gate` job enforces expected results, failures and cancellations. Pushes to main always run the full suite, and the required `Check (OS)` job names are unchanged.
+
+Release tooling resolves the real npm CLI even when pnpm points `npm_execpath` at pnpm's own CLI. Registry packing/staging semantics, the published packages and consumer installation are unchanged; no consumer migration is required. See `docs/plans/agent-platform/01-workspace-and-ci.md` for the implementation record.
+
 ### Cross-worktree cache reuse
 
 Linked worktrees of one local Git repository now share reusable parse

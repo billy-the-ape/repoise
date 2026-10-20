@@ -45,8 +45,8 @@ Do not repeat claims already recorded as complete. The main-name bootstrap is pr
 from a reviewed checkout:
 
 ```sh
-npm ci --ignore-scripts
-npm run release:claim
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run release:claim
 npx --yes --package=npm@11.21.0 npm stage publish ./dist/claim/repoise-0.0.0-bootstrap.0.tgz --access public --tag next --registry=https://registry.npmjs.org/
 ```
 
@@ -59,7 +59,7 @@ do not use empty native packages or rename manifests to evade a registry rejecti
 
 ## Prepare and stage a subsequent release
 
-1. Update workspace Cargo.toml, Cargo.lock workspace entries, root package.json/package-lock.json,
+1. Update workspace Cargo.toml, Cargo.lock workspace entries, root package.json/pnpm-lock.yaml,
    `npm/repoise/package.json` and its exact optional dependency versions together. Native
    manifests are generated from the version. Update CHANGELOG/readiness; review dependencies,
    licenses and target support. Run [release checks](README.md#workflow-and-validation), get

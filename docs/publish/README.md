@@ -62,8 +62,8 @@ One dispatch does the build, assembly and staging; the maintainer's approvals an
 2FA actions finish the release. Details live in the [npm runbook](npm.md) and the
 [native runbook](native.md).
 
-1. Synchronize versions (workspace Cargo.toml, Cargo.lock, root package.json,
-   `npm/repoise/package.json` and its exact optional pins), update
+1. Synchronize versions (workspace Cargo.toml, Cargo.lock, root package.json and
+   pnpm-lock.yaml, `npm/repoise/package.json` and its exact optional pins), update
    CHANGELOG/readiness, run the checks below, merge into main and tag the
    merged commit `v<version>`. See [npm preparation](npm.md#prepare-and-stage-a-subsequent-release).
 2. Dispatch **Release preparation and staging** from `main` with `tag`,
@@ -94,6 +94,9 @@ alpha.1 was a fallback for local staging after the OIDC failure, not a
 workflow requirement.
 
 Tag validation checks synchronized versions/main ancestry and resolves an immutable commit.
+Release version validation covers the published launcher's exact optional pins and every
+Cargo package; the root development manifest keeps tracking the release version for
+continuity, and the check is not extended to future private workspace packages.
 Builds use pinned Rust, Cargo.lock, Node 24 and fixed hosted runner labels. They run formatting,
 release-tool tests, Clippy, Rust tests and packed-consumer smoke on all three platforms.
 The smoke installs tarballs offline with install scripts disabled in a temporary path with
@@ -131,9 +134,9 @@ detect corruption; independent native signing/attestations remain future work.
 Checks for a reviewed checkout:
 
 ```sh
-npm ci --ignore-scripts
-npm run format:check
-npm test
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run format:check
+pnpm test
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
