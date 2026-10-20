@@ -181,8 +181,9 @@ Shipped changes:
 - `turbo.json` — top-level `globalDependencies` covering Cargo
   manifest/lockfile/toolchain, `crates/**`, `schemas/**` and the
   check/build scripts (Turbo 2.x removed the per-task `globalDependencies`
-  key); every declared task uses `cache: false`, so no Turbo task-output
-  cache exists for the native bridge tasks.
+  key); every declared task uses `cache: false` (verification tasks
+  included, so a stale cache can never skip a format/test/check run), so no
+  Turbo task-output cache exists for any task.
 - `pnpm-lock.yaml` replaces `package-lock.json`; `.npmrc` sets
   `ignore-scripts=true` for development installs.
 - `scripts/ci/impact-map.json` (version 1) — versioned component map with
@@ -216,7 +217,7 @@ Shipped changes:
   uses no pnpm store cache. Frozen
   `pnpm install`, Turbo for format, tests and the per-platform native bridge
   tasks, and separate `actions/cache` entries for `target` and `~/.cargo`
-  keyed by OS/arch/`Cargo.lock` (Turbo caches no native task outputs).
+  keyed by OS/arch/`Cargo.lock` (Turbo caches no task outputs).
 - `.github/workflows/release.yml` — build job installs with frozen pnpm;
   registry packing/staging still invoke real npm.
 - `scripts/release/common.mjs` — `resolveNpmCli` honors `npm_execpath` only
@@ -234,7 +235,7 @@ Shipped changes:
 Validated locally (Linux x86_64, Node 24, pnpm 12.3.4, pinned Rust 1.99):
 fresh frozen `pnpm install`; `pnpm run format`, `pnpm run format:check`,
 `pnpm test` (56 tests, 15 new); Turbo dry-run proving root tasks execute and
-native bridge tasks are declared with caching disabled and full Rust input
+every declared task is declared with caching disabled and full Rust input
 coverage; live selection runs against repository history (multi-component,
 empty-diff and missing-base behavior); `pnpm run release:claim` proving the
 real-npm fallback under a `pnpm run` environment where `npm_execpath`

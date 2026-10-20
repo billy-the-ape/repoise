@@ -13,12 +13,15 @@
   ],
   "tasks": {
     "format": {
+      "cache": false,
       "outputs": []
     },
     "format:check": {
+      "cache": false,
       "outputs": []
     },
     "test": {
+      "cache": false,
       "outputs": []
     },
     "check:native": {
