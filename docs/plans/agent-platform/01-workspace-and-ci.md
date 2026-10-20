@@ -195,10 +195,16 @@ Shipped changes:
   must have been skipped.
 - `.github/workflows/ci.yml` — `Select checks` (pull requests only), the
   three `Check (OS)` jobs with unchanged display names, `Docs`, and `CI
-  gate` running with `always()`. Frozen `pnpm install`, Turbo for format,
-  tests and the per-platform native bridge tasks, and separate
-  `actions/cache` entries for `target` and `~/.cargo` keyed by
-  OS/arch/`Cargo.lock` (Turbo caches no native task outputs).
+  gate`. Each conditional job declares `needs: [select]` (required so its
+  `if:` can read the selection outputs) and is guarded by a quoted
+  `!cancelled() &&` expression so superseded runs under `cancel-in-progress`
+  do not start macOS/Windows runners; `CI gate` keeps `always()`. Every job
+  that uses pnpm runs SHA-pinned `pnpm/action-setup@v4` before
+  `setup-node` (it reads the root `packageManager` pin, so `cache: pnpm` and
+  `pnpm install` resolve the same version on every runner OS). Frozen
+  `pnpm install`, Turbo for format, tests and the per-platform native bridge
+  tasks, and separate `actions/cache` entries for `target` and `~/.cargo`
+  keyed by OS/arch/`Cargo.lock` (Turbo caches no native task outputs).
 - `.github/workflows/release.yml` — build job installs with frozen pnpm;
   registry packing/staging still invoke real npm.
 - `scripts/release/common.mjs` — `resolveNpmCli` honors `npm_execpath` only
