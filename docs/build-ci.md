@@ -34,7 +34,7 @@ packaged smoke but not yet fresh public-registry installation.
 In CI the launcher installs into a dedicated tools dir under `runner.temp` (outside the
 checkout) and is invoked by absolute path with Node — see the example below.
 
-The publication runbook supplies the concrete pin. The native engine needs no Node/npm;
+The native engine needs no Node/npm;
 npm is the first distribution channel. For source builds, use local
 development installation (`bash scripts/install.sh`) or the built native binary
 (`./target/release/repoise`); see [development.md](development.md).

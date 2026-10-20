@@ -155,12 +155,18 @@ node scripts/release/verify-registry.mjs install ./dist/bundle <sha>
 Expect `repoise <version>` and successful help; verify invalid arguments return nonzero.
 Record online registry-install results separately from offline tarball smoke. Index/search/MCP
 checks are required for functional engine releases. Never use unversioned npx as a release test or
-promote this scaffold alpha to latest. During bootstrap latest may point at `0.0.0-stage`.
+promote a scaffold alpha to `latest`. `latest` has pointed at the 0.1.0-alpha.1
+functional preview since the October 19, 2026 promotion (it was the `0.0.0-stage`
+bootstrap placeholder before); see the [alpha execution record](alpha-1-status.md).
 
-## Complete the initial alpha after Windows clearance
+## Complete the initial alpha after Windows clearance (historical)
 
-Use [alpha status](alpha-0-status.md) and the original verified `0.1.0-alpha.0` bundle.
-Linux/macOS npm versions and the native GitHub release are already public.
+This scaffold-alpha procedure was superseded, not replayed: after npm support cleared
+the Windows name, the project proceeded with the functional 0.1.0-alpha.1 candidate
+instead (see [alpha-0-status.md](alpha-0-status.md)). The unused main bootstrap stage
+was rejected after the real launcher published, and the preview is now published under
+both npm `latest` and `next` (see the [alpha execution record](alpha-1-status.md)).
+The steps below are retained for audit only.
 
 1. After npm support clears the name, recheck Windows registry/stage state. If absent, stage
    `./repoise-win32-x64-0.1.0-alpha.0.tgz` locally with pinned npm, `--access public --tag next`

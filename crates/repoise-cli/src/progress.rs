@@ -5,11 +5,13 @@
 //! Human mode writes progress to stdout alongside the final summary;
 //! `--json` mode keeps stdout as the single final JSON document and sends
 //! progress to stderr instead. Rendering is throttled (at most one line per
-//! 100 ms within a phase; phase changes and phase ends always render) and
-//! never emits per-file noise. On a TTY the current phase line is rewritten
-//! in place and terminated when the phase finishes (or via `finish`), so the
-//! final summary or an error always starts on a new line; otherwise new
-//! lines are appended.
+//! 100 ms within a phase; phase changes always render) and never emits
+//! per-file noise. A phase's final line is printed exactly once: a repeated
+//! completion report (for example a trailing callback) or a `phase_finished`
+//! that would only repeat the last line is skipped. On a TTY the current
+//! phase line is rewritten in place and terminated when the phase finishes
+//! (or via `finish`), so the final summary or an error always starts on a
+//! new line; otherwise new lines are appended.
 
 use std::io::{self, IsTerminal, Write};
 use std::sync::Mutex;
@@ -49,6 +51,13 @@ struct Inner {
     last_render: Instant,
     /// Last in-place line (padding calculation).
     last_line: String,
+    /// Text of the last line actually written (either mode); identical
+    /// re-renders are skipped.
+    last_rendered: String,
+    /// True once this phase's completion line (done == total) has been
+    /// rendered, so a repeated completion report or the phase end does not
+    /// print it again.
+    completion_rendered: bool,
     /// (done, time) of the first progress report in the current phase. The
     /// ETA rate is measured from this baseline so units credited at phase
     /// start (embedding cache hits) do not skew it.
@@ -74,6 +83,8 @@ impl ProgressReporter {
                 total: None,
                 last_render: Instant::now(),
                 last_line: String::new(),
+                last_rendered: String::new(),
+                completion_rendered: false,
                 eta_base: None,
             }),
         }
@@ -87,45 +98,15 @@ impl ProgressReporter {
 
 impl IndexProgressReporter for ProgressReporter {
     fn phase_started(&self, phase: IndexPhase, total: Option<u64>) {
-        self.emit(|state, stream| {
-            state.phase = Some(phase);
-            state.phase_started = Instant::now();
-            state.done = 0;
-            state.total = total;
-            state.eta_base = None;
-            state.last_render = Instant::now();
-            state.render(stream);
-        });
+        self.emit(|state, stream| state.on_phase_started(stream, phase, total));
     }
 
     fn progress(&self, phase: IndexPhase, done: u64, total: u64) {
-        self.emit(|state, stream| {
-            state.phase = Some(phase);
-            state.done = done;
-            state.total = Some(total);
-            let now = Instant::now();
-            // The phase's first report is the ETA baseline: units credited
-            // before it (embedding cache hits) must not skew the rate.
-            if state.eta_base.is_none() {
-                state.eta_base = Some((done, now));
-            }
-            // Completion always renders; otherwise stay within the throttle.
-            if done == total || now.duration_since(state.last_render) >= UPDATE_INTERVAL {
-                state.last_render = now;
-                state.render(stream);
-            }
-        });
+        self.emit(|state, stream| state.on_progress(stream, phase, done, total));
     }
 
     fn phase_finished(&self, phase: IndexPhase) {
-        self.emit(|state, stream| {
-            state.phase = Some(phase);
-            state.last_render = Instant::now();
-            state.render(stream);
-            // A finished phase stays visible: terminate its in-place line so
-            // the next phase starts on a new line.
-            state.finish_line(stream);
-        });
+        self.emit(|state, stream| state.on_phase_finished(stream, phase));
     }
 }
 
@@ -151,9 +132,60 @@ impl ProgressReporter {
 }
 
 impl Inner {
+    /// Starts a new phase, resetting its counters and rendering its line.
+    fn on_phase_started(&mut self, stream: &mut dyn Write, phase: IndexPhase, total: Option<u64>) {
+        self.phase = Some(phase);
+        self.phase_started = Instant::now();
+        self.done = 0;
+        self.total = total;
+        self.eta_base = None;
+        self.completion_rendered = false;
+        self.last_render = Instant::now();
+        self.render(stream);
+    }
+
+    /// Applies one in-phase counter update (completed units of `total`).
+    fn on_progress(&mut self, stream: &mut dyn Write, phase: IndexPhase, done: u64, total: u64) {
+        self.phase = Some(phase);
+        self.done = done;
+        self.total = Some(total);
+        // A repeated completion report (for example a trailing callback
+        // after the final batch) must not print the final line again.
+        if done == total && self.completion_rendered {
+            return;
+        }
+        let now = Instant::now();
+        // The phase's first report is the ETA baseline: units credited
+        // before it (embedding cache hits) must not skew the rate.
+        if self.eta_base.is_none() {
+            self.eta_base = Some((done, now));
+        }
+        // Completion always renders; otherwise stay within the throttle.
+        if done == total || now.duration_since(self.last_render) >= UPDATE_INTERVAL {
+            self.last_render = now;
+            self.render(stream);
+            self.completion_rendered = done == total;
+        }
+    }
+
+    /// Ends the phase: prints the final line unless the completion line was
+    /// already printed, then terminates the in-place line so the next phase
+    /// (or the summary) starts on a new line.
+    fn on_phase_finished(&mut self, stream: &mut dyn Write, phase: IndexPhase) {
+        self.phase = Some(phase);
+        self.last_render = Instant::now();
+        if !self.completion_rendered {
+            self.render(stream);
+        }
+        self.finish_line(stream);
+    }
+
     fn render(&mut self, stream: &mut dyn Write) {
         let line = self.line();
-        if line.is_empty() {
+        // Never repeat a line already on screen (a phase end or a trailing
+        // report within the same second would otherwise print it twice in
+        // append mode).
+        if line.is_empty() || line == self.last_rendered {
             return;
         }
         if self.in_place {
@@ -162,6 +194,7 @@ impl Inner {
         } else {
             let _ = writeln!(stream, "{line}");
         }
+        self.last_rendered = line.clone();
         self.last_line = if self.in_place { line } else { String::new() };
     }
 
@@ -345,6 +378,7 @@ mod tests {
             state.done = 4;
             // Two in-place updates: carriage-return rewrites, no newline.
             state.render(&mut buf);
+            state.done = 5;
             state.render(&mut buf);
         }
         let text = String::from_utf8(buf.clone()).unwrap();
@@ -378,6 +412,7 @@ mod tests {
         let mut state = reporter.inner.lock().unwrap();
         state.in_place = false;
         state.last_line = String::new();
+        state.last_rendered = String::new();
         let before = buf.len();
         state.render(&mut buf);
         state.finish_line(&mut buf);
@@ -386,6 +421,78 @@ mod tests {
             added.matches('\n').count(),
             1,
             "append mode contributes only its own line terminator: {added:?}"
+        );
+    }
+
+    /// A phase's final line is printed exactly once: a repeated completion
+    /// report (for example a trailing callback) and the `phase_finished`
+    /// that follows it must not repeat a line already on screen.
+    #[test]
+    fn the_final_line_prints_once() {
+        let no_line_repeats = |buf: &[u8]| {
+            let text = String::from_utf8(buf.to_vec()).unwrap();
+            let mut seen: Vec<&str> = Vec::new();
+            assert!(
+                !text.lines().any(|line| {
+                    let repeated = seen.contains(&line);
+                    seen.push(line);
+                    repeated
+                }),
+                "no line may be printed twice: {text}"
+            );
+        };
+
+        let reporter = ProgressReporter::new(false);
+
+        // Append (non-TTY) mode: completion is reported twice (final batch
+        // plus trailing callback), then the phase ends.
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut state = reporter.inner.lock().unwrap();
+            state.in_place = false;
+            state.on_phase_started(&mut buf, IndexPhase::Embedding, Some(4));
+            state.on_progress(&mut buf, IndexPhase::Embedding, 2, 4);
+            state.on_progress(&mut buf, IndexPhase::Embedding, 4, 4);
+            state.on_progress(&mut buf, IndexPhase::Embedding, 4, 4);
+            state.on_phase_finished(&mut buf, IndexPhase::Embedding);
+        }
+        let text = String::from_utf8(buf.clone()).unwrap();
+        let completions = text.lines().filter(|line| line.contains("(100%)")).count();
+        assert_eq!(completions, 1, "the completion line prints once: {text}");
+        no_line_repeats(&buf);
+
+        // A phase that never reports completion still finishes without
+        // repeating a line already on screen.
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut state = reporter.inner.lock().unwrap();
+            state.in_place = false;
+            state.on_phase_started(&mut buf, IndexPhase::Publication, None);
+            state.on_phase_finished(&mut buf, IndexPhase::Publication);
+        }
+        no_line_repeats(&buf);
+
+        // In-place (TTY) mode: the completion line is written once and the
+        // phase end terminates it exactly once.
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut state = reporter.inner.lock().unwrap();
+            state.in_place = true;
+            state.on_phase_started(&mut buf, IndexPhase::Embedding, Some(4));
+            state.on_progress(&mut buf, IndexPhase::Embedding, 4, 4);
+            state.on_progress(&mut buf, IndexPhase::Embedding, 4, 4);
+            state.on_phase_finished(&mut buf, IndexPhase::Embedding);
+        }
+        let text = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            text.matches("(100%)").count(),
+            1,
+            "the completion line is written once: {text:?}"
+        );
+        assert_eq!(
+            text.matches('\n').count(),
+            1,
+            "the phase end terminates the line exactly once: {text:?}"
         );
     }
 }
