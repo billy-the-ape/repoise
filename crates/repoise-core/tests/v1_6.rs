@@ -1,8 +1,10 @@
 //! K6: related-knowledge service, offline check categories, incremental
 //! watch, and the non-destructive overlay lifecycle.
 
+#[cfg(windows)]
+use std::path::Path;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use repoise_core::adapter::{SnapshotMode, SourceAdapter};
@@ -14,11 +16,85 @@ use repoise_core::store::Store;
 
 static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// The drive root of a Windows path (e.g. `C:\` from
+/// `C:\Users\<user>\AppData\Local\Temp`), if any.
+#[cfg(windows)]
+fn windows_drive_root(path: &Path) -> Option<PathBuf> {
+    let mut root = PathBuf::new();
+    for component in path.components().take(2) {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                root.push(component.as_os_str());
+            }
+            _ => break,
+        }
+    }
+    if root.as_os_str().is_empty() {
+        None
+    } else {
+        Some(root)
+    }
+}
+
+/// Resolves the base directory for one test. On Windows, the deepest
+/// generated path is
+/// <dir>/.repoise/repos/repo-<64 hex>/worktrees/wt-<64 hex>/index.sqlite-wal
+/// (~180 chars after the directory); the default %TEMP% is deep
+/// (C:\Users\<user>\AppData\Local\Temp), so anchor under the drive root
+/// when it is writable to keep the full path well under the 260-char
+/// MAX_PATH limit; otherwise fall back to the default temp directory.
+fn base_dir(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(dir) = windows_drive_root(&std::env::temp_dir())
+        .filter(|root| std::fs::create_dir_all(root.join(name)).is_ok())
+        .map(|root| root.join(name))
+    {
+        return dir;
+    }
+    std::env::temp_dir().join(name)
+}
+
 fn temp_dir(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("repoise-k6-{tag}-{}-{n}", std::process::id()));
+    let name = format!("rk6-{tag}-{}-{n}", std::process::id());
+    let dir = base_dir(&name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// The deepest path this suite can generate under `dir` (repository and
+/// worktree ids are 64 hex chars; WAL mode adds a `-wal` sidecar).
+#[cfg(windows)]
+fn deepest_generated_path(dir: &Path) -> PathBuf {
+    dir.join(".repoise")
+        .join("repos")
+        .join(format!("repo-{}", "x".repeat(64)))
+        .join("worktrees")
+        .join(format!("wt-{}", "y".repeat(64)))
+        .join("index.sqlite-wal")
+}
+
+#[cfg(windows)]
+#[test]
+fn temp_dirs_keep_db_paths_under_windows_max_path() {
+    let dir = temp_dir("maxpath-check");
+    // Only assert when the drive-root anchor was used (exactly one
+    // non-root component); a permission fallback to the deep default temp
+    // is a developer-machine condition this suite must tolerate.
+    let names = dir
+        .components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .count();
+    if names == 1 {
+        let deepest = deepest_generated_path(&dir);
+        assert!(
+            deepest.as_os_str().len() < 260,
+            "deepest test path is {} chars: {}",
+            deepest.as_os_str().len(),
+            deepest.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A real, plain-directory repository the watcher can mutate on disk.
@@ -287,6 +363,17 @@ fn quick_watcher(
     repoise_core::watch::Watcher,
     repoise_core::watch::WatchOptions,
 ) {
+    quick_watcher_with_embed(repo, max_pending, None)
+}
+
+fn quick_watcher_with_embed(
+    repo: &DirRepo,
+    max_pending: usize,
+    embed: Option<repoise_core::embed::EmbeddingClient>,
+) -> (
+    repoise_core::watch::Watcher,
+    repoise_core::watch::WatchOptions,
+) {
     let (adapter, mode, effective, cache) = repo.context();
     let store = repo.store(&cache);
     let options = repoise_core::watch::WatchOptions {
@@ -295,7 +382,8 @@ fn quick_watcher(
         max_pending_paths: max_pending,
     };
     (
-        repoise_core::watch::Watcher::new(adapter, mode, effective, store, cache, options).unwrap(),
+        repoise_core::watch::Watcher::new(adapter, mode, effective, store, cache, options, embed)
+            .unwrap(),
         options,
     )
 }
@@ -400,6 +488,524 @@ fn watch_bounds_pending_paths_with_full_reparse() {
         }
         other => panic!("expected publication, got {other:?}"),
     }
+}
+
+// --- Watch embedding coverage (synchronous first stage) -------------------
+
+const WATCH_DOC_A_V1: &str =
+    "# Alpha\n\n## Setup\n\nInstall the alpha toolchain.\n\n## Usage\n\nRun alpha daily.\n";
+const WATCH_DOC_A_V2: &str =
+    "# Alpha\n\n## Setup\n\nInstall the pinned alpha toolchain.\n\n## Usage\n\nRun alpha daily.\n";
+const WATCH_DOC_B_V1: &str =
+    "# Beta\n\n## Setup\n\nInstall the beta toolchain.\n\n## Usage\n\nRun beta nightly.\n";
+const WATCH_DOC_B_V2: &str =
+    "# Beta\n\n## Setup\n\nInstall the pinned beta toolchain.\n\n## Usage\n\nRun beta nightly.\n";
+
+/// Deterministic fake provider: vectors are a pure function of the input,
+/// every input sent to the provider is recorded, and an optional token is
+/// cancelled on the first call (to exercise cancellation during embedding).
+struct RecordingProvider {
+    requested: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    calls: std::sync::Arc<AtomicUsize>,
+    fail: bool,
+    model: String,
+    dimension: u32,
+    cancel_first: Option<repoise_core::embed::CancellationToken>,
+}
+
+/// Deterministic pseudo-embedding: stable, finite, one value per component.
+fn vector_for(input: &str, dimension: u32) -> Vec<f32> {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for byte in input.as_bytes() {
+        h ^= u64::from(*byte);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    (0..dimension)
+        .map(|i| {
+            let mixed = h ^ (u64::from(i).wrapping_mul(0x9E3779B97F4A7C15)).wrapping_add(1);
+            let scaled = (f64::from((mixed % 1000) as u32) / 1000.0) * 2.0 - 1.0;
+            scaled as f32
+        })
+        .collect()
+}
+
+impl repoise_core::embed::EmbeddingProvider for RecordingProvider {
+    fn profile(&self) -> repoise_core::embed::EmbeddingProfile {
+        repoise_core::embed::EmbeddingProfile {
+            provider: "test-hash".to_string(),
+            model: self.model.clone(),
+            dimension: self.dimension,
+            profile_version: repoise_core::embed::PROFILE_VERSION,
+        }
+    }
+
+    fn embed(
+        &self,
+        inputs: &[String],
+    ) -> repoise_core::Result<repoise_core::embed::EmbeddingBatch> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requested
+            .lock()
+            .unwrap()
+            .extend(inputs.iter().cloned());
+        // Cancel the shared token mid-embedding when asked: the in-flight
+        // batch result is still consumed, the rest stays pending.
+        if self.calls.load(Ordering::SeqCst) == 1
+            && let Some(token) = &self.cancel_first
+        {
+            token.cancel();
+        }
+        if self.fail {
+            return Err(repoise_core::error::Error::Provider(
+                "injected provider failure".to_string(),
+            ));
+        }
+        Ok(repoise_core::embed::EmbeddingBatch {
+            vectors: inputs
+                .iter()
+                .map(|input| vector_for(input, self.dimension))
+                .collect(),
+            model_revision: None,
+        })
+    }
+}
+
+fn recording_client(
+    model: &str,
+    fail: bool,
+    cancel_first: Option<repoise_core::embed::CancellationToken>,
+    budgets: repoise_core::embed::EmbeddingBudgets,
+    cancellation: repoise_core::embed::CancellationToken,
+) -> (
+    repoise_core::embed::EmbeddingClient,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    std::sync::Arc<AtomicUsize>,
+) {
+    let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let provider = RecordingProvider {
+        requested: requested.clone(),
+        calls: calls.clone(),
+        fail,
+        model: model.to_string(),
+        dimension: 8,
+        cancel_first,
+    };
+    (
+        repoise_core::embed::EmbeddingClient::new(Box::new(provider), budgets, cancellation),
+        requested,
+        calls,
+    )
+}
+
+/// Builds one published generation, optionally through an embedding session.
+fn build_with_embeddings(
+    repo: &DirRepo,
+    client: Option<&repoise_core::embed::EmbeddingClient>,
+) -> indexing::IndexOutcome {
+    let (adapter, mode, effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    indexing::index(
+        adapter.as_ref(),
+        mode,
+        &effective,
+        &store,
+        &cache,
+        &IndexRequest::default(),
+        client,
+        None,
+    )
+    .unwrap()
+}
+
+fn watch_publication(
+    watcher: &mut repoise_core::watch::Watcher,
+    cancel: &AtomicBool,
+) -> repoise_core::watch::WatchPublication {
+    match watcher.step(cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => outcome,
+        other => panic!("expected publication, got {other:?}"),
+    }
+}
+
+/// Lexical hits for one query over the current index (offline).
+fn lex_results(repo: &DirRepo, query: &str) -> Vec<repoise_core::search::SearchHit> {
+    let (adapter, mode, effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    let request = SearchRequest {
+        query: query.to_string(),
+        path_filter: None,
+        role_filter: None,
+        max_results: Some(5),
+        max_output_tokens: None,
+        cursor: None,
+        mode: repoise_core::search::SearchMode::Lexical,
+        rrf_k: Some(effective.rrf_k),
+    };
+    repoise_core::search::search(adapter.as_ref(), mode, &store, &request, None)
+        .unwrap()
+        .results
+}
+
+/// Records an embedding configuration in the committed config file (no
+/// endpoint needed: the tests drive the fake client directly).
+fn write_embedding_config(repo: &DirRepo, model: &str) {
+    let config = serde_json::json!({
+        "embedding": {
+            "provider": "openai-compatible",
+            "model": model,
+            "dimensions": 8
+        }
+    });
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn watch_embeds_only_changed_inputs_and_reuses_cache() {
+    let repo = DirRepo::new(
+        "watch-embed",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    let (client, requested1, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let first = build_with_embeddings(&repo, Some(&client));
+    let first_stats = first.embedding.as_ref().expect("first build embedded");
+    assert_eq!(first_stats.embedded, first.vectors_total);
+    assert_eq!(first_stats.cache_hits, 0);
+
+    // Edit one file: a single watch publication must embed only the changed
+    // chunk input; every unchanged input comes from the content-addressed
+    // cache without a provider call.
+    repo.write("docs/a.md", WATCH_DOC_A_V2);
+    let (client, requested2, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_embed(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+    );
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert_eq!(outcome.changed_paths, vec!["docs/a.md".to_string()]);
+    assert!(!outcome.force_full);
+    let stats = outcome
+        .embedding
+        .as_ref()
+        .expect("watch publication embeds");
+    assert_eq!(stats.failed, 0);
+    assert_eq!(stats.pending, 0);
+    assert!(
+        stats.cache_hits > 0,
+        "unchanged inputs must come from the cache"
+    );
+    assert!(stats.embedded > 0, "changed inputs must be embedded");
+    assert_eq!(stats.cache_hits + stats.embedded, first_stats.embedded);
+    assert_eq!(
+        outcome.vectors_total, first.vectors_total,
+        "coverage restored"
+    );
+    let requested_now = requested2.lock().unwrap().clone();
+    assert!(!requested_now.is_empty());
+    let first_inputs = requested1.lock().unwrap().clone();
+    for input in &requested_now {
+        assert!(
+            !first_inputs.contains(input),
+            "unchanged input re-sent: {input}"
+        );
+    }
+    // The JSON output carries the same embedding stats as `index`.
+    let value = serde_json::to_value(&outcome).unwrap();
+    assert_eq!(value["embedding"]["embedded"], stats.embedded);
+    assert_eq!(value["vectors_total"], outcome.vectors_total as u64);
+}
+
+#[test]
+fn watch_provider_failure_keeps_lexical_and_reports_pending_coverage() {
+    let repo = DirRepo::new(
+        "watch-emb-fail",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    write_embedding_config(&repo, "v1");
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let first = build_with_embeddings(&repo, Some(&client));
+    assert_eq!(
+        first.embedding.as_ref().unwrap().embedded,
+        first.vectors_total
+    );
+
+    // The provider now fails: the generation still publishes lexically,
+    // unchanged inputs keep their cached vectors, and the pending work is
+    // visible through the status/check view.
+    repo.write("docs/a.md", WATCH_DOC_A_V2);
+    let (client, _, _) = recording_client(
+        "v1",
+        true,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_embed(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+    );
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    let stats = outcome
+        .embedding
+        .as_ref()
+        .expect("failure still reports stats");
+    assert!(stats.failed > 0, "failed chunk inputs are reported");
+    assert_eq!(stats.embedded, 0);
+    assert_eq!(stats.pending, 0);
+    assert!(
+        stats.cache_hits > 0,
+        "unchanged inputs stay served from the cache"
+    );
+    assert_eq!(
+        outcome.vectors_total, stats.cache_hits,
+        "no vectors are invented"
+    );
+
+    // Lexical search remains usable on the published generation.
+    assert!(!lex_results(&repo, "alpha").is_empty());
+    // The configured coverage is honestly reported as unmet.
+    let result = check_of(&repo);
+    assert_eq!(
+        result.category,
+        repoise_core::check::CheckCategory::CoverageNotMet
+    );
+    assert!(!result.coverage_met);
+    let index = result.status.index.expect("published index");
+    assert!(index.vectors_pending > 0, "pending vector work is visible");
+    assert!(index.vectors > 0, "unchanged vectors are still served");
+}
+
+#[test]
+fn watch_idle_after_failed_embedding_retries_on_next_publication() {
+    let repo = DirRepo::new(
+        "watch-emb-idle",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    write_embedding_config(&repo, "v1");
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let first = build_with_embeddings(&repo, Some(&client));
+    assert_eq!(
+        first.embedding.as_ref().unwrap().embedded,
+        first.vectors_total
+    );
+
+    // The provider now fails: the generation still publishes lexically with
+    // reported failed embedding work.
+    repo.write("docs/a.md", WATCH_DOC_A_V2);
+    let (client, requested, _) = recording_client(
+        "v1",
+        true,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_embed(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+    );
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(outcome.embedding.as_ref().unwrap().failed > 0);
+
+    // Documented limitation: with no content/config change the watcher goes
+    // idle and does not re-run the publication to retry the failed inputs.
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+
+    // A content change triggers the next publication, which re-attempts the
+    // previously failed inputs (the provider still fails, so the work stays
+    // failed and is reported rather than silently succeeding).
+    let failed_before = requested.lock().unwrap().len();
+    repo.write("docs/b.md", WATCH_DOC_B_V2);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(outcome.embedding.as_ref().unwrap().failed > 0);
+    let all = requested.lock().unwrap().clone();
+    let previous = &all[..failed_before];
+    let retried = &all[failed_before..];
+    assert!(
+        previous.iter().all(|input| retried.contains(input)),
+        "previously failed inputs must be re-attempted"
+    );
+}
+
+#[test]
+fn watch_reembeds_all_inputs_when_profile_or_config_changes() {
+    let repo = DirRepo::new(
+        "watch-emb-model",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    write_embedding_config(&repo, "model-a");
+    let (client, _, _) = recording_client(
+        "model-a",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let first = build_with_embeddings(&repo, Some(&client));
+    let total = first.vectors_total;
+    assert!(total > 0);
+
+    // The operator switches the configured model revision: the effective
+    // config fingerprint changes (forcing a full reparse) and the new
+    // profile fingerprint never reuses cached vectors.
+    write_embedding_config(&repo, "model-b");
+    let (client, requested, _) = recording_client(
+        "model-b",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_embed(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+    );
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    // The shared index service force-reparses on the config fingerprint
+    // change; the new profile fingerprint never reuses cached vectors.
+    assert!(
+        outcome.files_reparsed >= 2,
+        "config change forces a full reparse"
+    );
+    let stats = outcome.embedding.as_ref().unwrap();
+    assert_eq!(
+        stats.cache_hits, 0,
+        "a new profile never reuses cached vectors"
+    );
+    assert_eq!(stats.embedded, total, "every in-scope input is re-embedded");
+    assert_eq!(stats.failed, 0);
+    assert_eq!(stats.pending, 0);
+    assert_eq!(requested.lock().unwrap().len(), total);
+    assert_eq!(outcome.vectors_total, total);
+}
+
+#[test]
+fn watch_cancellation_before_embedding_leaves_pending_vectors() {
+    let repo = DirRepo::new("watch-emb-cancel", &[("docs/a.md", WATCH_DOC_A_V1)]);
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let first = build_with_embeddings(&repo, Some(&client));
+    let total = first.vectors_total;
+
+    // The watch process is cancelled before embedding starts: no provider
+    // call happens, unchanged inputs keep cached vectors, the rest stays
+    // pending, and lexical coverage remains usable.
+    repo.write("docs/a.md", WATCH_DOC_A_V2);
+    let cancelled = repoise_core::embed::CancellationToken::new();
+    cancelled.cancel();
+    let (client, _, calls) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        cancelled,
+    );
+    let (mut watcher, _) = quick_watcher_with_embed(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+    );
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    let stats = outcome.embedding.as_ref().unwrap();
+    assert_eq!(stats.embedded, 0);
+    assert_eq!(stats.failed, 0);
+    assert_eq!(stats.requests, 0);
+    assert!(stats.pending > 0, "unembedded inputs are reported pending");
+    assert_eq!(stats.cache_hits + stats.pending, total);
+    assert_eq!(outcome.vectors_total, stats.cache_hits);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "cancellation must not call the provider"
+    );
+    assert!(!lex_results(&repo, "alpha").is_empty());
+}
+
+#[test]
+fn watch_cancellation_mid_embedding_consumes_in_flight_batch_then_pending() {
+    let repo = DirRepo::new(
+        "watch-emb-flight",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let first = build_with_embeddings(&repo, Some(&client));
+    let total = first.vectors_total;
+
+    // Change both files so at least two inputs miss the cache, then cancel
+    // while the first batch is in flight (the fake provider cancels the
+    // shared token on its first call).
+    repo.write("docs/a.md", WATCH_DOC_A_V2);
+    repo.write("docs/b.md", WATCH_DOC_B_V2);
+    let token = repoise_core::embed::CancellationToken::new();
+    let budgets = repoise_core::embed::EmbeddingBudgets {
+        batch_size: 1,
+        ..repoise_core::embed::EmbeddingBudgets::default()
+    };
+    let (client, _, _) = recording_client("v1", false, Some(token.clone()), budgets, token);
+    let (mut watcher, _) = quick_watcher_with_embed(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+    );
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    let stats = outcome.embedding.as_ref().unwrap();
+    let misses = total - stats.cache_hits;
+    assert!(misses >= 2);
+    assert_eq!(stats.embedded, 1, "the in-flight batch result is consumed");
+    assert_eq!(stats.pending, misses - 1, "the remainder stays pending");
+    assert_eq!(stats.requests, 1);
+    assert_eq!(outcome.vectors_total, stats.cache_hits + 1);
 }
 
 fn init_overlay(

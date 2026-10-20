@@ -59,10 +59,18 @@ repoise watch /absolute/path/to/checkout
 Watch is a long-running process: stop it with Ctrl+C. It is not installed as
 a daemon by init or MCP. Without a healthy watch loop, run index after changes.
 Check freshness after publication before relying on changed evidence. Watch
-publishes through the shared incremental index operation without an embedding
-session: a watch-published generation carries no vectors, so in an
-embedding-configured scope search degrades to lexical and `check` reports
-coverage-not-met until an explicit `repoise index` restores vectors.
+publishes through the shared incremental index operation with the configured
+embedding session: each publication embeds only changed/new chunk inputs and
+serves unchanged inputs from the content-addressed vector cache under the
+configured budgets. When embedding is not configured (or this build lacks the
+remote-embedding transport), watch publications are lexical-only and carry no
+vectors. A provider failure or cancellation during a publication leaves the
+generation lexically complete with partial or no vector coverage; `status`
+and `check` report the pending/failed chunk counts and coverage-not-met.
+Watch does not retry a publication on its own: the failed or pending inputs
+are re-attempted by the next watch publication (when content or configuration
+changes) or by an explicit `repoise index`, so a missing vector is never
+reported as covered.
 
 Default Git mode indexes the working tree. Use `--committed` consistently
 for index, check, search, read, and MCP when testing a committed snapshot.

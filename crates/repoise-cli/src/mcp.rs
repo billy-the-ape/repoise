@@ -567,7 +567,10 @@ impl Server {
                     .into(),
             );
         }
-        let client = crate::embedding_client(&self.context.effective)?;
+        let client = crate::embedding_client(
+            &self.context.effective,
+            repoise_core::embed::CancellationToken::new(),
+        )?;
         let enrichment = crate::enrichment_session(&self.context)?;
         let outcome = repoise_core::indexing::index(
             self.context.adapter.as_ref(),
