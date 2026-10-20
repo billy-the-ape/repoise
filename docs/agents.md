@@ -130,6 +130,36 @@ Default Git mode indexes the working tree. Use `--committed` consistently
 for index, check, search, read, and MCP when testing a committed snapshot.
 Uncommitted edits are intentionally outside that mode.
 
+## Linked worktrees
+
+When the agent works in a newly created, detached Git worktree of an already
+indexed repository, `repoise index` in that worktree reuses compatible parse
+artifacts and embedding vectors shared by the local repository family instead
+of reparsing the unchanged corpus. Each worktree still publishes its own
+scope-bound index; search, exact reads, and freshness always reflect the
+worktree's own checkout. No environment variable is required: the shared store
+defaults to a versioned directory under the repository's Git common directory
+(and moves under `cacheDir`/`REPOISE_CACHE_DIR` when explicitly configured).
+Reparsing is skipped for unchanged compatible files; a warm clean worktree at
+the same commit performs no parsing and no document-embedding provider calls,
+while a small delta reparses only the changed files. `sharedCache: false` in
+configuration opts a worktree out. See [storage.md](storage.md) for the shared
+layout and its invariants.
+
+Reproducible example:
+
+```sh
+repoise index                       # checkout A: first build
+git worktree add ../task --detach   # linked worktree B at the same commit
+cd ../task
+repoise index                       # shows "family: ... (N files, M chunks reused ...)"
+repoise check --fresh
+```
+
+A warm build still scans and hashes the destination files and rebuilds its
+SQLite/FTS rows; it avoids repeated parsing and embedding, not all filesystem
+work.
+
 ## MCP clients and worktrees
 
 Register the server using [mcp.md](mcp.md). Use an absolute executable path
@@ -151,12 +181,16 @@ Each MCP server is bound to its launch root. A client that creates a task
 worktree must launch/register a server for that actual worktree or provide a
 supported way to select it. A server launched for the primary checkout does
 not automatically follow an agent into another worktree. A detached HEAD is
-supported as a Git checkout; the issue is targeting the correct root.
+supported as a Git checkout; the issue is targeting the correct root. Cross-
+worktree cache reuse reduces the cost of indexing the task worktree; it does
+not make a primary-checkout server follow the agent to it.
 
 CLI agents can run Repoise from their task worktree or pass that root explicitly.
 For a shared external cache, keep `REPOISE_CACHE_DIR` consistent; Repoise
 separates repository/worktree scopes, and source IDs from another scope
-cannot be substituted for in-scope reads.
+cannot be substituted for in-scope reads. Linked worktrees of one local
+repository share reusable parse/embedding artifacts automatically (see
+[Linked worktrees](#linked-worktrees)); independent clones do not.
 
 ## Upgrade managed guidance
 

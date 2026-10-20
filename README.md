@@ -16,6 +16,7 @@ See the [publication record](docs/publish/alpha-1-status.md) for verification an
 - Offline lexical search over documentation and code; no model or credentials required.
 - Incremental SQLite/FTS5 indexing, scope/freshness checks, and exact source reads.
 - TypeScript/JavaScript structural chunks and symbols; line-window fallback for other languages.
+- Cross-worktree reuse: linked Git worktrees of one local repository reuse compatible parse artifacts and embedding vectors from a shared, versioned family store.
 - Structural links (references, referenced-by, parent, children), an explicit watch loop, and managed agent guidance.
 - CLI and stdio MCP interfaces over the same services; MCP is read-only by default.
 - Optional OpenAI-compatible embeddings and bounded Git history retrieval.

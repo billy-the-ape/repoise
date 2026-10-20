@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Cross-worktree cache reuse
+
+Linked worktrees of one local Git repository now share reusable parse
+artifacts and embedding vectors through a versioned family store under the
+canonical Git common directory (or under `families/<familyId>/` in an
+cache root explicitly configured via `cacheDir`/`REPOISE_CACHE_DIR`). Each
+worktree still publishes its own scope-bound index; search, exact reads,
+and freshness always reflect the destination checkout. `repoise index` in a
+new worktree at the same commit skips parsing for unchanged compatible files
+and, for a completed compatible embedding profile, makes no
+document-embedding provider calls; small deltas reparse only affected
+files. New configuration option: `sharedCache` (default `true`) opts a
+worktree out of sharing. `doctor` and `status` report the sharing state and
+store location; `index` reports `files_family_reused`/`chunks_family_reused`
+(JSON and human output). No new environment variables, secrets, or migration
+steps are required; existing caches keep working (legacy checkout-local
+embedding caches are re-embedded on the next embedding build, not migrated).
+Worktree-scoped `purge` removes only that scope's member registration under the
+family store's `members/` directory (sibling shared data untouched); `purge --all`
+removes `families/` only when the family store lives under the explicitly
+selected cache root. Independent clones, plain directories, and opted-out worktrees
+remain isolated. See [storage.md](docs/storage.md#cross-worktree-reuse-family-store)
+and [agents.md](docs/agents.md#linked-worktrees).
+
 ## 0.1.0-alpha.1 — 2026-10-15 (functional preview)
 
 First functional preview of the offline repository knowledge engine. Includes

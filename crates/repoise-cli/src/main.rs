@@ -626,6 +626,18 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
             outcome.chunks_added,
             outcome.chunks_removed
         );
+        match (&outcome.family_id, &outcome.sharing_fallback) {
+            (Some(family), None) => {
+                println!(
+                    "family: {family} ({} files, {} chunks reused from shared parse artifacts)",
+                    outcome.files_family_reused, outcome.chunks_family_reused
+                );
+            }
+            (Some(_), Some(reason)) | (None, Some(reason)) => {
+                println!("sharing: {reason}");
+            }
+            (None, None) => {}
+        }
         if outcome.symbols_total > 0 || outcome.references_total > 0 {
             println!(
                 "code: {} symbols, {} reference edges",
@@ -749,6 +761,7 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
     } else {
         println!("root: {}", view.scope.root.display());
         println!("adapter: {} mode: {}", view.scope.adapter, view.scope.mode);
+        output::print_sharing(&view.sharing);
         println!("scope: {}/{}", view.scope.repo_id, view.scope.worktree_id);
         println!(
             "remote: {}",
@@ -1508,6 +1521,38 @@ fn run_purge(opts: &CliOptions) -> Result<ExitCode, String> {
         return Err("purge requires --all or both --repo-id and --worktree-id".into());
     }
     let report = repoise_core::purge::purge(&cache, &request).map_err(|err| err.to_string())?;
+    if !request.all {
+        // Unregister the purged scope from the family member registry so
+        // shared garbage collection keeps working for sibling worktrees.
+        // The probe creates nothing; a failure here only warns (the scope
+        // itself was purged) and never touches sibling data.
+        let unregistration: Result<(), String> = (|| {
+            let root = std::fs::canonicalize(&opts.root).map_err(|err| err.to_string())?;
+            let cli = cli_overrides(opts)?;
+            let paths = config_paths(opts);
+            let effective =
+                repoise_core::config::EffectiveConfig::resolve_with(&root, &paths, &cli)
+                    .map_err(|err| err.to_string())?;
+            let adapter = default_adapter(&root)?;
+            let state = repoise_core::shared::resolve_sharing(adapter.as_ref(), &effective, &cache)
+                .map_err(|err| err.to_string())?;
+            if let repoise_core::shared::SharingState::Shared(store) = state {
+                repoise_core::shared::remove_member(
+                    &store.root,
+                    request.repo_id.as_deref().ok_or("missing repo id")?,
+                    request
+                        .worktree_id
+                        .as_deref()
+                        .ok_or("missing worktree id")?,
+                )
+                .map_err(|err| err.to_string())?;
+            }
+            Ok(())
+        })();
+        if let Err(err) = unregistration {
+            eprintln!("warning: could not remove family registration: {err}");
+        }
+    }
     if opts.json {
         println!("{}", json(&report)?);
     } else {

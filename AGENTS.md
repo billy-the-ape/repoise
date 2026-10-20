@@ -18,6 +18,7 @@ the related-knowledge service, offline `check` with stable exit codes, the incre
 uninstall`, `overlay update` three-way template migration) and the stdio MCP server
 (lexical-first; refresh tool opt-in via `mcp.refresh` or `--allow-refresh`; see
 docs/mcp.md).
+Cross-worktree cache reuse lets linked Git worktrees of one local repository share immutable parse artifacts and embedding vectors through a versioned family store (default under the Git common directory; `sharedCache: false` opts out; see docs/storage.md).
 Pre-v1 reliability fixes follow the first CLI/MCP pilot: doctor reports the
 selected snapshot mode and the actually selected config/local-config paths,
 lexical search enforces strict all-terms-in-one-chunk matching (parenthesized

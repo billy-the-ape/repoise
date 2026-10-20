@@ -13,12 +13,79 @@ Layout under the cache root:
 | --- | --- |
 | `repos/<repoId>/worktrees/<worktreeId>/index.sqlite` | All index tables for one scope |
 | `repos/<repoId>/worktrees/<worktreeId>/state.json` | Versioned integration manifest; the database remains canonical |
-| `repos/<repoId>/embedding-cache/` | Shared content-addressed embedding cache (`embeddings.sqlite`): input-hash plus profile-fingerprint keyed vectors, reference-counted against retained generations |
+| `repos/<repoId>/embedding-cache/` | Checkout-local content-addressed embedding cache (`embeddings.sqlite`), used when no reuse family is available (plain directories, sharing opted out, or fallback): input-hash plus profile-fingerprint keyed vectors, reference-counted against retained generations |
 | `repos/<repoId>/host-cache/<host>.json` | Verified remote host records for history enrichment (ETag plus bounded payload per key, with an optional paged-list continuation); invalidated on remote permission denial; removed when the repository scope is purged (`purge --all`), not by a worktree-scoped purge |
 
 `repoId` and `worktreeId` are opaque hash-derived scope ids from
 `scope_for_search` (root/access scope plus worktree/dirty state); purge validates them
 against `[a-z0-9-]` before touching paths.
+
+## Cross-worktree reuse family store
+
+Linked worktrees of one local Git repository belong to one reuse family,
+identified by the canonical Git common directory (obtained through `git
+--git-common-dir`, never by path layout or remote URL). Each worktree keeps its
+own checkout-local index scope (`repoId`/`worktreeId` above); the family store
+holds only reusable immutable artifacts shared between them:
+
+| Path (default, versioned) | Contents |
+| --- | --- |
+| `<git-common-dir>/repoise/1/parse-cache/<key>.json` | Content-addressed parse artifacts (exact parse inputs: content hash, language, parser version, corpus, repository-relative path). Written atomically (temporary file plus rename); unknown-version or malformed entries are safe misses, never trusted |
+| `<git-common-dir>/repoise/1/embeddings.sqlite` | Family-scoped content-addressed embedding cache (same format as the checkout-local one above), keyed by prepared-input hash plus full profile fingerprint |
+| `<git-common-dir>/repoise/1/members/` | Member registration (one JSON file per worktree scope: `repoId`, `worktreeId`, snapshot mode, index database path, registration time), used by GC to retain vectors referenced by live worktree generations |
+
+With an explicit cache location (`cacheDir` or `REPOISE_CACHE_DIR`), the family
+store moves under that root instead: `<cache-root>/families/<familyId>/1/`,
+where `familyId` is the anchor-derived family identifier. An explicit external
+cache therefore stays family-namespaced; two independent clones under one
+external root never share. `sharedCache: false` in configuration opts a
+worktree out entirely (isolated indexing, no shared reads or writes). If the
+canonical common directory is unavailable, indexing falls back to the
+checkout-local layout with an accurate diagnostic; no shared-cache hit is ever
+claimed when isolated fallback occurred.
+
+The versioned directory (`1`) marks the shared layout and artifact format.
+Older or incompatible versions are treated as misses and rebuilt; nothing is
+migrated in place. Legacy checkout-local embedding caches are simply
+re-embedded on the next embedding build (a cold rebuild), not migrated.
+
+Invariants specific to the family store:
+
+- Artifacts and vectors are immutable and content/profile-addressed; they
+  carry no scope-bound chunk or source ids. Destination builds rematerialize
+  them into their own scope and re-resolve all references against the
+  destination's eligible files.
+- Artifact publication is atomic per file, and the artifact retention bound
+  is enforced once per build (after the file loop), not per write; the
+  embedding database uses the usual SQLite WAL discipline (no copying of a
+  live database file).
+- Default-versus-explicit store selection compares canonicalized locations
+  (canonicalizing the deepest existing path prefix), so equivalent
+  spellings of the same checkout-local cache root — symlinked prefixes,
+  Windows short paths, `..` components — select the same family store as
+  the checkout's siblings.
+- Family GC runs only when a member-registered store is healthy. It collects
+  the embedding keys referenced by each registered member's retained
+  generations and reclaims unreferenced entries once they are older than the
+  1-hour grace window (`GC_GRACE_MS`); entries created within the window are
+  never reclaimed, so an in-flight sibling build cannot lose vectors it is
+  about to reference. A member whose index database is gone (purged or removed
+  worktree) contributes no references, so its older unreferenced vectors are
+  reclaimed; when such a worktree returns, the next embedding build
+  re-embeds them, and its already-published generation stays valid (vectors
+  are stored in the scope index as well as the shared cache). If an existing member
+  database cannot be opened, or member data is malformed, the sweep is skipped
+  entirely (fail closed). Parse artifacts additionally have an explicit
+  per-run cap (`MAX_PARSE_ARTIFACTS`, oldest first); embedding reclamation has
+  no per-run cap but is bounded by the live members' retained generations and
+  the grace window.
+- Worktree-scoped `purge` removes only that scope's member registration under
+  the family store's `members/` directory (sibling shared data is untouched);
+  `purge --all` removes everything under the selected cache root, including
+  `families/` when the family store lives under an explicit cache root, but
+  never the common-directory default store and never Git metadata.
+- Read-only operations (search, read, status, read-only MCP) never create or
+  migrate family-store data.
 
 Tables:
 
@@ -51,8 +118,10 @@ Invariants:
   the opt-in history lane; the v5 upgrade adds the `generation.history_meta`
   persisted lane-coverage summary column.
 - Shared embedding-cache entries are reference-counted against the retained worktree
-  generations of the repository scope after each publication; unreferenced entries are
-  reclaimed, so a failed or superseded embedding job never serves a vector.
+  generations of the repository scope after each publication; unreferenced entries
+  older than the grace window are reclaimed (recent entries are retained, so an
+  in-flight build cannot lose vectors it is about to reference), so a failed or
+  superseded embedding job never serves a vector.
 - Retention keeps the current generation plus the previous one; older rows are deleted
   in the same scope after each successful publish.
 - Chunk ids bind scope, parser version, path, structural address and text hash, so

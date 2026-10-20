@@ -13,6 +13,7 @@ use crate::adapter::{
     Capability, SnapshotMode, SourceAdapter, SourceKind, filesystem::FilesystemAdapter,
     git::GitAdapter,
 };
+use crate::cache::CachePaths;
 use crate::config::{CliOverrides, ConfigPaths, EffectiveConfig};
 use crate::discovery::native_ignore_files;
 use crate::error::Error;
@@ -60,6 +61,8 @@ pub struct DoctorReport {
     pub local_config_file_exists: bool,
     /// Sanitized remote identity for Git roots.
     pub remote_identity: Option<String>,
+    /// Cross-worktree reuse state for the resolved cache root.
+    pub sharing: crate::shared::SharingInfo,
     /// Effective settings with origins.
     pub effective: EffectiveConfig,
     /// Policy summary.
@@ -133,6 +136,15 @@ pub fn doctor(
         .local
         .clone()
         .unwrap_or_else(|| root.join(LOCAL_CONFIG_FILENAME));
+    // Cross-worktree reuse diagnostic: probe only (this never creates
+    // state), resolved against the same cache root the build would use.
+    let env_override = std::env::var(crate::CACHE_ENV_VAR).ok();
+    let cache_root = CachePaths::resolve(&root, &effective.cache_dir, env_override.as_deref())?;
+    let sharing = crate::shared::describe(&crate::shared::resolve_sharing(
+        adapter.as_ref(),
+        &effective,
+        &cache_root,
+    )?);
     Ok(DoctorReport {
         root: root.clone(),
         adapter: adapter.kind(),
@@ -143,6 +155,7 @@ pub fn doctor(
         config_file,
         local_config_file,
         remote_identity: adapter.remote_identity()?,
+        sharing,
         effective: effective.clone(),
         policy: PolicySummary {
             package_default_rules,
