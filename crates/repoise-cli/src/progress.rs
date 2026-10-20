@@ -49,6 +49,10 @@ struct Inner {
     last_render: Instant,
     /// Last in-place line (padding calculation).
     last_line: String,
+    /// (done, time) of the first progress report in the current phase. The
+    /// ETA rate is measured from this baseline so units credited at phase
+    /// start (embedding cache hits) do not skew it.
+    eta_base: Option<(u64, Instant)>,
 }
 
 impl ProgressReporter {
@@ -70,6 +74,7 @@ impl ProgressReporter {
                 total: None,
                 last_render: Instant::now(),
                 last_line: String::new(),
+                eta_base: None,
             }),
         }
     }
@@ -87,6 +92,7 @@ impl IndexProgressReporter for ProgressReporter {
             state.phase_started = Instant::now();
             state.done = 0;
             state.total = total;
+            state.eta_base = None;
             state.last_render = Instant::now();
             state.render(stream);
         });
@@ -98,6 +104,11 @@ impl IndexProgressReporter for ProgressReporter {
             state.done = done;
             state.total = Some(total);
             let now = Instant::now();
+            // The phase's first report is the ETA baseline: units credited
+            // before it (embedding cache hits) must not skew the rate.
+            if state.eta_base.is_none() {
+                state.eta_base = Some((done, now));
+            }
             // Completion always renders; otherwise stay within the throttle.
             if done == total || now.duration_since(state.last_render) >= UPDATE_INTERVAL {
                 state.last_render = now;
@@ -194,26 +205,38 @@ impl Inner {
     }
 
     /// Approximate seconds remaining, or `None` when the estimate would be
-    /// misleading (too few units, too little observed time, or negligible).
+    /// misleading. The rate is measured from the phase's first progress
+    /// report: units credited before it (embedding cache hits reported at
+    /// phase start) must not count as instantly finished work.
     fn eta_seconds(&self) -> Option<u64> {
-        let total = self.total?;
-        if self.done < MIN_UNITS_FOR_ETA || total <= self.done {
-            return None;
-        }
-        let observed = self.phase_started.elapsed();
-        if observed < MIN_TIME_FOR_ETA {
-            return None;
-        }
-        let observed_secs = observed.as_secs_f64();
-        if observed_secs <= 0.0 {
-            return None;
-        }
-        let remaining_secs = (total - self.done) as f64 / (self.done as f64 / observed_secs);
-        if remaining_secs < 1.0 {
-            return None;
-        }
-        Some(remaining_secs.round().max(1.0) as u64)
+        let (base_done, base_time) = self.eta_base?;
+        eta_seconds_from(self.done, self.total?, Some(base_done), base_time.elapsed())
     }
+}
+
+/// Pure ETA arithmetic: `None` when the estimate would be misleading
+/// (no first-report baseline yet, too few units completed since it, too
+/// little observed time, or a sub-second remainder).
+fn eta_seconds_from(
+    done: u64,
+    total: u64,
+    base_done: Option<u64>,
+    observed: Duration,
+) -> Option<u64> {
+    let base = base_done?;
+    let delta = done.saturating_sub(base);
+    if delta < MIN_UNITS_FOR_ETA || total <= done {
+        return None;
+    }
+    let observed_secs = observed.as_secs_f64();
+    if observed < MIN_TIME_FOR_ETA || observed_secs <= 0.0 {
+        return None;
+    }
+    let remaining_secs = (total - done) as f64 / (delta as f64 / observed_secs);
+    if remaining_secs < 1.0 {
+        return None;
+    }
+    Some(remaining_secs.round().max(1.0) as u64)
 }
 
 /// The work unit name for a phase's counts.
@@ -249,6 +272,60 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(250)), "0.2s");
         assert_eq!(format_duration(Duration::from_secs(59)), "59.0s");
         assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
+    }
+
+    /// The ETA rate must be measured from the phase's first progress
+    /// report, so cache hits credited at phase start do not make the ETA
+    /// look faster than real work.
+    #[test]
+    fn eta_baseline_excludes_units_before_first_report() {
+        // Reviewer scenario: 9,000 of 10,000 chunks are cache hits reported
+        // as the first progress event; 50 s later the provider has done 500
+        // more. The rate is 500/50s, so ~50 s remain.
+        assert_eq!(
+            eta_seconds_from(9500, 10000, Some(9000), Duration::from_secs(50)),
+            Some(50),
+            "ETA must come from units completed after the first report"
+        );
+        // The old no-baseline computation would have printed ~3 s: the
+        // same numbers against a zero baseline.
+        assert_eq!(
+            eta_seconds_from(9500, 10000, Some(0), Duration::from_secs(50)),
+            Some(3)
+        );
+
+        // Cold-cache phase equivalent: first report (100, 10000), then
+        // 900 units in 50 s -> ~500 s left.
+        assert_eq!(
+            eta_seconds_from(1000, 10000, Some(100), Duration::from_secs(50)),
+            Some(500)
+        );
+
+        // No first report yet: no ETA.
+        assert_eq!(
+            eta_seconds_from(100, 1000, None, Duration::from_secs(50)),
+            None
+        );
+        // No movement since the first report: no ETA.
+        assert_eq!(
+            eta_seconds_from(9000, 10000, Some(9000), Duration::from_secs(50)),
+            None
+        );
+        // Too few units since the baseline: no ETA.
+        assert_eq!(
+            eta_seconds_from(9007, 10000, Some(9000), Duration::from_secs(50)),
+            None
+        );
+        // Too little observed time: no ETA.
+        assert_eq!(
+            eta_seconds_from(9500, 10000, Some(9000), Duration::from_millis(50)),
+            None
+        );
+        // Sub-second remainder: omitted.
+        assert_eq!(
+            eta_seconds_from(9999, 10000, Some(9000), Duration::from_secs(50)),
+            None
+        );
     }
 
     /// Drives the in-place (TTY) line lifecycle against an in-memory sink:
