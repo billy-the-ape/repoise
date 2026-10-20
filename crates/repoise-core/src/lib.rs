@@ -28,6 +28,7 @@ pub mod ignore;
 pub mod indexing;
 pub mod init;
 pub mod overlay;
+pub mod progress;
 pub mod provenance;
 pub mod purge;
 pub mod read;

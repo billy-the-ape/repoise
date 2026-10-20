@@ -159,7 +159,7 @@ pub fn status(
     let mode_name = format!("{mode:?}");
 
     // Live snapshot metadata (inventory without chunking).
-    let inventory = discovery::inventory(adapter, mode, eff)?;
+    let inventory = discovery::inventory(adapter, mode, eff, None)?;
     let dirty_count =
         if adapter.kind() == crate::adapter::SourceKind::Git && mode == SnapshotMode::WorkingTree {
             crate::adapter::git::GitAdapter::new(&root)

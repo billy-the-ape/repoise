@@ -31,6 +31,7 @@ use crate::config::EffectiveConfig;
 use crate::discovery;
 use crate::error::Error;
 use crate::hash;
+use crate::progress::{IndexPhase, IndexProgressReporter};
 use crate::provenance::SnapshotRecord;
 use crate::store::{self, ChunkRow, FileRow, GenerationInput, Store};
 
@@ -281,6 +282,8 @@ pub fn now_ms() -> i64 {
 /// and K5). File-level reuse keeps unchanged records stable; embeddings are
 /// optional (lexical-only always publishes); history is collected locally
 /// and optionally enriched against the configured host before publication.
+/// `progress` receives phase/counter events for live reporting; it never
+/// changes build semantics.
 #[allow(clippy::too_many_arguments)]
 pub fn index(
     adapter: &dyn crate::adapter::SourceAdapter,
@@ -291,8 +294,9 @@ pub fn index(
     request: &IndexRequest,
     embed_session: Option<&crate::embed::EmbeddingClient>,
     enrichment: Option<&crate::history::EnrichmentSession>,
+    progress: Option<&dyn IndexProgressReporter>,
 ) -> Result<IndexOutcome> {
-    let inventory = discovery::inventory(adapter, mode, eff)?;
+    let inventory = discovery::inventory(adapter, mode, eff, progress)?;
     let canonical_root = adapter.canonical_root()?;
     let (repo_id, worktree_id) = scope_for(&inventory, &canonical_root, mode);
     let scope_key = format!("{repo_id}|{worktree_id}");
@@ -378,7 +382,17 @@ pub fn index(
     let mut symbol_rows: Vec<store::SymbolRow> = Vec::new();
     let mut reference_rows: Vec<store::ReferenceRow> = Vec::new();
 
+    // Reconcile: one unit per inventoried file (reused or reparsed).
+    let reconcile_total = inventory.files.len() as u64;
+    if let Some(reporter) = progress {
+        reporter.phase_started(IndexPhase::Reconcile, Some(reconcile_total));
+    }
+    let mut reconciled = 0u64;
     for file in &inventory.files {
+        reconciled += 1;
+        if let Some(reporter) = progress {
+            reporter.progress(IndexPhase::Reconcile, reconciled, reconcile_total);
+        }
         let posix_path = crate::adapter::to_posix(&file.path);
         let is_code = file.role == Role::Code;
         let selection = chunker_for(&file.language, file.role);
@@ -514,6 +528,9 @@ pub fn index(
         &mut symbol_rows,
         &mut reference_rows,
     );
+    if let Some(reporter) = progress {
+        reporter.phase_finished(IndexPhase::Reconcile);
+    }
 
     // Optional embedding pass: cache-first, bounded provider calls. Vectors
     // publish only with this generation (same transaction), so failed or
@@ -563,7 +580,24 @@ pub fn index(
                 }
             })
             .collect();
-        let outcome = crate::embed::embed_chunks(&embedding_cache, client, &work, built_at_ms)?;
+        if let Some(reporter) = progress {
+            reporter.phase_started(IndexPhase::Embedding, Some(work.len() as u64));
+        }
+        let outcome = match progress {
+            Some(reporter) => {
+                let mut forward = move |done: u64, total: u64| {
+                    reporter.progress(IndexPhase::Embedding, done, total);
+                };
+                crate::embed::embed_chunks(
+                    &embedding_cache,
+                    client,
+                    &work,
+                    built_at_ms,
+                    Some(&mut forward),
+                )?
+            }
+            None => crate::embed::embed_chunks(&embedding_cache, client, &work, built_at_ms, None)?,
+        };
         embedding_stats = Some(outcome.stats);
         vector_profile = Some(fingerprint.clone());
         let input_hash_by_id: std::collections::HashMap<&str, &str> = work
@@ -583,6 +617,9 @@ pub fn index(
                 vector,
             });
         }
+        if let Some(reporter) = progress {
+            reporter.phase_finished(IndexPhase::Embedding);
+        }
     }
 
     // Optional history lane (card K5): opt-in, bounded, offline local
@@ -591,6 +628,11 @@ pub fn index(
     let mut history_rows: Vec<store::HistoryRow> = Vec::new();
     let mut history_summary: Option<crate::history::HistorySummary> = None;
     if eff.history.enabled {
+        // Collection has no reliable denominator up front; enrichment
+        // reports per-item progress once the hint count is known.
+        if let Some(reporter) = progress {
+            reporter.phase_started(IndexPhase::History, None);
+        }
         let spec = crate::history::HistorySpec {
             horizon: eff.history.horizon,
             max_paths_per_commit: eff.history.max_paths_per_commit,
@@ -612,10 +654,18 @@ pub fn index(
             }
         };
         let report = match enrichment {
-            Some(session) => session.run(
-                adapter.remote_identity().ok().flatten().as_deref(),
-                &mut set,
-            ),
+            Some(session) => {
+                let remote = adapter.remote_identity().ok().flatten();
+                match progress {
+                    Some(reporter) => {
+                        let mut forward = move |done: u64, total: u64| {
+                            reporter.progress(IndexPhase::History, done, total);
+                        };
+                        session.run(remote.as_deref(), &mut set, Some(&mut forward))
+                    }
+                    None => session.run(remote.as_deref(), &mut set, None),
+                }
+            }
             None => crate::history::EnrichmentReport::default(),
         };
         history_rows = set
@@ -651,6 +701,9 @@ pub fn index(
             budget_exhausted: report.budget_exhausted,
             unattempted: report.unattempted,
         });
+        if let Some(reporter) = progress {
+            reporter.phase_finished(IndexPhase::History);
+        }
     }
 
     let snapshot = inventory.snapshot.clone();
@@ -689,6 +742,9 @@ pub fn index(
         history: history_rows.clone(),
         history_meta,
     };
+    if let Some(reporter) = progress {
+        reporter.phase_started(IndexPhase::Publication, None);
+    }
     let generation_id = match store::publish(&conn, &input) {
         Ok(id) => {
             store::clear_last_error(&conn)?;
@@ -719,6 +775,9 @@ pub fn index(
     };
     let state_path = cache.state_path(&repo_id, &worktree_id);
     write_state(&state_path, &state)?;
+    if let Some(reporter) = progress {
+        reporter.phase_finished(IndexPhase::Publication);
+    }
     Ok(IndexOutcome {
         repo_id,
         worktree_id,

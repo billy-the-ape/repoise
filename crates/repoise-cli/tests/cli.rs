@@ -533,3 +533,70 @@ fn overlay_uninstall_and_update_commands() {
     let no_action = cli(&["overlay", root.to_str().unwrap()]);
     assert_eq!(no_action.status.code(), Some(2));
 }
+
+#[test]
+fn index_shows_progress_and_final_summary_on_stdout() {
+    let root = temp_root("index-progress");
+    let output = cli(&["index", root.to_str().unwrap()]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // Immediate start feedback names the scope and the first phase, before
+    // any work finishes.
+    assert!(
+        stdout.contains(": discovery started"),
+        "index must announce the start phase: {stdout}"
+    );
+    // Phase progress lines with counts and elapsed time; final summary.
+    assert!(stdout.contains("index: reconcile "));
+    assert!(stdout.contains("index: publication "));
+    assert!(stdout.contains("files: 1 (reused 0, reparsed 1, skipped 0)"));
+    assert!(stdout.contains("elapsed: "));
+    // No per-file path noise in the output.
+    assert!(!stdout.contains("README.md:"));
+    // Nothing was routed to stderr.
+    assert!(String::from_utf8(output.stderr).unwrap().is_empty());
+}
+
+#[test]
+fn index_json_keeps_stdout_single_json_and_progress_on_stderr() {
+    let root = temp_root("index-json-progress");
+    let output = cli(&["index", "--json", root.to_str().unwrap()]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // Stdout is exactly one final JSON document.
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("JSON mode stdout must parse as one JSON value");
+    assert_eq!(value["files_indexed"].as_u64(), Some(1));
+    assert_eq!(value["files_reparsed"].as_u64(), Some(1));
+    assert_eq!(value["files_reused"].as_u64(), Some(0));
+    // Progress goes to stderr instead, keeping stdout machine-readable.
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains(": discovery started"));
+    assert!(stderr.contains("index: reconcile "));
+}
+
+#[test]
+fn index_json_incremental_reports_reuse_in_json_and_progress() {
+    let root = temp_root("index-json-incremental");
+    let first = cli(&["index", "--json", root.to_str().unwrap()]);
+    assert!(first.status.success());
+    let first_value: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(first.stdout).unwrap()).unwrap();
+    assert_eq!(first_value["files_reparsed"].as_u64(), Some(1));
+
+    // Unchanged second build: JSON carries the reuse numbers.
+    let second = cli(&["index", "--json", root.to_str().unwrap()]);
+    assert!(second.status.success());
+    let second_value: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(second.stdout).unwrap()).unwrap();
+    assert_eq!(second_value["files_reparsed"].as_u64(), Some(0));
+    assert_eq!(second_value["files_reused"].as_u64(), Some(1));
+    // Progress still ran on stderr and shows the file as fully covered
+    // without claiming a reparse.
+    let stderr = String::from_utf8(second.stderr).unwrap();
+    assert!(stderr.contains(": discovery started"));
+    assert!(
+        stderr.contains("index: reconcile 1/1 files (100%)"),
+        "incremental reconcile must cover the file without reparsing: {stderr}"
+    );
+}

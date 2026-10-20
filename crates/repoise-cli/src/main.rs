@@ -23,6 +23,7 @@ use repoise_core::{CACHE_ENV_VAR, CONFIG_FILENAME};
 
 mod mcp;
 mod output;
+mod progress;
 use output::{json, print_doctor, print_explain, print_init};
 
 #[cfg(feature = "remote-embedding")]
@@ -98,7 +99,8 @@ COMMANDS:
     greet                         Print the project greeting
     doctor [ROOT]                 Show effective settings, capabilities, policy
     explain --path <REL> [ROOT]   Explain the include/exclude decision for a path
-    index [ROOT]                  Build and publish the offline index (incremental)
+    index [ROOT]                  Build and publish the offline index (incremental;
+                                  live phase progress, or to stderr with --json)
     status [ROOT]                 Show scope, snapshot, index and freshness
     search --query <Q> [ROOT]     Offline lexical search over the current index
     read --source-id <ID> [ROOT]  Exact read-back of a search result
@@ -114,7 +116,7 @@ COMMANDS:
     version                       Print version information
 
 GLOBAL OPTIONS:
-    --json                      Emit machine-readable JSON
+    --json                      Emit machine-readable JSON (index: progress to stderr)
     --config <PATH>             Override the committed config path
     --local-config <PATH>       Override the local override path
     --max-file-bytes <N>        Override the max accepted file size
@@ -565,7 +567,21 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     let session = client.as_ref();
     let enrichment = enrichment_session(&ctx)?;
     let enrichment_session = enrichment.as_ref();
-    let outcome = repoise_core::indexing::index(
+    // Progress renders to stderr in JSON mode so stdout stays a single JSON
+    // document; to stdout otherwise.
+    let reporter = progress::ProgressReporter::new(opts.json);
+    // Immediate start feedback so a long discovery never looks stuck.
+    let started = format!(
+        "indexing {}/{} ({:?}): discovery started",
+        ctx.repo_id, ctx.worktree_id, ctx.mode
+    );
+    if opts.json {
+        eprintln!("{started}");
+    } else {
+        println!("{started}");
+    }
+    let progress: Option<&dyn repoise_core::progress::IndexProgressReporter> = Some(&reporter);
+    let result = repoise_core::indexing::index(
         ctx.adapter.as_ref(),
         ctx.mode,
         &ctx.effective,
@@ -574,8 +590,12 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
         &request,
         session,
         enrichment_session,
-    )
-    .map_err(|err| err.to_string())?;
+        progress,
+    );
+    // Terminate any unterminated in-place progress line so the final summary
+    // or an error starts on a fresh line (no-op when piped).
+    reporter.finish();
+    let outcome = result.map_err(|err| err.to_string())?;
     if opts.json {
         println!("{}", json(&outcome)?);
     } else {
@@ -649,6 +669,7 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
                 );
             }
         }
+        println!("elapsed: {}", progress::format_duration(reporter.elapsed()));
     }
     Ok(ExitCode::SUCCESS)
 }

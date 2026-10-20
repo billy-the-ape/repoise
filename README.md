@@ -144,6 +144,10 @@ it as `npx --no-install repoise`.
 
 - `repoise index [OPTIONS] [ROOT]` — build and publish the offline index
   incrementally; use `--committed` to index the committed snapshot.
+  It reports live phase progress (discovery, reconciliation, optional
+  embedding and history enrichment, publication) with counts, elapsed time, and
+  an approximate ETA only when the observed rate is reliable. With `--json`,
+  progress goes to stderr so stdout stays a single JSON document.
 
   ```sh
   repoise index

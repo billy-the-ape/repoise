@@ -294,8 +294,8 @@ fn inventory_is_deterministic_and_applies_skips() {
         },
     )
     .unwrap();
-    let first = inventory(&adapter, SnapshotMode::WorkingTree, &eff).unwrap();
-    let second = inventory(&adapter, SnapshotMode::WorkingTree, &eff).unwrap();
+    let first = inventory(&adapter, SnapshotMode::WorkingTree, &eff, None).unwrap();
+    let second = inventory(&adapter, SnapshotMode::WorkingTree, &eff, None).unwrap();
     assert_eq!(first.manifest.manifest_hash, second.manifest.manifest_hash);
     assert!(first.files.iter().any(|f| f.path == Path::new("docs/a.md")));
     assert!(

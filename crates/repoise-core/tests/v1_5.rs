@@ -107,6 +107,7 @@ fn build(h: &Harness) -> indexing::IndexOutcome {
         &IndexRequest::default(),
         None,
         None,
+        None,
     )
     .unwrap()
 }
