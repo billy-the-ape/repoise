@@ -37,6 +37,7 @@ struct HashProvider {
     fail: bool,
     model: String,
     dimension: u32,
+    input_profile: repoise_core::embed::InputProfile,
 }
 
 impl HashProvider {
@@ -46,6 +47,7 @@ impl HashProvider {
             fail: false,
             model: "v1".to_string(),
             dimension,
+            input_profile: repoise_core::embed::InputProfile::RAW,
         }
     }
 
@@ -55,6 +57,7 @@ impl HashProvider {
             fail: true,
             model: "v1".to_string(),
             dimension,
+            input_profile: repoise_core::embed::InputProfile::RAW,
         }
     }
 
@@ -64,6 +67,7 @@ impl HashProvider {
             fail: false,
             model: "v2".to_string(),
             dimension,
+            input_profile: repoise_core::embed::InputProfile::RAW,
         }
     }
 }
@@ -91,6 +95,7 @@ impl EmbeddingProvider for HashProvider {
             model: self.model.clone(),
             dimension: self.dimension,
             profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: self.input_profile,
         }
     }
 
@@ -123,6 +128,7 @@ fn fingerprint_for(model: &str) -> String {
         model: model.to_string(),
         dimension: 8,
         profile_version: repoise_core::embed::PROFILE_VERSION,
+        input_profile: repoise_core::embed::InputProfile::RAW,
     }
     .fingerprint()
 }
@@ -283,30 +289,45 @@ struct ProviderQueryEmbedder {
 }
 
 impl QueryEmbedder for ProviderQueryEmbedder {
-    fn embed_query(&self, query: &str) -> repoise_core::Result<Option<Vec<f32>>> {
-        let batch = self.provider.embed(&[query.to_string()])?;
+    fn embed_queries(&self, inputs: &[String]) -> repoise_core::Result<Vec<Option<Vec<f32>>>> {
+        let batch = self.provider.embed(inputs)?;
         let dimension = self.provider.profile().dimension;
-        match batch.vectors.first() {
-            Some(vector) if validate_vector(vector, dimension) => Ok(Some(vector.clone())),
-            _ => Ok(None),
-        }
+        Ok(batch
+            .vectors
+            .into_iter()
+            .map(|vector| {
+                if validate_vector(&vector, dimension) {
+                    Some(vector)
+                } else {
+                    None
+                }
+            })
+            .collect())
     }
 
     fn profile_fingerprint(&self) -> String {
         self.provider.profile().fingerprint()
+    }
+
+    fn input_profile(&self) -> repoise_core::embed::InputProfile {
+        self.provider.profile().input_profile
     }
 }
 
 struct NoopQueryEmbedder;
 
 impl QueryEmbedder for NoopQueryEmbedder {
-    fn embed_query(&self, _query: &str) -> repoise_core::Result<Option<Vec<f32>>> {
-        Ok(None)
+    fn embed_queries(&self, _inputs: &[String]) -> repoise_core::Result<Vec<Option<Vec<f32>>>> {
+        Ok(vec![None; _inputs.len()])
     }
 
     fn profile_fingerprint(&self) -> String {
         // Never matches a stored profile (this embedder never produces vectors).
         String::new()
+    }
+
+    fn input_profile(&self) -> repoise_core::embed::InputProfile {
+        repoise_core::embed::InputProfile::RAW
     }
 }
 
@@ -673,4 +694,664 @@ fn cache_get_many_handles_more_keys_than_the_sqlite_variable_limit() {
     let hits = cache.get_many(&hashes, &fp, 8).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits.get(&known), Some(&vector_for("known", 8)));
+}
+
+// --- Model input profiles (EmbeddingGemma 2) --------------------------------
+
+use std::sync::Mutex;
+
+use repoise_core::classify::Role;
+use repoise_core::embed::{
+    InputProfile, docs_chunk_title, format_code_input, format_code_query, format_docs_input,
+    format_docs_query,
+};
+
+const MATH_TS: &str = r#"
+/** Multiplies two numbers. */
+export function multiply(a: number, b: number): number {
+  return a * b;
+}
+"#;
+
+/// Deterministic provider that records every input it is asked to embed, so
+/// tests can assert the exact templated inputs (no model server needed).
+#[derive(Clone)]
+struct RecordingProvider {
+    inputs: Arc<Mutex<Vec<String>>>,
+    model: String,
+    dimension: u32,
+    input_profile: InputProfile,
+}
+
+impl RecordingProvider {
+    fn new(model: &str, dimension: u32, input_profile: InputProfile) -> Arc<Self> {
+        Arc::new(Self {
+            inputs: Arc::new(Mutex::new(Vec::new())),
+            model: model.to_string(),
+            dimension,
+            input_profile,
+        })
+    }
+
+    fn received(&self) -> Vec<String> {
+        self.inputs.lock().unwrap().clone()
+    }
+
+    fn clear(&self) {
+        self.inputs.lock().unwrap().clear();
+    }
+
+    fn profile_for(&self) -> EmbeddingProfile {
+        EmbeddingProfile {
+            provider: "test-record".to_string(),
+            model: self.model.clone(),
+            dimension: self.dimension,
+            profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: self.input_profile,
+        }
+    }
+
+    fn embed_impl(&self, inputs: &[String]) -> repoise_core::Result<EmbeddingBatch> {
+        self.inputs.lock().unwrap().extend(inputs.iter().cloned());
+        Ok(EmbeddingBatch {
+            vectors: inputs
+                .iter()
+                .map(|input| vector_for(input, self.dimension))
+                .collect(),
+            model_revision: None,
+        })
+    }
+}
+
+/// Local trait object box for the recording provider.
+struct RecordingBox(RecordingProvider);
+
+impl EmbeddingProvider for RecordingBox {
+    fn profile(&self) -> EmbeddingProfile {
+        self.0.profile_for()
+    }
+
+    fn embed(&self, inputs: &[String]) -> repoise_core::Result<EmbeddingBatch> {
+        self.0.embed_impl(inputs)
+    }
+}
+
+fn client_of(provider: Arc<RecordingProvider>) -> EmbeddingClient {
+    EmbeddingClient::new(
+        Box::new(RecordingBox((*provider).clone())),
+        EmbeddingBudgets::default(),
+        CancellationToken::new(),
+    )
+}
+
+struct RecordingQueryEmbedder {
+    provider: Arc<RecordingProvider>,
+}
+
+impl QueryEmbedder for RecordingQueryEmbedder {
+    fn embed_queries(&self, inputs: &[String]) -> repoise_core::Result<Vec<Option<Vec<f32>>>> {
+        let batch = self.provider.embed_impl(inputs)?;
+        Ok(batch.vectors.into_iter().map(Some).collect())
+    }
+
+    fn profile_fingerprint(&self) -> String {
+        self.provider.profile_for().fingerprint()
+    }
+
+    fn input_profile(&self) -> InputProfile {
+        self.provider.input_profile
+    }
+}
+
+/// Builds one published scope with an explicit embedding scope setting.
+fn build_scope_with_scope(
+    tag: &str,
+    files: &[(&str, &str)],
+    session: Option<&EmbeddingClient>,
+    scope: &str,
+) -> Built {
+    let root = temp_dir(tag);
+    std::fs::write(
+        root.join("repoise.config.json"),
+        format!("{{\"schemaVersion\": 1, \"embedding\": {{\"scope\": \"{scope}\"}}}}\n"),
+    )
+    .unwrap();
+    let adapter = fake_adapter(&root, files);
+    let effective = EffectiveConfig::resolve(&root, &CliOverrides::default()).unwrap();
+    assert_eq!(effective.embedding_scope.as_str(), scope);
+    let cache = CachePaths::resolve(&root, ".repoise", None).unwrap();
+    let (repo_id, worktree_id, _) =
+        search::scope_for_search(&adapter, SnapshotMode::PlainDirectory).unwrap();
+    let store = Store::new(cache.db_path(&repo_id, &worktree_id));
+    let outcome = indexing::index(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &effective,
+        &store,
+        &cache,
+        &IndexRequest::default(),
+        session,
+        None,
+    )
+    .unwrap();
+    assert!(outcome.chunks_total > 0);
+    Built {
+        store,
+        adapter,
+        generation_id: outcome.generation_id,
+        chunks_total: outcome.chunks_total,
+    }
+}
+
+#[test]
+fn input_profile_parsing_identity_and_templates_are_exact() {
+    // Parsing: explicit names, default and explicit versions, errors.
+    assert_eq!(InputProfile::parse("raw").unwrap(), InputProfile::RAW);
+    assert_eq!(InputProfile::parse("raw:1").unwrap(), InputProfile::RAW);
+    assert_eq!(InputProfile::parse("raw:2").unwrap().identity(), "raw:2");
+    let eg2 = InputProfile::parse("embeddinggemma-2").unwrap();
+    assert_eq!(eg2.identity(), "embeddinggemma-2:1");
+    assert_eq!(InputProfile::parse("embeddinggemma-2:1").unwrap(), eg2);
+    assert!(InputProfile::parse("unknown").is_err());
+    assert!(InputProfile::parse("raw:0").is_err());
+    assert!(InputProfile::parse("raw:x").is_err());
+
+    // Document chunk templates: raw passes through, EmbeddingGemma 2 formats.
+    assert_eq!(
+        format_docs_input(InputProfile::RAW, "Any Title", "body"),
+        "body"
+    );
+    assert_eq!(
+        format_docs_input(eg2, "Guide > Setup", "body"),
+        "title: Guide > Setup | text: body"
+    );
+    assert_eq!(
+        format_code_input(
+            InputProfile::RAW,
+            "src/a.ts",
+            "fn main",
+            Some("ctx"),
+            "let x"
+        ),
+        "let x"
+    );
+    assert_eq!(
+        format_code_input(
+            eg2,
+            "src/a.ts",
+            "multiply",
+            Some("src/math.ts"),
+            "return a * b"
+        ),
+        "title: src/a.ts | text: symbol: multiply | context: src/math.ts | code: return a * b"
+    );
+    assert_eq!(
+        format_code_input(eg2, "src/a.ts", "", None, "let x"),
+        "title: src/a.ts | text: code: let x"
+    );
+
+    // Query templates.
+    assert_eq!(format_docs_query(InputProfile::RAW, "q"), "q");
+    assert_eq!(format_code_query(InputProfile::RAW, "q"), "q");
+    assert_eq!(
+        format_docs_query(eg2, "q"),
+        "task: search result | query: q"
+    );
+    assert_eq!(
+        format_code_query(eg2, "q"),
+        "task: code retrieval | query: q"
+    );
+
+    // Title fallbacks: heading, then file name, then repository path.
+    assert_eq!(
+        docs_chunk_title("Guide > Setup", "docs/a.md"),
+        "Guide > Setup"
+    );
+    assert_eq!(docs_chunk_title("", "docs/a.md"), "a.md");
+    assert_eq!(docs_chunk_title("", "/"), "/");
+}
+
+#[test]
+fn index_time_embedding_inputs_are_formatted_and_cache_keyed() {
+    let files: Vec<(&str, &str)> = vec![("docs/a.md", GUIDE_MD_V1), ("src/math.ts", MATH_TS)];
+    let eg2 = InputProfile::parse("embeddinggemma-2").unwrap();
+    let provider = RecordingProvider::new("v1", 8, eg2);
+    let built = build_scope_with_scope(
+        "profile-index",
+        &files,
+        Some(&client_of(provider.clone())),
+        "all",
+    );
+    let inputs = provider.received();
+    assert!(!inputs.is_empty());
+    assert!(
+        inputs
+            .iter()
+            .any(|input| input.starts_with("title: ") && input.contains("| text: ")),
+        "a docs chunk must be embedded with the title template: {inputs:?}"
+    );
+    assert!(
+        inputs
+            .iter()
+            .any(|input| input.starts_with("title: src/math.ts")),
+        "a code chunk must be embedded with the path title template: {inputs:?}"
+    );
+
+    // The published vectors (and thus the embedding-cache reference set) key
+    // on the exact formatted inputs, never on the raw chunk text.
+    let conn = built.store.open().unwrap();
+    let (repo_id, _, _) =
+        search::scope_for_search(&built.adapter, SnapshotMode::PlainDirectory).unwrap();
+    let keys = store::referenced_embedding_keys(&conn, &repo_id).unwrap();
+    let expected: std::collections::HashSet<String> = inputs.iter().map(hash::sha256_hex).collect();
+    let actual: std::collections::HashSet<String> = keys
+        .iter()
+        .map(|(input_hash, _)| input_hash.clone())
+        .collect();
+    assert_eq!(actual, expected, "cache keys must be the formatted inputs");
+}
+
+#[test]
+fn embedding_cache_never_reuses_vectors_across_templates_or_profiles() {
+    let dir = temp_dir("cache-templates");
+    let cache = EmbeddingCache::open(dir.join("embeddings.sqlite")).unwrap();
+    let raw = RecordingProvider::new("v1", 8, InputProfile::RAW);
+    let raw_session = client_of(raw.clone());
+    let text = "The widget guide.";
+    let raw_work = vec![EmbeddingWork {
+        chunk_id: "c1".into(),
+        input: text.to_string(),
+        input_hash: hash::sha256_hex(text),
+    }];
+    let first = embed_chunks(&cache, &raw_session, &raw_work, 1).unwrap();
+    assert_eq!(first.stats.embedded, 1);
+
+    // Same profile, changed title template: the exact input differs, so the
+    // raw entry must not be reused.
+    let eg2 = InputProfile::parse("embeddinggemma-2").unwrap();
+    let formatted = format_docs_input(eg2, "Guide", text);
+    let formatted_work = vec![EmbeddingWork {
+        chunk_id: "c1".into(),
+        input: formatted.clone(),
+        input_hash: hash::sha256_hex(&formatted),
+    }];
+    let second = embed_chunks(&cache, &raw_session, &formatted_work, 2).unwrap();
+    assert_eq!(
+        second.stats.embedded, 1,
+        "a template change must miss the cache"
+    );
+    assert_eq!(second.stats.cache_hits, 0);
+
+    // Same template again: cache hit without a provider call.
+    let calls_before = raw.received().len();
+    let third = embed_chunks(&cache, &raw_session, &formatted_work, 3).unwrap();
+    assert_eq!(third.stats.cache_hits, 1);
+    assert_eq!(third.stats.embedded, 0);
+    assert_eq!(raw.received().len(), calls_before);
+
+    // Same exact input, different profile identity (input profile in the
+    // fingerprint): must not compare or reuse vectors.
+    let eg2_session = client_of(RecordingProvider::new("v1", 8, eg2));
+    let fourth = embed_chunks(&cache, &eg2_session, &formatted_work, 4).unwrap();
+    assert_eq!(
+        fourth.stats.embedded, 1,
+        "a different input profile must miss the cache"
+    );
+    assert_eq!(fourth.stats.cache_hits, 0);
+
+    // And a different model revision with the same template: also a miss.
+    let other_session = client_of(RecordingProvider::new("v2", 8, eg2));
+    let fifth = embed_chunks(&cache, &other_session, &formatted_work, 5).unwrap();
+    assert_eq!(fifth.stats.embedded, 1);
+    assert_eq!(fifth.stats.cache_hits, 0);
+}
+
+#[test]
+fn hybrid_search_templates_and_splits_query_vectors_by_corpus() {
+    let files: Vec<(&str, &str)> = vec![
+        (
+            "docs/a.md",
+            "# Guide\n\nMultiply two numbers with the gizmo bearing.\n",
+        ),
+        ("src/math.ts", MATH_TS),
+    ];
+    let eg2 = InputProfile::parse("embeddinggemma-2").unwrap();
+    let built = build_scope_with_scope(
+        "mixed-hybrid",
+        &files,
+        Some(&client_of(RecordingProvider::new("v1", 8, eg2))),
+        "all",
+    );
+    let provider = RecordingProvider::new("v1", 8, eg2);
+    let embedder = RecordingQueryEmbedder {
+        provider: provider.clone(),
+    };
+
+    // Unfiltered mixed corpus: both vectors in one provider batch, docs first.
+    let response = run_search(
+        &built,
+        "gizmo multiply",
+        SearchMode::Hybrid,
+        Some(&embedder),
+    )
+    .unwrap();
+    assert_eq!(response.retrieval_mode, "hybrid");
+    assert_eq!(
+        provider.received(),
+        vec![
+            format_docs_query(eg2, "gizmo multiply"),
+            format_code_query(eg2, "gizmo multiply"),
+        ]
+    );
+    let explanations: Vec<String> = response
+        .results
+        .iter()
+        .map(|hit| hit.explanation.clone())
+        .collect();
+    assert!(
+        explanations.iter().any(|e| e.contains("docs vector rank")),
+        "docs chunks must be ranked by the document-search vector: {explanations:?}"
+    );
+    assert!(
+        explanations.iter().any(|e| e.contains("code vector rank")),
+        "code chunks must be ranked by the code-retrieval vector: {explanations:?}"
+    );
+
+    // Code role filter: only the code-retrieval vector is computed.
+    provider.clear();
+    let code_only = search::search(
+        &built.adapter,
+        SnapshotMode::PlainDirectory,
+        &built.store,
+        &SearchRequest {
+            query: "multiply".to_string(),
+            path_filter: None,
+            role_filter: Some(Role::Code),
+            max_results: None,
+            max_output_tokens: None,
+            cursor: None,
+            mode: SearchMode::Hybrid,
+            rrf_k: None,
+        },
+        Some(&embedder),
+    )
+    .unwrap();
+    assert_eq!(code_only.retrieval_mode, "hybrid");
+    assert_eq!(
+        provider.received(),
+        vec![format_code_query(eg2, "multiply")]
+    );
+
+    // A non-code role filter: only the document-search vector is computed.
+    provider.clear();
+    search::search(
+        &built.adapter,
+        SnapshotMode::PlainDirectory,
+        &built.store,
+        &SearchRequest {
+            query: "multiply".to_string(),
+            path_filter: None,
+            role_filter: Some(Role::CurrentDoc),
+            max_results: None,
+            max_output_tokens: None,
+            cursor: None,
+            mode: SearchMode::Hybrid,
+            rrf_k: None,
+        },
+        Some(&embedder),
+    )
+    .unwrap();
+    assert_eq!(
+        provider.received(),
+        vec![format_docs_query(eg2, "multiply")]
+    );
+}
+
+#[test]
+fn query_and_index_profiles_must_share_the_input_profile() {
+    let files: Vec<(&str, &str)> = vec![("docs/a.md", GUIDE_MD_V1)];
+    let eg2 = InputProfile::parse("embeddinggemma-2").unwrap();
+    let built = build_scope_with_scope(
+        "profile-mismatch",
+        &files,
+        Some(&client_of(RecordingProvider::new("v1", 8, eg2))),
+        "all",
+    );
+
+    // Same model and dimension, but a different input profile: the
+    // fingerprints differ, so hybrid degrades to lexical.
+    let raw_embedder = RecordingQueryEmbedder {
+        provider: RecordingProvider::new("v1", 8, InputProfile::RAW),
+    };
+    let degraded = run_search(&built, "gizmo", SearchMode::Hybrid, Some(&raw_embedder)).unwrap();
+    assert_eq!(degraded.retrieval_mode, "lexical");
+
+    // The matching profile fuses hybrid results.
+    let eg2_embedder = RecordingQueryEmbedder {
+        provider: RecordingProvider::new("v1", 8, eg2),
+    };
+    let hybrid = run_search(&built, "gizmo", SearchMode::Hybrid, Some(&eg2_embedder)).unwrap();
+    assert_eq!(hybrid.retrieval_mode, "hybrid");
+}
+
+#[test]
+fn raw_profile_mixed_corpus_keeps_the_global_cosine_rank() {
+    let files: Vec<(&str, &str)> = vec![
+        (
+            "docs/a.md",
+            "# Guide\n\nMultiply two numbers with the gizmo bearing.\n",
+        ),
+        ("src/math.ts", MATH_TS),
+    ];
+    let built = build_scope_with_scope(
+        "raw-global-rank",
+        &files,
+        Some(&client_of(RecordingProvider::new(
+            "v1",
+            8,
+            InputProfile::RAW,
+        ))),
+        "all",
+    );
+    let query = "gizmo multiply";
+    let provider = RecordingProvider::new("v1", 8, InputProfile::RAW);
+    let embedder = RecordingQueryEmbedder {
+        provider: provider.clone(),
+    };
+
+    // The raw templates are identity: one shared query input in one batch.
+    let response = run_search(&built, query, SearchMode::VectorsOnly, Some(&embedder)).unwrap();
+    assert_eq!(response.retrieval_mode, "vectors-only");
+    assert_eq!(provider.received(), vec![query.to_string()]);
+
+    // Expected pre-profile behavior: one global cosine rank over every stored
+    // vector, both corpora together.
+    let conn = built.store.open().unwrap();
+    let fingerprint = embedder.profile_fingerprint();
+    let rows = store::vectors_for_generation_with_corpus(
+        &conn,
+        built.generation_id,
+        &fingerprint,
+        None,
+        None,
+    )
+    .unwrap();
+    let query_vector = vector_for(query, 8);
+    let mut expected: Vec<(String, f64)> = rows
+        .iter()
+        .map(|(chunk_id, _corpus, vector)| {
+            (
+                chunk_id.clone(),
+                repoise_core::embed::cosine(&query_vector, vector),
+            )
+        })
+        .collect();
+    expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    assert!(!expected.is_empty());
+
+    // The vectors-only page starts at the global cosine maximum and stays in
+    // global cosine order (the per-file cap may skip later chunks).
+    let page_ids: Vec<&str> = response
+        .results
+        .iter()
+        .map(|hit| hit.source_id.as_str())
+        .collect();
+    assert_eq!(page_ids.first().copied(), Some(expected[0].0.as_str()));
+    let mut last = 0usize;
+    for id in page_ids {
+        let position = expected
+            .iter()
+            .position(|(chunk_id, _score)| chunk_id == id)
+            .expect("vector result must be a stored chunk");
+        assert!(
+            position >= last,
+            "vectors-only order must follow the global cosine rank: {id:?} at {position}, after {last}"
+        );
+        last = position + 1;
+    }
+
+    // Hybrid keeps the single-space fusion and the original global-rank
+    // attribution (no per-corpus split for raw).
+    let hybrid = run_search(&built, query, SearchMode::Hybrid, Some(&embedder)).unwrap();
+    assert_eq!(hybrid.retrieval_mode, "hybrid");
+    for hit in &hybrid.results {
+        assert!(
+            !hit.explanation.contains("docs vector rank")
+                && !hit.explanation.contains("code vector rank"),
+            "raw hybrid results must use the global rank attribution: {:?}",
+            hit.explanation
+        );
+    }
+    assert!(
+        hybrid
+            .results
+            .iter()
+            .any(|hit| hit.explanation.contains("vector rank ")),
+        "a hybrid result must carry the global vector rank attribution: {:?}",
+        hybrid
+            .results
+            .iter()
+            .map(|hit| hit.explanation.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Query embedder whose second batch slot returns no valid vector
+/// (simulating a per-slot `validate_vector` failure) — no provider needed.
+struct PartialQueryEmbedder {
+    inputs: Arc<Mutex<Vec<String>>>,
+    fail_index: usize,
+    dimension: u32,
+    input_profile: InputProfile,
+}
+
+impl PartialQueryEmbedder {
+    fn new(fail_index: usize, dimension: u32, input_profile: InputProfile) -> Self {
+        Self {
+            inputs: Arc::new(Mutex::new(Vec::new())),
+            fail_index,
+            dimension,
+            input_profile,
+        }
+    }
+
+    fn received(&self) -> Vec<String> {
+        self.inputs.lock().unwrap().clone()
+    }
+
+    fn profile_for(&self) -> EmbeddingProfile {
+        EmbeddingProfile {
+            provider: "test-record".to_string(),
+            model: "v1".to_string(),
+            dimension: self.dimension,
+            profile_version: repoise_core::embed::PROFILE_VERSION,
+            input_profile: self.input_profile,
+        }
+    }
+}
+
+impl QueryEmbedder for PartialQueryEmbedder {
+    fn embed_queries(&self, inputs: &[String]) -> repoise_core::Result<Vec<Option<Vec<f32>>>> {
+        self.inputs.lock().unwrap().extend(inputs.iter().cloned());
+        Ok(inputs
+            .iter()
+            .enumerate()
+            .map(|(index, input)| {
+                if index == self.fail_index {
+                    None
+                } else {
+                    Some(vector_for(input, self.dimension))
+                }
+            })
+            .collect())
+    }
+
+    fn profile_fingerprint(&self) -> String {
+        self.profile_for().fingerprint()
+    }
+
+    fn input_profile(&self) -> InputProfile {
+        self.input_profile
+    }
+}
+
+#[test]
+fn partially_failed_mixed_query_keeps_the_corpus_split() {
+    let files: Vec<(&str, &str)> = vec![
+        (
+            "docs/a.md",
+            "# Guide\n\nMultiply two numbers with the gizmo bearing.\n",
+        ),
+        ("src/math.ts", MATH_TS),
+    ];
+    let eg2 = InputProfile::parse("embeddinggemma-2").unwrap();
+    let built = build_scope_with_scope(
+        "partial-failure",
+        &files,
+        Some(&client_of(RecordingProvider::new("v1", 8, eg2))),
+        "all",
+    );
+    let query = "multiply";
+    // The code-retrieval slot (second batch input) fails validation.
+    let embedder = PartialQueryEmbedder::new(1, 8, eg2);
+    let response = run_search(&built, query, SearchMode::Hybrid, Some(&embedder)).unwrap();
+    assert_eq!(response.retrieval_mode, "hybrid");
+    assert_eq!(
+        embedder.received(),
+        vec![format_docs_query(eg2, query), format_code_query(eg2, query)]
+    );
+
+    // Both corpora reach the page lexically, so the check is not vacuous.
+    assert!(response.results.iter().any(|hit| hit.path == "src/math.ts"));
+    assert!(response.results.iter().any(|hit| hit.path == "docs/a.md"));
+
+    // The surviving document-search vector ranks only docs chunks: code
+    // chunks must not be compared against it (and the missing code vector
+    // contributes no rank of its own).
+    for hit in &response.results {
+        assert!(
+            !hit.explanation.contains("code vector rank"),
+            "a missing code vector must not rank code chunks: {:?}",
+            hit.explanation
+        );
+        if hit.path == "src/math.ts" {
+            assert!(
+                !hit.explanation.contains("docs vector rank"),
+                "code chunks must not be compared against the docs vector: {:?}",
+                hit.explanation
+            );
+        }
+    }
+    assert!(
+        response
+            .results
+            .iter()
+            .any(|hit| hit.explanation.contains("docs vector rank")),
+        "docs chunks must still be ranked by the surviving docs vector: {:?}",
+        response
+            .results
+            .iter()
+            .map(|hit| hit.explanation.clone())
+            .collect::<Vec<_>>()
+    );
 }

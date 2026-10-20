@@ -24,6 +24,38 @@ Git working trees, committed snapshots, and plain directories are supported.
 Embeddings and remote history enrichment are opt-in. Fixture content remains
 searchable but receives no current-document ranking boost.
 
+## Quick start
+
+From the repository you want to index (Node >=22.14.0 for the npm install):
+
+```sh
+npm install --save-dev --save-exact --ignore-scripts repoise@0.1.0-alpha.1
+npx --no-install repoise init --preset docs-code-lexical --agents-snippet
+npx --no-install repoise doctor
+npx --no-install repoise index
+npx --no-install repoise check --fresh
+npx --no-install repoise search --json --query "YourFunctionName" --role code --max-results 5
+```
+
+Review the generated configuration and managed AGENTS.md block. Keep
+`.repoise/` and `repoise.local.json` out of version control. The cache may
+contain source text; `REPOISE_CACHE_DIR` relocates it. Indexing respects
+configured policy and inherited Git ignores; use `explain` to inspect
+decisions.
+
+Copy a result's `source_id` into an exact read:
+
+```sh
+npx --no-install repoise read --json --source-id "SOURCE_ID_FROM_SEARCH" --max-output-tokens 2500
+npx --no-install repoise related --json --source-id "SOURCE_ID_FROM_SEARCH"
+```
+
+Lexical queries require every whitespace term to match the same chunk's
+searchable fields. Start with identifiers or short terms, refine with
+`--path-filter` and `--role`, and read relevant results. Excerpts are previews;
+zero results do not prove that evidence is absent. A response's `next_cursor`
+can be passed as the next search's `--cursor`.
+
 ## Install the preview
 
 For a project-local installation (Node >=22.14.0):
@@ -55,42 +87,155 @@ On Windows, use `./scripts/build.ps1` and the resulting
 `target/release/repoise.exe`. See [development.md](docs/development.md)
 for local installation and checks.
 
-From the repository you want to index:
+## CLI commands
 
-```sh
-repoise init --preset docs-code-lexical --agents-snippet --dry-run
-repoise init --preset docs-code-lexical --agents-snippet
-repoise doctor
-repoise explain --path .env
-repoise index
-repoise check --fresh
-repoise search --json --query "YourFunctionName" --role code --max-results 5
-```
+Exit codes: 0 success, 1 operational failure, 2 usage error, 3 the index is
+stale or missing for search/read/status.
 
-Review the generated configuration and managed AGENTS.md block. Keep
-`.repoise/` and `repoise.local.json` out of version control. The cache may
-contain source text; `REPOISE_CACHE_DIR` relocates it. Indexing respects
-configured policy and inherited Git ignores; use `explain` to inspect decisions.
+Global options accepted by most commands: `--json` (machine-readable output),
+`--config <PATH>`, `--local-config <PATH>`, `--max-file-bytes <N>`, and
+`--committed` (use the committed Git snapshot instead of the working tree).
+Most commands accept an optional positional `[ROOT]` — the repository path.
+Examples use `repoise` as shorthand; for a project-local npm install, invoke
+it as `npx --no-install repoise`.
 
-`repoise index` reports live phase progress (discovery, reconciliation,
-optional embedding and history enrichment, publication) with counts, elapsed
-time, and an approximate ETA only when the observed rate is reliable. With
-`--json`, progress goes to stderr so stdout stays a single JSON document.
+### Setup and diagnostics
 
-Copy a result's `source_id` into an exact read:
+- `repoise init [OPTIONS] [ROOT]` — configure the repository
+  non-interactively; writes the config and, optionally, the managed
+  agent-guidance block. Options: `--preset <docs-only|docs-code-lexical|hybrid>`,
+  `--provider <NAME>` (required for hybrid), `--agents-snippet`,
+  `--adopt-managed-block <FILE>`, `--dry-run`, `--yes`.
 
-```sh
-repoise read --json --source-id "SOURCE_ID_FROM_SEARCH" --max-output-tokens 2500
-repoise related --json --source-id "SOURCE_ID_FROM_SEARCH"
-```
+  ```sh
+  repoise init --preset docs-code-lexical --agents-snippet --dry-run
+  repoise init --preset hybrid --provider openai --agents-snippet
+  ```
 
-Lexical queries require every whitespace term to match the same chunk's
-searchable fields. Start with identifiers or short terms, refine with
-`--path-filter` and `--role`, and read relevant results. Excerpts are previews;
-zero results do not prove that evidence is absent. A response's `next_cursor`
-can be passed as the next search's `--cursor`.
+- `repoise doctor [ROOT]` — show the effective settings, selected snapshot
+  mode, config paths, and capabilities.
+
+  ```sh
+  repoise doctor --json
+  ```
+
+- `repoise explain --path <REL> [ROOT]` — explain the include/exclude policy
+  decision for a repository path.
+
+  ```sh
+  repoise explain --path .env
+  ```
+
+- `repoise status [ROOT]` — show scope, snapshot, index state, and freshness.
+
+  ```sh
+  repoise status --json
+  ```
+
+- `repoise check [OPTIONS] [ROOT]` — offline coverage check with stable exit
+  codes (0 ok, 1 error, 2 usage, 3 missing/stale, 4 coverage not met);
+  `--fresh` also fails when the index is stale.
+
+  ```sh
+  repoise check --fresh
+  ```
+
+### Indexing and maintenance
+
+- `repoise index [OPTIONS] [ROOT]` — build and publish the offline index
+  incrementally; use `--committed` to index the committed snapshot.
+  It reports live phase progress (discovery, reconciliation, optional
+  embedding and history enrichment, publication) with counts, elapsed time, and
+  an approximate ETA only when the observed rate is reliable. With `--json`,
+  progress goes to stderr so stdout stays a single JSON document.
+
+  ```sh
+  repoise index
+  repoise index --committed
+  ```
+
+- `repoise watch [OPTIONS] [ROOT]` — incremental watch loop; stays running
+  until Ctrl+C and retains the last complete generation (not an installed
+  background daemon). Options: `--interval <MS>` (default 500),
+  `--debounce <MS>` (default 200), `--max-pending <N>` (default 4096).
+
+  ```sh
+  repoise watch --interval 500 --debounce 200
+  ```
+
+- `repoise purge` — remove generated cache data: `--all` removes the entire
+  cache root; `--repo-id <ID> --worktree-id <ID>` removes one scope directory.
+
+  ```sh
+  repoise purge --all
+  repoise purge --repo-id <ID> --worktree-id <ID>
+  ```
+
+### Retrieval
+
+- `repoise search --query <Q> [OPTIONS] [ROOT]` — offline lexical search over
+  the current index. Options: `--path-filter <GLOB>`, `--role <ROLE>`,
+  `--max-results <N>` (default 5, cap 20), `--max-output-tokens <N>`,
+  `--cursor <TOKEN>` (from a previous page's `next_cursor`),
+  `--mode <lexical|hybrid|vectors-only>` (default lexical), `--rrf-k <N>`
+  (hybrid mode), `--lane <search|history>` (default search).
+
+  ```sh
+  repoise search --json --query "YourFunctionName" --role code --max-results 5
+  repoise search --json --query "auth token" --path-filter "src/**"
+  repoise search --json --lane history --query "error handling"
+  ```
+
+- `repoise read --source-id <ID> [OPTIONS] [ROOT]` — exact read-back of a
+  search result with content-hash validation; `--max-output-tokens <N>`
+  bounds the output.
+
+  ```sh
+  repoise read --json --source-id <ID> --max-output-tokens 2500
+  ```
+
+- `repoise related --source-id <ID> [OPTIONS] [ROOT]` — follow structural
+  links from a source; `--relation <KIND>` accepts `references`,
+  `referenced-by`, `children`, `parent` (repeatable; all when omitted).
+
+  ```sh
+  repoise related --json --source-id <ID> --relation references
+  ```
+
+### Interfaces and agent overlay
+
+- `repoise mcp [OPTIONS] [ROOT]` — stdio MCP server (JSON-RPC 2.0 on
+  stdin/stdout); read-only by default. `--allow-refresh` exposes the opt-in
+  refresh tool. See [MCP](docs/mcp.md).
+
+  ```sh
+  repoise mcp /absolute/path/to/target-repository
+  ```
+
+- `repoise overlay <uninstall|update> [ROOT]` — remove, or 3-way-migrate, the
+  managed agent-guidance overlay; `--dry-run` reports changes without writing.
+
+  ```sh
+  repoise overlay update
+  repoise overlay uninstall --dry-run
+  ```
+
+- `repoise greet` — print the project greeting.
+- `repoise help` / `repoise version` — usage and version information.
 
 ## Use with an agent
+
+Install the Repoise skill for Claude Code, Codex, Cursor, and other supported
+agents from the repository where you will use it:
+
+```sh
+npx skills@latest add billy-the-ape/repoise
+```
+
+The installer lets you select agents and installation scope. The skill teaches
+bounded CLI/MCP retrieval and how to keep changed code, documentation, and tests
+useful for indexing. It installs guidance; install the Repoise executable and
+configure MCP separately if needed. See [skill setup and updates](docs/agents.md#install-the-agent-skill).
 
 **Terminal access plus AGENTS.md guidance is enough for CLI use.** The client
 does not need Repoise-specific code. The executable must be available to the

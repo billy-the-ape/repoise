@@ -537,7 +537,10 @@ pub fn index(
     // pending chunks never serve a vector and superseded vectors are
     // discarded. Unchanged chunk inputs are served from the content-
     // addressed cache without re-embedding. The embedding scope decides
-    // which corpora are embedded (card K4).
+    // which corpora are embedded (card K4), and the profile's explicit
+    // input profile templates each chunk's exact embedding input (the cache
+    // keys on that exact input, so a template change never reuses an old
+    // vector).
     let embedding_scope = eff.embedding_scope;
     let mut vectors: Vec<store::ChunkVecRow> = Vec::new();
     let mut vector_profile: Option<String> = None;
@@ -553,10 +556,28 @@ pub fn index(
                 chunk.corpus == "docs"
                     || (embedding_scope.includes_code() && chunk.corpus == "code")
             })
-            .map(|chunk| crate::embed::EmbeddingWork {
-                chunk_id: chunk.chunk_id.clone(),
-                input: chunk.text.clone(),
-                input_hash: chunk.text_hash.clone(),
+            .map(|chunk| {
+                let input = if chunk.corpus == "code" {
+                    crate::embed::format_code_input(
+                        profile.input_profile,
+                        &chunk.path,
+                        &chunk.symbol,
+                        chunk.context.as_deref(),
+                        &chunk.text,
+                    )
+                } else {
+                    crate::embed::format_docs_input(
+                        profile.input_profile,
+                        &crate::embed::docs_chunk_title(&chunk.heading_path, &chunk.path),
+                        &chunk.text,
+                    )
+                };
+                let input_hash = hash::sha256_hex(&input);
+                crate::embed::EmbeddingWork {
+                    chunk_id: chunk.chunk_id.clone(),
+                    input,
+                    input_hash,
+                }
             })
             .collect();
         if let Some(reporter) = progress {
@@ -579,12 +600,12 @@ pub fn index(
         };
         embedding_stats = Some(outcome.stats);
         vector_profile = Some(fingerprint.clone());
-        let text_hash_by_id: std::collections::HashMap<&str, &str> = chunk_rows
+        let input_hash_by_id: std::collections::HashMap<&str, &str> = work
             .iter()
-            .map(|chunk| (chunk.chunk_id.as_str(), chunk.text_hash.as_str()))
+            .map(|work| (work.chunk_id.as_str(), work.input_hash.as_str()))
             .collect();
         for (chunk_id, vector) in outcome.vectors {
-            let input_hash = text_hash_by_id
+            let input_hash = input_hash_by_id
                 .get(chunk_id.as_str())
                 .expect("vector belongs to this generation's chunk")
                 .to_string();

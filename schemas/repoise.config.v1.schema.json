@@ -80,6 +80,11 @@
           "type": "string",
           "enum": ["docs", "all"]
         },
+        "inputProfile": {
+          "description": "Explicit versioned model input profile: raw (default, pass-through) or embeddinggemma-2 (task/template formatting for the local EmbeddingGemma 2 endpoint), optionally with an explicit template version such as raw:2 or embeddinggemma-2:1. Never inferred from the model name.",
+          "type": "string",
+          "pattern": "^(raw|embeddinggemma-2)(:[1-9][0-9]*)?$"
+        },
         "endpoint": {
           "description": "Endpoint reference; must be an environment reference like env:VAR_NAME, never a literal secret-bearing URL.",
           "type": "string",

@@ -114,9 +114,13 @@ process always sees the latest source.
   one generation per step and rescans after branch switches. It is not installed as a
   system daemon and cancels safely on SIGINT. If `watch` is unavailable or unhealthy,
   invoke the incremental `repoise index` for the affected paths and reconcile before
-  declaring fresh. Watch publications carry no embedding session, so in an
-  embedding-configured scope search degrades to lexical and `check` reports unmet
-  coverage until an explicit `repoise index` runs.
+  declaring fresh. When embedding is configured, each watch publication runs the
+  same cache-first embedding pass as `repoise index`: changed/new chunk inputs are
+  embedded and unchanged inputs are served from the content-addressed vector
+  cache. A provider failure or cancellation leaves the published generation
+  lexically complete with partial or no vector coverage; `check` reports unmet
+  coverage until an explicit `repoise index` restores vectors (a later watch
+  publication re-attempts the failed or pending inputs when it runs).
 
 See the [MCP guide](mcp.md) for the opt-in refresh tool and [storage.md](storage.md)
 for the generation/freshness model.

@@ -15,9 +15,7 @@ use repoise_core::adapter::{SnapshotMode, SourceAdapter};
 use repoise_core::cache::CachePaths;
 use repoise_core::classify::Role;
 use repoise_core::config::{CliOverrides, ConfigPaths, EffectiveConfig, Preset};
-#[cfg(feature = "remote-embedding")]
-use repoise_core::embed::CancellationToken;
-use repoise_core::embed::EmbeddingClient;
+use repoise_core::embed::{CancellationToken, EmbeddingClient};
 use repoise_core::error::Error;
 use repoise_core::search::{QueryEmbedder, SearchMode};
 use repoise_core::store::Store;
@@ -108,7 +106,7 @@ COMMANDS:
     read --source-id <ID> [ROOT]  Exact read-back of a search result
     related --source-id <ID> [ROOT]  Follow structural links from a source
     check [ROOT]                  Offline coverage check; --fresh also gates on staleness
-    watch [ROOT]                  Incremental watch loop (Ctrl+C cancels safely)
+    watch [ROOT]                  Incremental watch loop; embeds changed inputs when configured (Ctrl+C cancels safely)
     mcp [ROOT]                    stdio MCP server (JSON-RPC 2.0 on stdin/stdout)
     overlay uninstall [ROOT]      Remove only the managed overlay (dry-run capable)
     overlay update [ROOT]         3-way template migration of the overlay
@@ -140,6 +138,10 @@ RETRIEVAL WORKFLOW:
     return zero results even when relevant evidence is indexed. For empty or
     irrelevant results, try a shorter identifier/symbol query with
     --path-filter/--role before concluding indexed evidence is insufficient.
+    Hybrid mode (with a complete embedding profile) templates the query with
+    the configured input profile, ranks corpus-scoped stored vectors and fuses
+    them with the lexical rank (RRF); a missing profile, credential or failed
+    embedding degrades to lexical and the response reports `lexical`.
     Results carry short excerpts that locate evidence, not the full source;
     use `read --source-id <ID>` to inspect the exact implementation. A short
     excerpt is not evidence the indexed source is unavailable. When results
@@ -561,7 +563,7 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     let ctx = build_context(opts)?;
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::indexing::IndexRequest::default();
-    let client = embedding_client(&ctx.effective)?;
+    let client = embedding_client(&ctx.effective, CancellationToken::new())?;
     let session = client.as_ref();
     let enrichment = enrichment_session(&ctx)?;
     let enrichment_session = enrichment.as_ref();
@@ -1025,6 +1027,13 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
             .unwrap_or(repoise_core::watch::DEFAULT_MAX_PENDING_PATHS as u64)
             as usize,
     };
+    // Build the configured embedding session once for the watch process;
+    // every debounced publication runs it through the shared index path.
+    // Missing configuration (or this build lacking the transport) keeps
+    // watch publications lexical-only.
+    let embed_cancel = CancellationToken::new();
+    let client = embedding_client(&ctx.effective, embed_cancel.clone())?;
+    let embed_configured = client.is_some();
     let mut watcher = repoise_core::watch::Watcher::new(
         ctx.adapter,
         ctx.mode,
@@ -1032,21 +1041,30 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         store,
         ctx.cache,
         options,
+        client,
     )
     .map_err(|err| err.to_string())?;
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let cancel_handler = cancel.clone();
+    let cancel_token = embed_cancel;
     if let Err(err) = ctrlc::set_handler(move || {
         cancel_handler.store(true, Ordering::SeqCst);
+        // Stop embedding work inside an in-flight publication as well.
+        cancel_token.cancel();
     }) {
         return Err(format!("could not install SIGINT handler: {err}"));
     }
     println!(
-        "watching {}/{} (interval {} ms, debounce {} ms); Ctrl+C cancels",
+        "watching {}/{} (interval {} ms, debounce {} ms; embeddings {}); Ctrl+C cancels",
         ctx.repo_id,
         ctx.worktree_id,
         options.interval.as_millis(),
-        options.debounce.as_millis()
+        options.debounce.as_millis(),
+        if embed_configured {
+            "configured"
+        } else {
+            "lexical-only"
+        }
     );
     loop {
         match watcher.step(&cancel) {
@@ -1073,6 +1091,22 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
                     );
                     for path in &outcome.changed_paths {
                         println!("  changed: {path}");
+                    }
+                    if let Some(stats) = &outcome.embedding {
+                        println!(
+                            "vectors: {} ({} cached, {} embedded, {} failed, {} pending, {} requests)",
+                            outcome.vectors_total,
+                            stats.cache_hits,
+                            stats.embedded,
+                            stats.failed,
+                            stats.pending,
+                            stats.requests
+                        );
+                    } else {
+                        println!(
+                            "vectors: {} (lexical-only publication)",
+                            outcome.vectors_total
+                        );
                     }
                 }
             }
@@ -1517,7 +1551,12 @@ fn resolve_provider_credentials(
 
 /// Builds the optional embedding session for a build, from effective config.
 /// A missing profile, endpoint, or credential keeps the build lexical-only.
-fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, String> {
+/// The caller supplies the cancellation token (watch cancels it on SIGINT so
+/// an in-flight publication stops embedding; one-shot builds never cancel).
+fn embedding_client(
+    eff: &EffectiveConfig,
+    cancellation: CancellationToken,
+) -> Result<Option<EmbeddingClient>, String> {
     let Some(settings) = &eff.embedding else {
         return Ok(None);
     };
@@ -1535,45 +1574,59 @@ fn embedding_client(eff: &EffectiveConfig) -> Result<Option<EmbeddingClient>, St
             &api_key,
             &profile.model,
             profile.dimension,
+            profile.input_profile,
             budgets.timeout,
         )
         .map_err(|err| err.to_string())?;
         Ok(Some(EmbeddingClient::new(
             Box::new(provider),
             budgets,
-            CancellationToken::new(),
+            cancellation,
         )))
     }
     #[cfg(not(feature = "remote-embedding"))]
     {
         let _ = profile;
+        let _ = cancellation;
         eprintln!("note: this binary has no remote embedding transport; continuing lexical-only");
         Ok(None)
     }
 }
 
-/// Wraps a provider as a query-time embedder (single-input batch).
+/// Wraps a provider as a query-time embedder (one provider batch per call).
 #[cfg(feature = "remote-embedding")]
 struct ProviderQueryEmbedder {
     provider: std::sync::Arc<dyn repoise_core::embed::EmbeddingProvider>,
-    profile_fingerprint: String,
+    profile: repoise_core::embed::EmbeddingProfile,
 }
 
 #[cfg(feature = "remote-embedding")]
 impl QueryEmbedder for ProviderQueryEmbedder {
-    fn embed_query(&self, query: &str) -> repoise_core::Result<Option<Vec<f32>>> {
-        let batch = self.provider.embed(&[query.to_string()])?;
-        let dimension = self.provider.profile().dimension;
-        match batch.vectors.first() {
-            Some(vector) if repoise_core::embed::validate_vector(vector, dimension) => {
-                Ok(Some(vector.clone()))
-            }
-            _ => Ok(None),
+    fn embed_queries(&self, inputs: &[String]) -> repoise_core::Result<Vec<Option<Vec<f32>>>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
         }
+        let batch = self.provider.embed(inputs)?;
+        let dimension = self.profile.dimension;
+        Ok(batch
+            .vectors
+            .into_iter()
+            .map(|vector| {
+                if repoise_core::embed::validate_vector(&vector, dimension) {
+                    Some(vector)
+                } else {
+                    None
+                }
+            })
+            .collect())
     }
 
     fn profile_fingerprint(&self) -> String {
-        self.profile_fingerprint.clone()
+        self.profile.fingerprint()
+    }
+
+    fn input_profile(&self) -> repoise_core::embed::InputProfile {
+        self.profile.input_profile
     }
 }
 
@@ -1599,12 +1652,13 @@ fn query_embedder_from_config(
             &api_key,
             &profile.model,
             profile.dimension,
+            profile.input_profile,
             budgets.timeout,
         )
         .map_err(|err| err.to_string())?;
         Ok(Some(Box::new(ProviderQueryEmbedder {
             provider: std::sync::Arc::new(provider),
-            profile_fingerprint: profile.fingerprint(),
+            profile: profile.clone(),
         })))
     }
     #[cfg(not(feature = "remote-embedding"))]

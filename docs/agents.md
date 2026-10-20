@@ -6,6 +6,60 @@ Use the published 0.1.0-alpha.1 preview (pin the version) or a source build;
 the older 0.1.0-alpha.0 scaffold does not implement this workflow. See the
 [installation guide](../README.md#install-the-preview).
 
+## Install the agent skill
+
+From the consumer repository, run:
+
+```sh
+npx skills@latest add billy-the-ape/repoise
+```
+
+The [open skills installer](https://github.com/vercel-labs/skills) discovers
+the portable [Repoise skill](../skills/repoise/SKILL.md) in this repository.
+Choose the agents you use (such as Claude Code, Codex, or Cursor) and review
+the installation summary. No separate Repoise skill package or registry
+publication is required. With pnpm, the equivalent is
+`pnpm dlx skills@latest add billy-the-ape/repoise`.
+
+Useful explicit variants:
+
+```sh
+# Discover available skills without installing.
+npx skills@latest add billy-the-ape/repoise --list
+
+# Install only Repoise to Codex and Claude Code in this project.
+npx skills@latest add billy-the-ape/repoise --skill repoise --agent codex claude-code
+
+# Make Repoise guidance available across projects for Codex.
+npx skills@latest add billy-the-ape/repoise --skill repoise --agent codex --global
+```
+
+Project installations can be committed according to the consumer's policy so
+the team shares the guidance; global installations are personal. Review the
+installer's generated files and lockfile. Restart/reload the agent session if
+the client does not discover new skills immediately. Explicitly ask the agent
+to use the Repoise skill when needed; discovery and automatic invocation depend
+on the client and do not guarantee every task will invoke it.
+
+The skill covers scoped retrieval, exact reads, lexical/hybrid choices,
+freshness, focused documentation, and behavioral tests. It complements the
+managed AGENTS.md block and follows the consumer repository's instructions.
+It does not install the Repoise binary, initialize/index the repository, start
+watch, register MCP, or enable embeddings. Continue with the setup below.
+
+Use `npx skills@latest update repoise` to update this installed skill. This
+installer command is separate from updating the Repoise binary or its managed AGENTS.md overlay.
+Review changes as usual, especially for committed project guidance. For a
+reproducible rollout, use the installer's supported Git revision URL and pin
+the installer version instead of `latest`.
+
+For maintainers: edit `skills/repoise/SKILL.md` and its bundled references,
+keeping the main instructions concise. Keep CLI flags/MCP arguments aligned
+with implemented behavior and update examples when interfaces change. The
+root install command reads the default branch, so additions become available
+after merge; test an unmerged skill using a full GitHub tree URL with a commit SHA
+or a local checkout with `npx skills@latest add ./skills/repoise --list`.
+
 ## Terminal agents and AGENTS.md
 
 Install Repoise where the agent can invoke it, then run from the target checkout:
@@ -59,10 +113,18 @@ repoise watch /absolute/path/to/checkout
 Watch is a long-running process: stop it with Ctrl+C. It is not installed as
 a daemon by init or MCP. Without a healthy watch loop, run index after changes.
 Check freshness after publication before relying on changed evidence. Watch
-publishes through the shared incremental index operation without an embedding
-session: a watch-published generation carries no vectors, so in an
-embedding-configured scope search degrades to lexical and `check` reports
-coverage-not-met until an explicit `repoise index` restores vectors.
+publishes through the shared incremental index operation with the configured
+embedding session: each publication embeds only changed/new chunk inputs and
+serves unchanged inputs from the content-addressed vector cache under the
+configured budgets. When embedding is not configured (or this build lacks the
+remote-embedding transport), watch publications are lexical-only and carry no
+vectors. A provider failure or cancellation during a publication leaves the
+generation lexically complete with partial or no vector coverage; `status`
+and `check` report the pending/failed chunk counts and coverage-not-met.
+Watch does not retry a publication on its own: the failed or pending inputs
+are re-attempted by the next watch publication (when content or configuration
+changes) or by an explicit `repoise index`, so a missing vector is never
+reported as covered.
 
 Default Git mode indexes the working tree. Use `--committed` consistently
 for index, check, search, read, and MCP when testing a committed snapshot.

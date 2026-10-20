@@ -284,6 +284,7 @@ pub fn render_config(opts: &InitOptions) -> Result<String, Error> {
             dimensions: None,
             api_key_env: None,
             scope: None,
+            input_profile: None,
             batch_size: None,
             timeout_ms: None,
             max_retries: None,

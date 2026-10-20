@@ -10,8 +10,22 @@
 //! generated cache directory is excluded from the corpus by default, so the
 //! watcher's own output never feeds back into the index.
 //!
-//! Watch publication is offline (no embedding provider call, no host
-//! enrichment); remote work remains an explicit operator action.
+//! When the watch process is given a configured embedding client, each
+//! debounced publication runs the same cache-first embedding pass as
+//! `repoise index`: unchanged chunk inputs are served from the
+//! content-addressed cache without provider calls, and only changed/new
+//! inputs are sent under the session's existing timeout, retry, request,
+//! input and cancellation budgets. An asynchronous embedding queue is a
+//! deferred follow-up; this first stage is synchronous within the
+//! publication. Host enrichment remains an explicit operator action. A
+//! provider failure, missing configuration, or cancellation during a
+//! publication leaves the generation lexically complete with partial or no
+//! vector coverage, which `status`/`check` report through their existing
+//! coverage semantics. The watcher does not re-run a publication solely to
+//! retry failed or pending embedding inputs: once the corpus and
+//! configuration match the published generation it goes idle. Failed or
+//! pending inputs are retried by the next publication (triggered by a
+//! content or configuration change) or by an explicit `repoise index`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,6 +83,11 @@ pub struct WatchPublication {
     pub force_full: bool,
     /// Branch/workspace switch detected since the previous scan.
     pub branch_switch: bool,
+    /// Vector records published in this generation (0 when lexical-only).
+    pub vectors_total: usize,
+    /// Embedding session stats for this publication, when an embedding
+    /// session was configured for the watch process.
+    pub embedding: Option<crate::embed::EmbeddingStats>,
     /// Publication duration in milliseconds.
     pub duration_ms: u64,
 }
@@ -92,6 +111,7 @@ pub struct Watcher {
     store: Store,
     cache: CachePaths,
     options: WatchOptions,
+    embed_client: Option<crate::embed::EmbeddingClient>,
     repo_id: String,
     worktree_id: String,
     last_branch: Option<String>,
@@ -101,6 +121,12 @@ pub struct Watcher {
 
 impl Watcher {
     /// Creates a watcher for one declared scope.
+    ///
+    /// `embed_client` is the operator-configured embedding session, built
+    /// once for the watch process and passed into every debounced
+    /// publication through the shared index path (cache-first; unchanged
+    /// chunk inputs never reach the provider). `None` keeps publications
+    /// lexical-only.
     pub fn new(
         adapter: Box<dyn SourceAdapter>,
         mode: SnapshotMode,
@@ -108,6 +134,7 @@ impl Watcher {
         store: Store,
         cache: CachePaths,
         options: WatchOptions,
+        embed_client: Option<crate::embed::EmbeddingClient>,
     ) -> Result<Self> {
         let root = adapter.canonical_root()?;
         let record = crate::provenance::RepositoryRecord::new(
@@ -125,6 +152,7 @@ impl Watcher {
             store,
             cache,
             options,
+            embed_client,
             repo_id: record.repo_id,
             worktree_id,
             last_branch: None,
@@ -191,7 +219,7 @@ impl Watcher {
             &self.store,
             &self.cache,
             &request,
-            None,
+            self.embed_client.as_ref(),
             None,
             None,
         )?;
@@ -208,6 +236,8 @@ impl Watcher {
             files_reparsed: outcome.files_reparsed,
             force_full,
             branch_switch: branch_switch_now,
+            vectors_total: outcome.vectors_total,
+            embedding: outcome.embedding,
             duration_ms: built.elapsed().as_millis() as u64,
         }))
     }
