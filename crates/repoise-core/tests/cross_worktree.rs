@@ -56,7 +56,13 @@ fn regular_canonical(path: &Path) -> PathBuf {
 }
 
 fn run_git(root: &Path, args: &[&str]) {
+    // Pin LF line endings for every call: Windows runners default to
+    // `core.autocrlf=true`, which would check out the committed LF
+    // fixtures as CRLF in linked worktrees and break content-hash-based
+    // family reuse (real checkouts are self-consistent, so production is
+    // unaffected).
     let output = Command::new("git")
+        .args(["-c", "core.autocrlf=false", "-c", "core.eol=lf"])
         .args(args)
         .current_dir(root)
         .output()
@@ -1110,19 +1116,23 @@ fn purge_and_gc_preserve_siblings() {
     )
     .unwrap();
     assert!(!report.removed.is_empty());
-    let conn_a = a.store.open().unwrap();
-    assert!(
-        store::load_generation(&conn_a, &a.repo_id, &a.worktree_id)
-            .unwrap()
-            .is_some()
-    );
+    {
+        let conn_a = a.store.open().unwrap();
+        assert!(
+            store::load_generation(&conn_a, &a.repo_id, &a.worktree_id)
+                .unwrap()
+                .is_some()
+        );
+    }
     // Unregister B; GC still runs and retains A's vectors.
     shared::remove_member(&root_shared, &b.repo_id, &b.worktree_id).unwrap();
     assert_eq!(shared::load_members(&root_shared).unwrap().len(), 1);
     assert!(gc_family_embeddings(&root_shared).is_ok());
     let fp = fingerprint_for("v1");
-    let conn_a = a.store.open().unwrap();
-    let keys = store::referenced_embedding_keys(&conn_a, &a.repo_id).unwrap();
+    let keys = {
+        let conn_a = a.store.open().unwrap();
+        store::referenced_embedding_keys(&conn_a, &a.repo_id).unwrap()
+    };
     let (hash, _) = keys
         .iter()
         .find(|(_, fingerprint)| *fingerprint == fp)
