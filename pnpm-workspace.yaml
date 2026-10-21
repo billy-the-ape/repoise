@@ -1,0 +1,13 @@
+# JS/TS workspace membership is explicit. See
+# docs/plans/agent-platform/01-workspace-and-ci.md for ownership and reserved
+# homes. Generated native-package staging (dist/), evaluation fixtures and
+# consumer examples never join the workspace. The root package is listed so
+# Turborepo schedules its declared development and native-bridge tasks; pnpm
+# always treats the root as a workspace member. The published launcher
+# (npm/repoise) deliberately stays outside the workspace: its optional
+# platform-package pins only resolve once those versions are published, so a
+# root frozen install must never depend on them.
+packages:
+  - . # root development package (private; never published)
+  - "apps/*" # reserved for application packages (e.g. apps/vscode)
+  - "packages/*" # reserved for library/adapter packages

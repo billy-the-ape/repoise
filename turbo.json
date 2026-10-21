@@ -1,0 +1,44 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalDependencies": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "crates/**",
+    "schemas/**",
+    "scripts/check.sh",
+    "scripts/check.ps1",
+    "scripts/build.sh",
+    "scripts/build.ps1"
+  ],
+  "tasks": {
+    "format": {
+      "cache": false,
+      "outputs": []
+    },
+    "format:check": {
+      "cache": false,
+      "outputs": []
+    },
+    "test": {
+      "cache": false,
+      "outputs": []
+    },
+    "check:native": {
+      "cache": false,
+      "outputs": []
+    },
+    "check:native:windows": {
+      "cache": false,
+      "outputs": []
+    },
+    "build:native": {
+      "cache": false,
+      "outputs": []
+    },
+    "build:native:windows": {
+      "cache": false,
+      "outputs": []
+    }
+  }
+}

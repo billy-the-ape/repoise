@@ -43,16 +43,34 @@ export function run(command, args, options = {}) {
     ...options,
   }).trim();
 }
-export function npm(args, options = {}) {
-  let cli = process.env.npm_execpath;
+/** True when a resolved path is the real npm CLI entry point, not a
+ * pnpm/yarn/bun shim. Package managers may set `npm_execpath` to their own
+ * CLI, so it is only trusted when it resolves to npm-cli.js. */
+export function isNpmCliPath(resolved) {
+  return resolved
+    .replace(/\\/g, "/")
+    .endsWith("node_modules/npm/bin/npm-cli.js");
+}
+
+/** Explicitly resolve the npm executable for registry operations (pack,
+ * publish, stage). `npm_execpath` is honored only when it points at npm
+ * itself; otherwise the PATH is searched for the npm shim (its Windows
+ * `npm.cmd` maps to the sibling `npm-cli.js`). npm commands are never passed
+ * to pnpm. */
+export function resolveNpmCli(env = process.env, platform = process.platform) {
+  let cli = env.npm_execpath;
+  if (cli) {
+    try {
+      if (!isNpmCliPath(realpathSync(cli))) cli = undefined;
+    } catch {
+      cli = undefined;
+    }
+  }
   if (!cli) {
-    for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-      const shim = join(
-        directory,
-        process.platform === "win32" ? "npm.cmd" : "npm",
-      );
+    for (const directory of (env.PATH ?? "").split(delimiter)) {
+      const shim = join(directory, platform === "win32" ? "npm.cmd" : "npm");
       const candidate =
-        process.platform === "win32"
+        platform === "win32"
           ? join(dirname(shim), "node_modules/npm/bin/npm-cli.js")
           : shim;
       if (existsSync(candidate)) {
@@ -65,7 +83,10 @@ export function npm(args, options = {}) {
     throw new Error(
       "npm CLI not found; run through npm scripts or install Node/npm",
     );
-  return run(process.execPath, [cli, ...args], options);
+  return cli;
+}
+export function npm(args, options = {}) {
+  return run(process.execPath, [resolveNpmCli(), ...args], options);
 }
 export function verifyVersion(tag) {
   const version = manifest().version;

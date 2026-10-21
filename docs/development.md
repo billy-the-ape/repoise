@@ -224,18 +224,31 @@ when Cargo permits it; explicitly pass `--force` when replacement is intended.
 Uninstall with `cargo uninstall repoise-cli`, using the same `--root` if customized.
 This is local development installation, not a registry release.
 
-Rust-native checks/builds need no Node. Release and evaluation tooling additionally use
-Node 24 in CI, with npm and a pinned Prettier dev dependency; install using
-npm ci --ignore-scripts. The Prettier globs and npm test (node --test) cover both
-scripts/release and scripts/eval, plus the npm wrapper sources and workflow YAML.
-Run npm run format before committing those changes, then npm run format:check and
-npm test. The offline lexical evaluation harness runs separately:
-cargo build --package repoise-cli, then node scripts/eval/harness.mjs (results in the
-git-ignored eval-results/ directory); see the [eval runbook](../scripts/eval/RUNBOOK.md).
+Rust-native checks/builds need no Node. Release, evaluation and CI-selection
+tooling additionally use Node 24 in CI, with pnpm (pinned by the root
+`packageManager` field and committed `pnpm-lock.yaml`) and pinned Prettier and
+Turborepo dev dependencies; install using `pnpm install --frozen-lockfile
+--ignore-scripts`. The Prettier globs and `pnpm test` (`node --test`) cover
+scripts/release, scripts/eval and scripts/ci, plus the npm wrapper sources,
+the root and launcher manifests, `turbo.json`, `pnpm-workspace.yaml` and
+workflow YAML. Run `pnpm run format` before committing those changes, then
+`pnpm run format:check` and `pnpm test`. Turbo tasks (`pnpm exec turbo run
+format:check|test|check:native|build:native`, plus the `:windows` variants)
+orchestrate the same steps; the native bridge tasks run single-threaded per
+platform with Turbo output caching disabled. The offline lexical evaluation
+harness runs separately: cargo build --package repoise-cli, then
+node scripts/eval/harness.mjs (results in the git-ignored eval-results/
+directory); see the [eval runbook](../scripts/eval/RUNBOOK.md).
 These development dependencies are not installed by consumers of the published launcher.
 Git attributes keep text checkouts at LF on every platform, including Windows.
 
-CI checks/tests/builds/smokes Linux, macOS and Windows. The manually dispatched
+CI checks/tests/builds/smokes Linux, macOS and Windows. Pull requests select
+affected check sets through `scripts/ci/impact-map.json` and
+`scripts/ci/select-checks.mjs`; pushes to main, unknown paths, empty diffs and
+selection failures run the full suite, and an aggregate `CI gate` job enforces
+the expected results (see the
+[agent platform workspace plan](plans/agent-platform/01-workspace-and-ci.md)).
+The manually dispatched
 **Build native artifacts** workflow produces binaries for Linux x86_64 GNU, macOS ARM64 and
 Windows x86_64 MSVC, retained for seven days. These are engineering artifacts: no installer,
 checksums/signing, compatibility guarantee, npm publication or GitHub release yet.

@@ -10,20 +10,45 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  check:
-    name: Check (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
+  select:
+    name: Select checks
+    # Pull requests get affected-check selection; pushes and manual runs skip
+    # it and run the full suite (the gate treats a skipped selection as full).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      ok: ${{ steps.select.outputs.ok }}
+      run_check: ${{ steps.select.outputs.run_check }}
+      run_docs: ${{ steps.select.outputs.run_docs }}
+      components: ${{ steps.select.outputs.components }}
+      reason: ${{ steps.select.outputs.reason }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      # Failure is expected to be explicit: the script emits full-suite
+      # outputs before exiting nonzero, and the CI gate fails on selection
+      # errors instead of accepting a no-op.
+      - name: Select affected checks (fail closed to full suite)
+        id: select
+        continue-on-error: true
+        env:
+          SELECTION_BASE: ${{ github.base_ref }}
+        run: node scripts/ci/select-checks.mjs --base "${SELECTION_BASE:-main}" --head "${GITHUB_SHA}"
+  check-linux:
+    name: Check (ubuntu-24.04)
+    if: "!cancelled() && (needs.select.result == 'skipped' || needs.select.outputs.run_check == 'true')"
+    needs: [select]
+    runs-on: ubuntu-24.04
+    env:
+      CHECK_TARGET: x86_64-unknown-linux-gnu
+      CHECK_BINARY: repoise
+    steps: &check-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -31,25 +56,54 @@ jobs:
         with:
           node-version: "24"
           package-manager-cache: false
-      - run: npm ci --ignore-scripts
-      - run: npm run format:check
-      - run: npm test
+      # Provision pnpm with lifecycle scripts enabled: pnpm 12's postinstall
+      # swaps the shebang-less placeholder bin for the native @pnpm/exe
+      # binary. Skipping scripts leaves a stub that shells tolerate but
+      # direct exec (e.g. Turbo spawning task commands) cannot run, and on
+      # Windows the stub is a silent no-op. Runs outside the checkout so the
+      # root .npmrc ignore-scripts setting cannot apply. The version must
+      # match the root packageManager pin.
+      - name: Install pinned pnpm
+        working-directory: ${{ runner.temp }}
+        run: npm install --global pnpm@12.3.4
+      - name: Verify pnpm provisioning
+        shell: bash
+        run: test "$(pnpm --version)" = "12.3.4"
+      - name: Frozen pnpm install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: JS/TS format check
+        run: pnpm exec turbo run format:check
+      - name: JS/TS tests
+        run: pnpm exec turbo run test
       - name: Install pinned toolchain
         run: rustup show
-      - name: Check (Unix)
+      # Cargo dependency/compiler caches stay separate from Turbo task
+      # results; Turbo output caching for the native bridge tasks is
+      # disabled until verified keys exist.
+      - name: Cache Cargo target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ runner.arch }}-
+      - name: Cache Cargo home
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo
+          key: cargo-home-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-home-${{ runner.os }}-
+      - name: Rust workspace checks (native bridge task)
         if: runner.os != 'Windows'
-        run: bash scripts/check.sh
-      - name: Check (Windows)
+        run: pnpm exec turbo run check:native
+      - name: Rust workspace checks (native bridge task)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/check.ps1
-      - name: Build (Unix)
+        run: pnpm exec turbo run check:native:windows
+      - name: Release build (native bridge task)
         if: runner.os != 'Windows'
-        run: bash scripts/build.sh
-      - name: Build (Windows)
+        run: pnpm exec turbo run build:native
+      - name: Release build (native bridge task)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/build.ps1
+        run: pnpm exec turbo run build:native:windows
       - name: Smoke native executable (Unix)
         if: runner.os != 'Windows'
         run: ./target/release/repoise --version
@@ -58,12 +112,79 @@ jobs:
         shell: pwsh
         run: ./target/release/repoise.exe --version
       - name: Prepare claim tarball (no registry write)
-        run: npm run release:claim
+        run: pnpm run release:claim
       - name: Package Unix native binary
         if: runner.os != 'Windows'
-        run: node scripts/release/pack.mjs ${{ matrix.target }} target/release/repoise
+        run: node scripts/release/pack.mjs "$CHECK_TARGET" target/release/$CHECK_BINARY
       - name: Package Windows native binary
         if: runner.os == 'Windows'
-        run: node scripts/release/pack.mjs ${{ matrix.target }} target/release/repoise.exe
+        shell: pwsh
+        run: node scripts/release/pack.mjs $env:CHECK_TARGET target/release/$env:CHECK_BINARY
       - name: Smoke packed installs and native archive (offline functional fixture)
-        run: node scripts/release/smoke.mjs ${{ matrix.target }}
+        if: runner.os != 'Windows'
+        run: node scripts/release/smoke.mjs "$CHECK_TARGET"
+      - name: Smoke packed installs and native archive (offline functional fixture)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: node scripts/release/smoke.mjs $env:CHECK_TARGET
+  check-macos:
+    name: Check (macos-15)
+    if: "!cancelled() && (needs.select.result == 'skipped' || needs.select.outputs.run_check == 'true')"
+    needs: [select]
+    runs-on: macos-15
+    env:
+      CHECK_TARGET: aarch64-apple-darwin
+      CHECK_BINARY: repoise
+    steps: *check-steps
+  check-windows:
+    name: Check (windows-2025)
+    if: "!cancelled() && (needs.select.result == 'skipped' || needs.select.outputs.run_check == 'true')"
+    needs: [select]
+    runs-on: windows-2025
+    env:
+      CHECK_TARGET: x86_64-pc-windows-msvc
+      CHECK_BINARY: repoise.exe
+    steps: *check-steps
+  docs:
+    name: Docs
+    if: "!cancelled() && (needs.select.result == 'skipped' || needs.select.outputs.run_docs == 'true')"
+    needs: [select]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Install pinned pnpm
+        working-directory: ${{ runner.temp }}
+        run: npm install --global pnpm@12.3.4
+      - name: Verify pnpm provisioning
+        shell: bash
+        run: test "$(pnpm --version)" = "12.3.4"
+      - name: Frozen pnpm install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Documentation and tooling format check
+        run: pnpm run format:check
+  gate:
+    name: CI gate
+    if: always()
+    needs: [select, check-linux, check-macos, check-windows, docs]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Evaluate selection errors, expected results, failures and cancellations
+        env:
+          GATE_SELECT_RESULT: ${{ needs.select.result }}
+          GATE_SELECT_OK: ${{ needs.select.outputs.ok }}
+          GATE_RUN_CHECK: ${{ needs.select.outputs.run_check }}
+          GATE_RUN_DOCS: ${{ needs.select.outputs.run_docs }}
+          GATE_CHECK_LINUX: ${{ needs.check-linux.result }}
+          GATE_CHECK_MACOS: ${{ needs.check-macos.result }}
+          GATE_CHECK_WINDOWS: ${{ needs.check-windows.result }}
+          GATE_DOCS: ${{ needs.docs.result }}
+        run: node scripts/ci/gate.mjs

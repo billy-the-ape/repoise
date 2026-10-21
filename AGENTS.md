@@ -51,6 +51,16 @@ Windows. The local inference embedding preset is evaluated, not shipped; OIDC st
 requires authentication diagnosis.
 Commands in the plan are proposals, not installed tools or proof of shipped behavior.
 
+The repository is a Cargo + pnpm workspace: pnpm (pinned by the root
+`packageManager` field, lockfile `pnpm-lock.yaml`) owns JS/TS development
+dependencies, and Turborepo (`turbo.json`) declares development tasks plus
+single per-platform native bridge tasks (`check:native`, `build:native`) with
+output caching disabled; Cargo commands still work without Node. CI selects
+affected check sets per PR through `scripts/ci/impact-map.json` and
+`scripts/ci/select-checks.mjs`, with an aggregate `CI gate` job enforcing
+expected results (unknown paths, empty diffs and selection failures run the
+full suite).
+
 Follow-on planning for the polyglot workspace, CLI automation contracts, external
 agent adapters, real-agent benchmarks and VS Code UI lives in the
 [agent platform roadmap](docs/plans/agent-platform/README.md). Start there for
@@ -111,7 +121,9 @@ Apply cargo fmt --all before committing Rust changes; honor rustfmt/clippy and w
 scripts/check.sh and scripts/check.ps1 also check rustdoc; see the development guide.
 Run affected tests and required CI checks; report unavailable checks and reasons accurately.
 Optional inference/platform features need their own relevant tests, not blind --all-features runs.
-Release tooling: npm ci --ignore-scripts, npm run format:check and npm test.
+Release tooling: pnpm install --frozen-lockfile, pnpm run format:check and
+pnpm test (pnpm pinned via the root `packageManager` field); registry packing
+and staging still invoke real npm, never pnpm.
 Pin and justify dependencies; review licenses, native assets and supported targets.
 Use explicit error handling and contextual errors; avoid panics for normal input/I/O failures.
 Minimize unsafe code; document safety invariants and isolate unavoidable FFI boundaries.

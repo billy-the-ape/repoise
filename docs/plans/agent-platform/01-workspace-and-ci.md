@@ -1,7 +1,7 @@
 # AP-01: workspace foundation and affected CI
 
-Status: proposed; first implementation PR after the planning PR. No layout,
-lockfiles, workflow filters or package versions change in the planning PR.
+Status: implemented (2026-10-20); see the [implementation record](#implementation-record-2026-10-20)
+at the end of this document for the shipped design, validation and deferred items.
 Parent: [program index](README.md).
 
 ## Outcome and recommendation
@@ -156,3 +156,105 @@ check rollout, dependency installation policy and which packages are ever public
 Recommendation is pnpm + Turbo; if the bridge prototype adds complexity without
 benefit, record evidence and use explicit CI orchestration rather than silently
 substituting an unreviewed build system.
+
+## Implementation record (2026-10-20)
+
+Implemented as one reviewable PR against `main`
+([#36](https://github.com/billy-the-ape/repoise/pull/36)). Pinned versions: pnpm 12.3.4
+(root `packageManager`, Corepack-managed), Turborepo 2.11.9 and Prettier 3.9.9
+as root dev dependencies, Node 24 in CI; Rust stays pinned at 1.99.0.
+
+Shipped changes:
+
+- `pnpm-workspace.yaml` — explicit membership: the root development package
+  (listed so Turbo schedules its scripts; pnpm already treats the root as a
+  member) and the reserved `apps/*`/`packages/*` homes. The published launcher
+  (`npm/repoise`) deliberately stays outside the workspace: its optional
+  platform-package pins only resolve once those versions are published, so a
+  root frozen install (bump PRs and the release build job) must never depend
+  on them. Generated staging (`dist/`), evaluation fixtures and examples stay
+  out.
+- Root `package.json` — `packageManager` pin, Turbo task scripts
+  (`format`, `format:check`, `test`, `check:native`, `build:native` and their
+  `:windows` variants), and Prettier globs extended to `scripts/ci`,
+  `turbo.json` and `pnpm-workspace.yaml`.
+- `turbo.json` — top-level `globalDependencies` covering Cargo
+  manifest/lockfile/toolchain, `crates/**`, `schemas/**` and the
+  check/build scripts (Turbo 2.x removed the per-task `globalDependencies`
+  key); every declared task uses `cache: false` (verification tasks
+  included, so a stale cache can never skip a format/test/check run), so no
+  Turbo task-output cache exists for any task.
+- `pnpm-lock.yaml` replaces `package-lock.json`; `.npmrc` sets
+  `ignore-scripts=true` for development installs.
+- `scripts/ci/impact-map.json` (version 1) — versioned component map with
+  `check`/`docs` job groups; reserved adapter/extension homes and the
+  `root` component default to broad checks until their packages ship.
+- `scripts/ci/select-checks.mjs` — PR merge-base diff via `git diff -z
+  --name-status` (rename/copy/delete/type-change entries, paths with
+  spaces), component classification, `GITHUB_OUTPUT` (`ok`, `run_check`,
+  `run_docs`, `components`, `reason`). Type changes (`T`) classify like
+  modifications. Empty diffs, unknown paths, missing merge bases
+  and any script failure select the full suite; failures also exit nonzero.
+- `scripts/ci/gate.mjs` — stable aggregate gate: a skipped selection means
+  the full suite was required; a selection error fails the gate (the full
+  suite still runs); required jobs must have succeeded and non-required jobs
+  must have been skipped.
+- `.github/workflows/ci.yml` — `Select checks` (pull requests only), the
+  three `Check (OS)` jobs with unchanged display names, `Docs`, and `CI
+  gate`. Each conditional job declares `needs: [select]` (required so its
+  `if:` can read the selection outputs) and is guarded by a quoted
+  `!cancelled() &&` expression so superseded runs under `cancel-in-progress`
+  do not start macOS/Windows runners; `CI gate` keeps `always()`. Every job
+  that uses pnpm installs it with `npm install --global pnpm@12.3.4`
+  (lifecycle scripts enabled, run from `runner.temp` outside the checkout)
+  after `setup-node`: pnpm 12's postinstall swaps the shebang-less
+  placeholder bin for the native `@pnpm/exe` binary, and a follow-up step
+  asserts `pnpm --version` equals the pinned version so a broken or no-op
+  shim can never report green. Skipping scripts was tried first and failed:
+  the placeholder is unrunnable under direct `execve` (Turbo's task spawn;
+  `Exec format error` on Linux) and a silent exit-0 no-op on Windows, while
+  `pnpm/action-setup@v4` shims broke with pnpm 12 on Windows. `setup-node`
+  uses no pnpm store cache. Frozen
+  `pnpm install`, Turbo for format, tests and the per-platform native bridge
+  tasks, and separate `actions/cache` entries for `target` and `~/.cargo`
+  keyed by OS/arch/`Cargo.lock` (Turbo caches no task outputs).
+- `.github/workflows/release.yml` — build job installs with frozen pnpm;
+  registry packing/staging still invoke real npm.
+- `scripts/release/common.mjs` — `resolveNpmCli` honors `npm_execpath` only
+  when it resolves to `node_modules/npm/bin/npm-cli.js`, otherwise searches
+  PATH (Windows `npm.cmd` maps to `npm-cli.js`); tests cover a pnpm-style
+  execpath, a real npm execpath, the Windows shim and the missing-npm error.
+- Tests: `scripts/ci/select-checks.test.mjs` (parser, classification
+  fixtures, and end-to-end selection against a temporary Git repository
+  including renames, spaced paths, missing bases and empty diffs) and
+  `scripts/ci/gate.test.mjs` (selection errors, skipped selection, failures,
+  cancellations, stray non-required jobs, missing outputs).
+- Docs: AGENTS.md, `docs/development.md`, `docs/publish/README.md`,
+  `docs/publish/npm.md`, CHANGELOG and the program index.
+
+Validated locally (Linux x86_64, Node 24, pnpm 12.3.4, pinned Rust 1.99):
+fresh frozen `pnpm install`; `pnpm run format`, `pnpm run format:check`,
+`pnpm test` (56 tests, 15 new); Turbo dry-run proving root tasks execute and
+every declared task is declared with caching disabled and full Rust input
+coverage; live selection runs against repository history (multi-component,
+empty-diff and missing-base behavior); `pnpm run release:claim` proving the
+real-npm fallback under a `pnpm run` environment where `npm_execpath`
+points at pnpm's own CLI; full `bash scripts/check.sh` (fmt, Clippy, tests,
+rustdoc) and `bash scripts/build.sh` (release build) for the native path.
+
+Deferred / not shipped with this PR:
+
+- Turbo remote caching and cross-PR local cache reuse; the plan's
+  cache-key verification gate is deferred with the cache itself.
+- Required-check configuration in repository settings for the three
+  `Check (OS)` contexts plus the `CI gate` job (administrative step; no
+  workflow change is required for it).
+- Live GitHub PR runs demonstrating skipped vs executed jobs; selection and
+  gate semantics are covered by the unit/E2E tests above.
+- Live confirmation of the scripts-enabled `npm install --global
+  pnpm@12.3.4` provisioning path on the hosted Linux and Windows runners
+  (earlier attempts observed the `pnpm/action-setup@v4` shim failure and,
+  with scripts skipped, Turbo's `Exec format error` on Linux and silent
+  exit-0 pnpm no-ops on Windows; the current install is verified locally on
+  Linux via a raw-`execve` run of `pnpm exec turbo`).
+- Hybrid evaluation and the AP-02–AP-07 scope.

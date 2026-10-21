@@ -1,7 +1,8 @@
 # Agent platform and evaluation roadmap
 
-Status: proposed implementation program; no commands or packages below ship from
-this planning change. Recorded October 19, 2026 (America/Denver).
+Status: proposed implementation program. AP-01 (workspace and CI foundation)
+is implemented; the remaining cards below remain proposed. Recorded October 19,
+2026 (America/Denver); AP-01 implementation recorded October 20, 2026.
 
 ## Purpose
 
@@ -41,15 +42,15 @@ and its listed dependencies rather than loading every plan. Update statuses and
 links as implementation lands. Split a card if its implementation exceeds a
 reviewable scope, retaining the same interfaces and acceptance requirements.
 
-| ID    | Plan                                                        | Depends on                              | Intended result                                                                   |
-| ----- | ----------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------- |
-| AP-01 | [Workspace and CI](01-workspace-and-ci.md)                  | This plan                               | Incremental Cargo + pnpm/Turbo workspace, affected checks, packaging preservation |
-| AP-02 | [CLI automation contracts](02-cli-contracts.md)             | AP-01                                   | Versioned events, capabilities, progress and cancellation for automation/UI       |
-| AP-03 | [Agent adapter protocol](03-agent-adapters.md)              | AP-01, AP-02                            | External runner protocol, conformance fixtures and first Cline adapter            |
-| AP-04 | [Benchmark execution](04-benchmark-runner.md)               | AP-02, AP-03                            | Isolated trials and verified retrieval conditions with budgets/artifacts          |
-| AP-05 | [Suites, metrics and reports](05-suites-metrics-reports.md) | AP-04; define schema with AP-03         | Independent grading, per-trial records and comparable reports                     |
-| AP-06 | [Pilot and expansion](06-pilot-and-expansion.md)            | AP-04, AP-05                            | ai-gateway pilot, then broader repository/model/harness experiments               |
-| AP-07 | [VS Code extension](07-vscode-extension.md)                 | AP-01, AP-02; bench UI also AP-04/AP-05 | Thin workspace UI and supervised watch/MCP setup                                  |
+| ID    | Plan                                                        | Depends on                              | Intended result                                                                   | Status                          |
+| ----- | ----------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------- |
+| AP-01 | [Workspace and CI](01-workspace-and-ci.md)                  | This plan                               | Incremental Cargo + pnpm/Turbo workspace, affected checks, packaging preservation | Implemented (2026-10-20, [#36](https://github.com/billy-the-ape/repoise/pull/36))        |
+| AP-02 | [CLI automation contracts](02-cli-contracts.md)             | AP-01                                   | Versioned events, capabilities, progress and cancellation for automation/UI       | Proposed                       |
+| AP-03 | [Agent adapter protocol](03-agent-adapters.md)              | AP-01, AP-02                            | External runner protocol, conformance fixtures and first Cline adapter            | Proposed                       |
+| AP-04 | [Benchmark execution](04-benchmark-runner.md)               | AP-02, AP-03                            | Isolated trials and verified retrieval conditions with budgets/artifacts          | Proposed                       |
+| AP-05 | [Suites, metrics and reports](05-suites-metrics-reports.md) | AP-04; define schema with AP-03         | Independent grading, per-trial records and comparable reports                     | Proposed                       |
+| AP-06 | [Pilot and expansion](06-pilot-and-expansion.md)            | AP-04, AP-05                            | ai-gateway pilot, then broader repository/model/harness experiments               | Proposed                       |
+| AP-07 | [VS Code extension](07-vscode-extension.md)                 | AP-01, AP-02; bench UI also AP-04/AP-05 | Thin workspace UI and supervised watch/MCP setup                                  | Proposed                       |
 
 AP-07 watch/status UI can land before the benchmark UI, but no editor-specific
 benchmark engine should be introduced. AP-06 consumer integration belongs in a
@@ -75,7 +76,9 @@ separate consumer PR; the harness stays in Repoise.
 
 ## Coordination with other work
 
-At inspection these PRs were open, not assumed merged:
+At planning time these PRs were open, not assumed merged; at AP-01
+implementation time (2026-10-20) they had merged into main and no open PRs
+remained. The coordination requirements below still apply to later cards:
 
 | Work                                                                                 | Coordination requirement                                                                                                  |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
@@ -94,7 +97,7 @@ AP-02 coordinates progress work rather than creating a second event design.
 
 | Question                                                   | Default / decision point                                                                           |
 | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Workspace tool and exact versions?                         | Recommend pnpm + Turbo; AP-01 pins compatible versions after cross-platform proof                  |
+| Workspace tool and exact versions?                         | Resolved in AP-01: pnpm 12.3.4 pinned via the root `packageManager` field with `pnpm-lock.yaml`; Turborepo 2.11.9 pinned as a dev dependency; see [01-workspace-and-ci.md](01-workspace-and-ci.md) |
 | Native or optional companion benchmark runtime?            | AP-03/AP-04 prototype; native CLI remains entry point, any Node companion is explicit and optional |
 | Which Cline version and telemetry are reliable?            | AP-03 capability probe and installed-version verification; no assumed CLI/extension equivalence    |
 | Which model/hardware/budgets and pilot snapshot?           | AP-06 owner-selected profile; do not reuse old pilot SHAs silently                                 |
