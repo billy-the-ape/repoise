@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repoise.dev/schemas/adapter-request.v1.schema.json",
+  "title": "Repoise agent adapter request (version 1)",
+  "description": "The versioned JSON request a coordinator writes to an agent adapter's stdin (then closes). Stdout is reserved for bounded NDJSON protocol events; stderr is for diagnostics. Credentials travel as environment variable references, never as values in this document. See docs/agent-adapters.md.",
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "identity",
+    "workspace",
+    "task",
+    "condition",
+    "profile",
+    "limits",
+    "outputs"
+  ],
+  "properties": {
+    "protocolVersion": { "const": 1 },
+    "identity": {
+      "type": "object",
+      "required": ["experimentId", "trialId", "taskId", "replication"],
+      "properties": {
+        "experimentId": { "type": "string", "minLength": 1 },
+        "trialId": { "type": "string", "minLength": 1 },
+        "taskId": { "type": "string", "minLength": 1 },
+        "replication": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["root", "scope"],
+      "properties": {
+        "root": { "type": "string", "minLength": 1 },
+        "revision": { "type": ["string", "null"] },
+        "scope": { "enum": ["read", "write"] },
+        "allowedWritePaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["taskVersion", "taskHash"],
+      "description": "Exactly one of prompt or promptFile must be set (enforced by hosts/adapters). Never contains grading answers.",
+      "properties": {
+        "prompt": { "type": ["string", "null"] },
+        "promptFile": { "type": ["string", "null"] },
+        "taskVersion": { "type": "string", "minLength": 1 },
+        "taskHash": { "type": "string", "minLength": 1 }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "required": ["retrievalMode", "requiredCapabilities"],
+      "properties": {
+        "retrievalMode": { "enum": ["repoise", "baseline"] },
+        "requiredCapabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "fresh_sessions",
+              "isolated_state",
+              "mcp_config",
+              "read_only_restriction",
+              "tool_telemetry",
+              "usage_semantics",
+              "model_selection",
+              "cancellation"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Capabilities this trial requires; a missing one fails preflight and is never approximated."
+        },
+        "mcp": {
+          "description": "MCP server the adapter must make available for this trial (null in baseline).",
+          "type": ["object", "null"],
+          "required": ["serverName", "argv"],
+          "properties": {
+            "serverName": { "type": "string", "minLength": 1 },
+            "argv": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string" }
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
+        "guidanceOverlay": {
+          "description": "Retrieval guidance overlay (e.g. the managed AGENTS.md snippet). Coordinator-owned; the adapter records it but never rewrites repository files.",
+          "type": ["object", "null"],
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "description": { "type": "string" }
+          }
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": ["harness"],
+      "properties": {
+        "harness": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "revision": { "type": ["string", "null"] }
+          }
+        },
+        "provider": {
+          "type": ["object", "null"],
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "credentialRef": {
+              "type": ["string", "null"],
+              "description": "Opt-in credential reference of the form env:VAR_NAME. The coordinator passes the resolved value to the adapter through its process environment; the raw value never appears in this document or in any manifest."
+            }
+          }
+        },
+        "model": {
+          "type": ["object", "null"],
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "revision": { "type": ["string", "null"] }
+          }
+        },
+        "reasoning": {
+          "type": ["object", "null"],
+          "required": ["level"],
+          "properties": { "level": { "enum": ["none", "low", "medium", "high", "xhigh"] } }
+        },
+        "compaction": {
+          "type": ["object", "null"],
+          "required": ["mode"],
+          "properties": { "mode": { "enum": ["agentic", "basic", "off"] } }
+        },
+        "sampling": {
+          "type": "object",
+          "description": "Adapter-specific sampling knobs; free form by design."
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "wallClockMs": { "type": ["integer", "null"], "minimum": 1 },
+        "maxIterations": { "type": ["integer", "null"], "minimum": 1 },
+        "maxToolCalls": { "type": ["integer", "null"], "minimum": 1 },
+        "tokenBudget": { "type": ["integer", "null"], "minimum": 1 },
+        "costBudgetUsd": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "maxEventBytes": { "type": ["integer", "null"], "minimum": 1 },
+        "maxEvents": { "type": ["integer", "null"], "minimum": 1 }
+      },
+      "description": "Defaults: maxEventBytes 65536, maxEvents 20000. Host enforces the event bounds; adapters may additionally enforce budgets."
+    },
+    "outputs": {
+      "type": "object",
+      "required": ["artifactDir"],
+      "properties": {
+        "artifactDir": { "type": "string", "minLength": 1 },
+        "eventsFile": { "type": ["string", "null"] },
+        "resultFile": { "type": ["string", "null"] }
+      },
+      "description": "Artifact directory is created if missing; eventsFile/resultFile are coordinator-owned destinations written by the host."
+    }
+  }
+}

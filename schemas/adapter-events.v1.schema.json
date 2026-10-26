@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repoise.dev/schemas/adapter-events.v1.schema.json",
+  "title": "Repoise agent adapter event (version 1)",
+  "description": "One line of the adapter stdout NDJSON protocol. The first event must be hello; exactly one final event and it must be last. Unknown event types are additive and must be accepted by hosts (envelope-only validation). Missing output/reasoning/cache/cost measurements stay null with a reason, never zero.",
+  "type": "object",
+  "required": ["v", "t", "ts"],
+  "properties": {
+    "v": { "const": 1 },
+    "t": { "type": "string", "minLength": 1 },
+    "ts": { "type": "integer", "minimum": 0 },
+    "adapter": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "protocolVersion": { "type": "integer", "minimum": 1 },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "fresh_sessions",
+        "isolated_state",
+        "mcp_config",
+        "read_only_restriction",
+        "tool_telemetry",
+        "usage_semantics",
+        "model_selection",
+        "cancellation"
+      ],
+      "properties": {
+        "fresh_sessions": { "type": "boolean" },
+        "isolated_state": { "type": "boolean" },
+        "mcp_config": { "type": "boolean" },
+        "read_only_restriction": { "type": "boolean" },
+        "tool_telemetry": { "type": "boolean" },
+        "usage_semantics": { "type": "boolean" },
+        "model_selection": { "type": "boolean" },
+        "cancellation": { "type": "boolean" }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "required": ["surface", "revisionSource"],
+      "properties": {
+        "surface": { "type": "string", "minLength": 1 },
+        "revision": { "type": ["string", "null"] },
+        "revisionSource": { "enum": ["pinned", "runtime", "unresolved"] }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "required": ["eventSemantics"],
+      "properties": {
+        "eventSemantics": { "enum": ["cumulative", "delta"] },
+        "inputIncludesCacheReads": { "type": ["boolean", "null"] },
+        "includesSubagents": { "type": ["boolean", "null"] },
+        "includesCompaction": { "type": ["boolean", "null"] },
+        "costSemantics": { "enum": ["provider", "estimate", null] }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["root"],
+      "properties": {
+        "root": { "type": "string" },
+        "revision": { "type": ["string", "null"] },
+        "scope": { "type": "string" }
+      }
+    },
+    "trialId": { "type": "string" },
+    "code": { "type": "string", "minLength": 1 },
+    "message": { "type": "string" },
+    "data": { "type": "object" },
+    "requestId": { "type": "string", "minLength": 1 },
+    "tool": { "type": "string", "minLength": 1 },
+    "toolId": { "type": ["string", "null"] },
+    "durationMs": { "type": ["number", "null"] },
+    "ok": { "type": "boolean" },
+    "values": {
+      "type": "object",
+      "properties": {
+        "inputTokens": { "type": ["number", "null"] },
+        "outputTokens": { "type": ["number", "null"] },
+        "reasoningTokens": { "type": ["number", "null"] },
+        "cacheReadTokens": { "type": ["number", "null"] },
+        "cacheWriteTokens": { "type": ["number", "null"] },
+        "costUsd": { "type": ["number", "null"] }
+      }
+    },
+    "raw": {
+      "description": "Unmodified harness/provider usage payload, preserved alongside normalized values."
+    },
+    "source": { "enum": ["provider", "estimate"] },
+    "path": { "type": "string" },
+    "kind": { "type": "string" },
+    "status": {
+      "enum": [
+        "completed",
+        "agent_error",
+        "timeout",
+        "cancelled",
+        "budget_stop",
+        "adapter_error",
+        "protocol_error"
+      ]
+    },
+    "reason": { "type": ["string", "null"] },
+    "exitCode": { "type": ["integer", "null"] }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "t": { "const": "hello" } } },
+      "then": {
+        "required": ["adapter", "protocolVersion", "capabilities", "usage"]
+      }
+    },
+    {
+      "if": { "properties": { "t": { "const": "usage" } } },
+      "then": { "required": ["values", "source"] }
+    },
+    {
+      "if": { "properties": { "t": { "const": "final" } } },
+      "then": { "required": ["status"] }
+    }
+  ]
+}

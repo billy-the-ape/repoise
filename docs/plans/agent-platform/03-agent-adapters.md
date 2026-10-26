@@ -1,7 +1,29 @@
 # AP-03: consumer-owned agent runner protocol
 
-Status: proposed. Depends on [AP-01](01-workspace-and-ci.md) and
+Status: implemented (2026-10-26). Depends on [AP-01](01-workspace-and-ci.md) and
 [AP-02](02-cli-contracts.md). Agree the trial schema with AP-04/AP-05 first.
+
+## Implementation status
+
+Shipped as protocol v1 in `packages/agent-adapter-protocol/` (host plus the
+checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
+`packages/agent-adapter-cline/`, with 12 protocol conformance tests and 6
+adapter tests (stub-CLI driven through the real host). Implemented decisions
+and deviations from the proposals below are documented in
+[docs/agent-adapters.md](../../agent-adapters.md):
+
+- The adapter executable override is `CLINE_EXECUTABLE` (not the proposed
+  `REPOISE_BENCH_RUNNER`, which remains a runner-level proposal for AP-04).
+- Credentials are accepted as `env:` references only and travel to the CLI
+  through its documented per-run key flag; they never enter the request,
+  the effective-config artifact or events.
+- The Cline hello declares `tool_telemetry` and `read_only_restriction`
+  false; `read_only_restriction` therefore fails preflight when required,
+  and `maxToolCalls` produces a warning instead of a silent approximation.
+- Completion is keyed solely on the Cline `run_result`; a CLI failure
+  without `run_result` is `adapter_error/no_run_result`.
+- The conformance suite includes the fake adapters, framing and
+  grandchild-kill tests; no live Cline run has been executed.
 
 ## Outcome and boundaries
 

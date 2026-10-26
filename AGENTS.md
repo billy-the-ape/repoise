@@ -88,6 +88,7 @@ editor extension ships from that plan.
 | Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
 | MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md)                                                                                             |
 | CLI automation (capabilities, `--events`, exit codes, signals, ownership) | [Automation contracts](docs/automation.md)                                                              |
+| Agent adapter protocol, conformance and the Cline adapter | [Agent adapters](docs/agent-adapters.md)                                                          |
 | Agent setup, CLI/MCP retrieval workflow and worktrees | [Agent setup](docs/agents.md)                                                                                     |
 | Portable consumer skill and one-command installation | [Agent skill](skills/repoise/SKILL.md); [installation](docs/agents.md#install-the-agent-skill) |
 | Build/CI integration and consumer guide            | [Build/CI guide](docs/build-ci.md)                                                                                   |

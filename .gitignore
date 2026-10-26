@@ -34,3 +34,7 @@ repoise.local.json
 
 # Evaluation harness outputs (generated results stay out of Git)
 eval-results/
+
+# Agent-platform evaluation corpora and private suites (AP-03+); synthetic
+# fixtures only ever live under packages/ and scripts/ in this repository.
+repoise-eval/

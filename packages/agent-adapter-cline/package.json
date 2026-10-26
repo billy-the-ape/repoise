@@ -1,0 +1,14 @@
+{
+  "name": "@repoise/agent-adapter-cline",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "Repoise agent adapter for the installed Cline headless CLI (protocol v1). Drives exactly one trial per invocation with isolated config, data and MCP state under the trial artifact directory. See docs/agent-adapters.md.",
+  "type": "module",
+  "bin": {
+    "agent-adapter-cline": "bin/agent-adapter-cline.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
