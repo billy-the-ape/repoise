@@ -119,7 +119,8 @@ depend on the interface. Adding a daemon or network control API is out of scope.
 
 ## Implementation record (2026-10-26)
 
-Implemented as one reviewable PR against `main`. Current-state guide:
+Implemented as one reviewable PR against `main`
+([#37](https://github.com/billy-the-ape/repoise/pull/37)). Current-state guide:
 [docs/automation.md](../../../docs/automation.md).
 
 Settled decisions:
