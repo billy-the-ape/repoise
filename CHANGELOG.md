@@ -79,11 +79,15 @@ validation, cumulative/delta usage semantics, wall-clock escalation
 (SIGINT → SIGKILL, and a cooperative `cancelled` final never replaces a
 host-initiated timeout), post-final reading (events after the final are
 rejected as `protocol_error`), a best-effort process-group sweep after
-every path, and credential scrubbing from all forwarded Cline output.
-Coverage: 17 protocol conformance tests and 8 adapter tests (stub-CLI
-driven through the real host). No environment variables are required for
-the protocol host itself; the Cline adapter honors `CLINE_EXECUTABLE`
-and the documented `CLONE_*` passthrough namespace. See
+every path (timers, abort listeners and the sweep are guaranteed by a
+`finally` block; a throwing `onEvent` callback is recorded as a warning
+instead of aborting the run), blank first lines never disarm the hello
+timeout, and credential scrubbing from all forwarded Cline output.
+Coverage: 19 protocol conformance tests and 8 adapter tests (stub-CLI
+driven through the real host), wired into CI through per-package `test`
+scripts run by `turbo run test` in the Check jobs. No environment variables
+are required for the protocol host itself; the Cline adapter honors
+`CLINE_EXECUTABLE` and the documented `CLONE_*` passthrough namespace. See
 [docs/agent-adapters.md](docs/agent-adapters.md) and
 `docs/plans/agent-platform/03-agent-adapters.md` for the implementation
 record.

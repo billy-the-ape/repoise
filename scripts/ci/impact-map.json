@@ -41,9 +41,12 @@
       "note": "Producer validation plus consumer contract tests and schema-copy checks (smoke verifies bundled copies)"
     },
     "adapter": {
-      "patterns": ["packages/agent-adapter-cline/"],
+      "patterns": [
+        "packages/agent-adapter-cline/",
+        "packages/agent-adapter-protocol/"
+      ],
       "jobs": ["check"],
-      "note": "Reserved home; no package exists yet, so until it ships this maps to the broad checks"
+      "note": "Agent adapter protocol host and Cline adapter; their node --test suites run in the Check jobs via the package test tasks"
     },
     "extension": {
       "patterns": ["apps/vscode/"],

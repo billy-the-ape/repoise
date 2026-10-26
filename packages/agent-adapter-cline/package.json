@@ -7,6 +7,9 @@
   "bin": {
     "agent-adapter-cline": "bin/agent-adapter-cline.js"
   },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
   "engines": {
     "node": ">=20"
   },

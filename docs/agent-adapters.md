@@ -101,17 +101,21 @@ node --test packages/agent-adapter-protocol/test/conformance.test.mjs
 node --test packages/agent-adapter-cline/test/adapter.test.mjs
 ```
 
+Both packages also define a `test` script (`node --test test/*.test.mjs`), so
+`pnpm exec turbo run test` — the CI Check-job step — runs the suites
+alongside the root test task, and the Prettier globs cover `packages/**`.
 The conformance suite runs fake fixture adapters through the real host and
 covers the happy path, handshake rejections, usage semantics, framing
 violations, budgetless stalls, failed children, host cancellation,
 grandchild-kill verification on hangs, grandchild sweep after a clean
 adapter exit, host timeout not replaced by a cooperative cancelled final,
-events after the final, spawn failure, and schema-minimal requests. The
-adapter suite drives the real Cline adapter through the real host with a
-stub Cline CLI, asserting the exact argv/env the harness observed,
-per-trial MCP settings, effective-config redaction, status mapping for
-cancellation and failure, rejection of non-`env:` credential references, and
-credential scrubbing from forwarded CLI output.
+events after the final, spawn failure, blank first lines, a throwing
+`onEvent` callback, and schema-minimal requests. The adapter suite drives the
+real Cline adapter through the real host with a stub Cline CLI, asserting
+the exact argv/env the harness observed, per-trial MCP settings,
+effective-config redaction, status mapping for cancellation and failure,
+rejection of non-`env:` credential references, and credential scrubbing from
+forwarded CLI output.
 
 ## Status and boundaries
 

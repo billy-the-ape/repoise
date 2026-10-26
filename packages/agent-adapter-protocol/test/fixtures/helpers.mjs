@@ -7,7 +7,9 @@ export function readRequest() {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data === "" ? null : JSON.parse(data)));
+    process.stdin.on("end", () =>
+      resolve(data === "" ? null : JSON.parse(data)),
+    );
   });
 }
 

@@ -190,15 +190,16 @@ export async function main() {
     condition: {
       retrievalMode: request.condition.retrievalMode,
       requiredCapabilities: request.condition.requiredCapabilities ?? [],
-      mcp: Object.keys(invocation.mcpServers).length > 0
-        ? Object.entries(invocation.mcpServers).map(
-            ([serverName, server]) => ({
-              serverName,
-              command: server.command,
-              args: server.args,
-            }),
-          )
-        : null,
+      mcp:
+        Object.keys(invocation.mcpServers).length > 0
+          ? Object.entries(invocation.mcpServers).map(
+              ([serverName, server]) => ({
+                serverName,
+                command: server.command,
+                args: server.args,
+              }),
+            )
+          : null,
       guidanceOverlay: request.condition.guidanceOverlay ?? null,
     },
     profile: {
@@ -208,7 +209,9 @@ export async function main() {
             id: request.profile.provider.id,
             credentialRef:
               typeof request.profile.provider.credentialRef === "string" &&
-              /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(request.profile.provider.credentialRef)
+              /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(
+                request.profile.provider.credentialRef,
+              )
                 ? request.profile.provider.credentialRef
                 : null,
             credentialPresent: invocation.credential !== null,
@@ -296,7 +299,9 @@ export async function main() {
       const value = values[field];
       if (value === null) continue;
       usageTotals[field] =
-        usageTotals[field] === null ? value : Math.max(usageTotals[field], value);
+        usageTotals[field] === null
+          ? value
+          : Math.max(usageTotals[field], value);
     }
   };
 
@@ -344,8 +349,7 @@ export async function main() {
   const initiateStop = (kind, message) => {
     if (finalEmitted || stopKind) return;
     stopKind = kind;
-    if (message)
-      emit({ v: 1, t: "warning", ts: now(), code: kind, message });
+    if (message) emit({ v: 1, t: "warning", ts: now(), code: kind, message });
     child.kill("SIGINT");
     escalationTimer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -363,14 +367,20 @@ export async function main() {
 
   const finishFromRunResult = () => {
     if (finalEmitted) return;
-    if (stopKind === "timeout") return emitFinal("timeout", "wall_clock_exceeded");
+    if (stopKind === "timeout")
+      return emitFinal("timeout", "wall_clock_exceeded");
     if (stopKind === "budget_stop")
       return emitFinal("budget_stop", budgetExceeded() ?? "budget_exceeded");
-    if (stopKind === "cancelled") return emitFinal("cancelled", "host_requested");
+    if (stopKind === "cancelled")
+      return emitFinal("cancelled", "host_requested");
     const finishReason = runResult?.finishReason;
     if (finishReason === "completed") return emitFinal("completed", null);
-    if (finishReason === "aborted") return emitFinal("agent_error", "run_aborted");
-    return emitFinal("agent_error", `finish_reason_${finishReason ?? "unknown"}`);
+    if (finishReason === "aborted")
+      return emitFinal("agent_error", "run_aborted");
+    return emitFinal(
+      "agent_error",
+      `finish_reason_${finishReason ?? "unknown"}`,
+    );
   };
 
   const handleAgentEvent = (event) => {
@@ -398,7 +408,14 @@ export async function main() {
       }
       case "usage": {
         const values = mapClineUsage(event);
-        emit({ v: 1, t: "usage", ts: now(), values, raw: redactValue(event), source: "provider" });
+        emit({
+          v: 1,
+          t: "usage",
+          ts: now(),
+          values,
+          raw: redactValue(event),
+          source: "provider",
+        });
         foldUsage(values);
         break;
       }
@@ -585,10 +602,12 @@ export async function main() {
     exitCode = code;
     if (finalEmitted) return;
     if (runResult) return finishFromRunResult();
-    if (stopKind === "timeout") return emitFinal("timeout", "wall_clock_exceeded");
+    if (stopKind === "timeout")
+      return emitFinal("timeout", "wall_clock_exceeded");
     if (stopKind === "budget_stop")
       return emitFinal("budget_stop", budgetExceeded() ?? "budget_exceeded");
-    if (stopKind === "cancelled") return emitFinal("cancelled", "host_requested");
+    if (stopKind === "cancelled")
+      return emitFinal("cancelled", "host_requested");
     if (stderrTail.trim() !== "") {
       emit({
         v: 1,
@@ -601,13 +620,19 @@ export async function main() {
     emitFinal("adapter_error", `no_run_result (exitCode=${code ?? null})`);
   });
 
-  if (typeof request.limits?.wallClockMs === "number" && request.limits.wallClockMs > 0) {
+  if (
+    typeof request.limits?.wallClockMs === "number" &&
+    request.limits.wallClockMs > 0
+  ) {
     setTimeout(
       () => initiateStop("timeout", "wall clock exceeded"),
       request.limits.wallClockMs,
     ).unref();
   }
-  process.on("SIGINT", () => initiateStop("cancelled", "cancellation requested"));
-  process.on("SIGTERM", () => initiateStop("cancelled", "cancellation requested"));
+  process.on("SIGINT", () =>
+    initiateStop("cancelled", "cancellation requested"),
+  );
+  process.on("SIGTERM", () =>
+    initiateStop("cancelled", "cancellation requested"),
+  );
 }
-

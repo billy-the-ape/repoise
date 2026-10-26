@@ -3,12 +3,7 @@
 // deterministic and covered by a checked-in fixture.
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  mkdtempSync,
-  statSync,
-  existsSync,
-  readFileSync,
-} from "node:fs";
+import { mkdtempSync, statSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -103,7 +98,9 @@ test("successful run: handshake, events, usage, outputs", async () => {
   assert.equal(result.errors.length, 0);
   const eventsFile = readFileSync(join(root, "events.ndjson"), "utf8");
   assert.equal(eventsFile.trim().split("\n").length, result.events.length);
-  const resultFile = JSON.parse(readFileSync(join(root, "result.json"), "utf8"));
+  const resultFile = JSON.parse(
+    readFileSync(join(root, "result.json"), "utf8"),
+  );
   assert.equal(resultFile.status, "completed");
 });
 
@@ -111,7 +108,11 @@ test("incompatible protocol version fails preflight", async () => {
   const { result } = await runFixture("fake-bad-version.mjs");
   assert.equal(result.status, "protocol_error");
   assert.equal(result.reason, "unsupported_protocol_version");
-  assert.equal(result.events.length, 0, "a rejected hello is not an accepted event");
+  assert.equal(
+    result.events.length,
+    0,
+    "a rejected hello is not an accepted event",
+  );
   assert.equal(result.hello, null);
 });
 
@@ -253,6 +254,46 @@ test("grandchild surviving a clean adapter exit is swept with the group", async 
     second,
     first,
     "grandchild kept writing after the adapter exited cleanly",
+  );
+});
+
+test("a blank first line does not disarm the hello timeout", async () => {
+  const { result } = await runFixture("fake-blank-first.mjs", {
+    runOptions: { helloTimeoutMs: 500 },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "no_hello");
+});
+
+test("a throwing onEvent callback is recorded and the group is still swept", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-onEvent-"));
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const request = makeRequest(root);
+  let calls = 0;
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-exit-leak.mjs")],
+    env: { LEAK_HB_FILE: heartbeatFile },
+    onEvent: () => {
+      calls += 1;
+      throw new Error("consumer callback exploded");
+    },
+  });
+  assert.ok(calls > 0, "onEvent was never invoked");
+  assert.equal(result.status, "completed");
+  assert.ok(
+    result.warnings.some((w) => w.code === "on_event_callback_failed"),
+    "throwing callback must be recorded as a warning",
+  );
+  // The finally-path sweep must still have killed the grandchild.
+  await sleep(300);
+  const first = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  await sleep(500);
+  const second = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  assert.equal(
+    second,
+    first,
+    "grandchild survived a throwing onEvent callback",
   );
 });
 

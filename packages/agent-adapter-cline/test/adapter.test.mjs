@@ -3,7 +3,13 @@
 // exercised without live inference.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, chmodSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  chmodSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +28,11 @@ function makeRoot() {
   return { root, workspace, artifacts };
 }
 
-function makeRequest({ workspace, artifacts, requestOverrides: overrides = {} }) {
+function makeRequest({
+  workspace,
+  artifacts,
+  requestOverrides: overrides = {},
+}) {
   const base = {
     protocolVersion: 1,
     identity: {
@@ -116,28 +126,60 @@ test("repoise mode: isolated state, MCP config, effective-config, usage", async 
   assert.equal(result.exitCode, 0);
 
   // The stub records the invocation it actually saw.
-  const manifest = JSON.parse(readFileSync(join(workspace, "stub-manifest.json"), "utf8"));
+  const manifest = JSON.parse(
+    readFileSync(join(workspace, "stub-manifest.json"), "utf8"),
+  );
   const argv = manifest.argv;
   assert.ok(argv[0] === "--json");
   const workspaceIndex = argv.indexOf("-c");
   assert.equal(argv[workspaceIndex + 1], workspace);
   const configIndex = argv.indexOf("--config");
-  assert.ok(argv[configIndex + 1].startsWith(artifacts), "config dir must be trial-local");
+  assert.ok(
+    argv[configIndex + 1].startsWith(artifacts),
+    "config dir must be trial-local",
+  );
   const dataIndex = argv.indexOf("--data-dir");
-  assert.ok(argv[dataIndex + 1].startsWith(artifacts), "data dir must be trial-local");
-  assert.deepEqual(argv.slice(argv.indexOf("-m"), argv.indexOf("-m") + 2), ["-m", "stub-model"]);
-  assert.deepEqual(argv.slice(argv.indexOf("-P"), argv.indexOf("-P") + 2), ["-P", "stub-provider"]);
-  assert.deepEqual(argv.slice(argv.indexOf("--thinking"), argv.indexOf("--thinking") + 2), ["--thinking", "low"]);
-  assert.deepEqual(argv.slice(argv.indexOf("--compaction"), argv.indexOf("--compaction") + 2), ["--compaction", "basic"]);
-  assert.deepEqual(argv.slice(argv.indexOf("-t"), argv.indexOf("-t") + 2), ["-t", "60"]);
+  assert.ok(
+    argv[dataIndex + 1].startsWith(artifacts),
+    "data dir must be trial-local",
+  );
+  assert.deepEqual(argv.slice(argv.indexOf("-m"), argv.indexOf("-m") + 2), [
+    "-m",
+    "stub-model",
+  ]);
+  assert.deepEqual(argv.slice(argv.indexOf("-P"), argv.indexOf("-P") + 2), [
+    "-P",
+    "stub-provider",
+  ]);
+  assert.deepEqual(
+    argv.slice(argv.indexOf("--thinking"), argv.indexOf("--thinking") + 2),
+    ["--thinking", "low"],
+  );
+  assert.deepEqual(
+    argv.slice(argv.indexOf("--compaction"), argv.indexOf("--compaction") + 2),
+    ["--compaction", "basic"],
+  );
+  assert.deepEqual(argv.slice(argv.indexOf("-t"), argv.indexOf("-t") + 2), [
+    "-t",
+    "60",
+  ]);
   const keyIndex = argv.indexOf("-k");
-  assert.ok(keyIndex !== -1, "the credential travels to the CLI through -k only");
+  assert.ok(
+    keyIndex !== -1,
+    "the credential travels to the CLI through -k only",
+  );
   assert.equal(argv[keyIndex + 1], "test-key-123");
-  assert.equal(manifest.prompt, "Say hello to the workspace", "prompt travels on stdin");
+  assert.equal(
+    manifest.prompt,
+    "Say hello to the workspace",
+    "prompt travels on stdin",
+  );
   assert.ok(manifest.mcpSettingsPath.startsWith(artifacts));
 
   // The per-trial MCP settings file configures only the repoise server.
-  const mcpSettings = JSON.parse(readFileSync(manifest.mcpSettingsPath, "utf8"));
+  const mcpSettings = JSON.parse(
+    readFileSync(manifest.mcpSettingsPath, "utf8"),
+  );
   assert.deepEqual(mcpSettings.mcpServers, {
     repoise: { command: "repoise", args: ["mcp"], env: {} },
   });
@@ -145,12 +187,20 @@ test("repoise mode: isolated state, MCP config, effective-config, usage", async 
   // The effective configuration is an immutable artifact and redacted.
   const configArtifacts = result.events.filter((e) => e.t === "artifact");
   assert.ok(configArtifacts.some((a) => a.kind === "effective-config"));
-  const effectivePath = configArtifacts.find((a) => a.kind === "effective-config").path;
+  const effectivePath = configArtifacts.find(
+    (a) => a.kind === "effective-config",
+  ).path;
   const effectiveText = readFileSync(effectivePath, "utf8");
   const effective = JSON.parse(effectiveText);
-  assert.ok(!effectiveText.includes("test-key-123"), "credential values must stay redacted");
+  assert.ok(
+    !effectiveText.includes("test-key-123"),
+    "credential values must stay redacted",
+  );
   assert.equal(effective.condition.mcp[0].serverName, "repoise");
-  assert.equal(effective.task.promptLength, "Say hello to the workspace".length);
+  assert.equal(
+    effective.task.promptLength,
+    "Say hello to the workspace".length,
+  );
   assert.ok(/^sha256:/.test("sha256:" + effective.task.promptSha256));
   assert.equal(effective.profile.provider.credentialPresent, true);
 
@@ -168,19 +218,30 @@ test("baseline mode: no MCP servers, no provider, no credential", async () => {
     artifacts,
     requestOverrides: {
       condition: { retrievalMode: "baseline", mcp: null },
-      profile: { provider: null, model: null, reasoning: null, compaction: null },
+      profile: {
+        provider: null,
+        model: null,
+        reasoning: null,
+        compaction: null,
+      },
     },
   });
   assert.equal(result.status, "completed");
-  const manifest = JSON.parse(readFileSync(join(workspace, "stub-manifest.json"), "utf8"));
+  const manifest = JSON.parse(
+    readFileSync(join(workspace, "stub-manifest.json"), "utf8"),
+  );
   assert.equal(manifest.argv.includes("-P"), false);
   assert.equal(manifest.argv.includes("-k"), false);
   assert.equal(manifest.argv.includes("-m"), false);
-  const mcpSettings = JSON.parse(readFileSync(manifest.mcpSettingsPath, "utf8"));
+  const mcpSettings = JSON.parse(
+    readFileSync(manifest.mcpSettingsPath, "utf8"),
+  );
   assert.deepEqual(mcpSettings.mcpServers, {});
   const effective = JSON.parse(
     readFileSync(
-      result.events.find((a) => a.t === "artifact" && a.kind === "effective-config").path,
+      result.events.find(
+        (a) => a.t === "artifact" && a.kind === "effective-config",
+      ).path,
       "utf8",
     ),
   );
@@ -204,7 +265,11 @@ test("host cancellation maps to final cancelled", async () => {
 
 test("failed cline child without run_result maps to adapter_error", async () => {
   const { workspace, artifacts } = makeRoot();
-  const { result } = await runAdapterTrial({ workspace, artifacts, stubMode: "fail" });
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    stubMode: "fail",
+  });
   assert.equal(result.status, "adapter_error");
   assert.ok(result.reason.startsWith("no_run_result"));
   assert.ok(result.warnings.some((w) => w.code === "cline_stderr_error"));
@@ -229,7 +294,9 @@ test("a non-env credentialRef is rejected before any effective-config", async ()
     workspace,
     artifacts,
     requestOverrides: {
-      profile: { provider: { id: "stub-provider", credentialRef: "sk-raw-key-123" } },
+      profile: {
+        provider: { id: "stub-provider", credentialRef: "sk-raw-key-123" },
+      },
     },
   });
   assert.equal(result.status, "protocol_error");
@@ -243,7 +310,9 @@ test("a credential echoed by the CLI is scrubbed from all events", async () => {
     workspace,
     artifacts,
     requestOverrides: {
-      profile: { provider: { id: "stub-provider", credentialRef: "env:CLINE_TEST_KEY" } },
+      profile: {
+        provider: { id: "stub-provider", credentialRef: "env:CLINE_TEST_KEY" },
+      },
     },
     extraEnv: { CLINE_TEST_KEY: secret, CLONE_ECHO_KEY: "1" },
   });

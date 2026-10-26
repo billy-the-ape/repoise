@@ -60,7 +60,10 @@ export function validateRequest(request) {
     if (workspace.revision != null && !isNonEmptyString(workspace.revision))
       errors.push("workspace.revision must be a string or null");
     const allowedWritePaths = workspace.allowedWritePaths ?? [];
-    if (!Array.isArray(allowedWritePaths) || allowedWritePaths.some((p) => !isAbsoluteOrBarePath(p)))
+    if (
+      !Array.isArray(allowedWritePaths) ||
+      allowedWritePaths.some((p) => !isAbsoluteOrBarePath(p))
+    )
       errors.push("workspace.allowedWritePaths must be absolute paths");
   }
 
@@ -98,19 +101,29 @@ export function validateRequest(request) {
     }
     const mcp = condition.mcp;
     if (mcp != null) {
-      if (typeof mcp !== "object") errors.push("condition.mcp must be null or an object");
+      if (typeof mcp !== "object")
+        errors.push("condition.mcp must be null or an object");
       else {
         if (!isNonEmptyString(mcp.serverName))
           errors.push("condition.mcp.serverName must be a non-empty string");
-        if (!Array.isArray(mcp.argv) || mcp.argv.length < 1 || mcp.argv.some((a) => !isNonEmptyString(a)))
+        if (
+          !Array.isArray(mcp.argv) ||
+          mcp.argv.length < 1 ||
+          mcp.argv.some((a) => !isNonEmptyString(a))
+        )
           errors.push("condition.mcp.argv must be a non-empty argument array");
         if (mcp.env !== undefined && typeof mcp.env !== "object")
           errors.push("condition.mcp.env must be a string map");
       }
     }
     const overlay = condition.guidanceOverlay;
-    if (overlay != null && (typeof overlay !== "object" || typeof overlay.enabled !== "boolean")) {
-      errors.push("condition.guidanceOverlay must be null or { enabled, description? }");
+    if (
+      overlay != null &&
+      (typeof overlay !== "object" || typeof overlay.enabled !== "boolean")
+    ) {
+      errors.push(
+        "condition.guidanceOverlay must be null or { enabled, description? }",
+      );
     }
   }
 
@@ -131,11 +144,16 @@ export function validateRequest(request) {
         provider.credentialRef != null &&
         !/^env:[A-Za-z_][A-Za-z0-9_]*$/.test(provider.credentialRef)
       ) {
-        errors.push("profile.provider.credentialRef must be null or env:VAR_NAME");
+        errors.push(
+          "profile.provider.credentialRef must be null or env:VAR_NAME",
+        );
       }
     }
     const model = profile.model;
-    if (model != null && (typeof model !== "object" || !isNonEmptyString(model.id))) {
+    if (
+      model != null &&
+      (typeof model !== "object" || !isNonEmptyString(model.id))
+    ) {
       errors.push("profile.model must be null or { id, revision? }");
     }
     const reasoning = profile.reasoning;
@@ -144,7 +162,9 @@ export function validateRequest(request) {
       (typeof reasoning !== "object" ||
         !["none", "low", "medium", "high", "xhigh"].includes(reasoning.level))
     ) {
-      errors.push('profile.reasoning must be null or { level: none|low|medium|high|xhigh }');
+      errors.push(
+        "profile.reasoning must be null or { level: none|low|medium|high|xhigh }",
+      );
     }
     const compaction = profile.compaction;
     if (
@@ -152,7 +172,9 @@ export function validateRequest(request) {
       (typeof compaction !== "object" ||
         !["agentic", "basic", "off"].includes(compaction.mode))
     ) {
-      errors.push('profile.compaction must be null or { mode: agentic|basic|off }');
+      errors.push(
+        "profile.compaction must be null or { mode: agentic|basic|off }",
+      );
     }
   }
 
@@ -194,7 +216,8 @@ export function validateRequest(request) {
 /** Validate the hello handshake event. Returns a list of errors. */
 export function validateHello(hello) {
   const errors = [];
-  if (typeof hello !== "object" || hello === null) return ["hello is not an object"];
+  if (typeof hello !== "object" || hello === null)
+    return ["hello is not an object"];
   if (hello.protocolVersion !== PROTOCOL_VERSION) {
     errors.push(`hello.protocolVersion must be ${PROTOCOL_VERSION}`);
   }
@@ -226,10 +249,13 @@ export function validateHello(hello) {
 /** Envelope-only validation for any event (additive compatibility). */
 export function validateEventEnvelope(event) {
   const errors = [];
-  if (typeof event !== "object" || event === null) errors.push("event is not an object");
+  if (typeof event !== "object" || event === null)
+    errors.push("event is not an object");
   else {
-    if (event.v !== PROTOCOL_VERSION) errors.push(`event.v must be ${PROTOCOL_VERSION}`);
-    if (!isNonEmptyString(event.t)) errors.push("event.t must be a non-empty string");
+    if (event.v !== PROTOCOL_VERSION)
+      errors.push(`event.v must be ${PROTOCOL_VERSION}`);
+    if (!isNonEmptyString(event.t))
+      errors.push("event.t must be a non-empty string");
     if (typeof event.ts !== "number" || !Number.isFinite(event.ts))
       errors.push("event.ts must be a number");
   }
@@ -239,7 +265,10 @@ export function validateEventEnvelope(event) {
 /** Validate a final event payload. Returns a list of errors. */
 export function validateFinalEvent(event) {
   const errors = [];
-  if (typeof event.status !== "string" || !FINAL_STATUSES.includes(event.status)) {
+  if (
+    typeof event.status !== "string" ||
+    !FINAL_STATUSES.includes(event.status)
+  ) {
     errors.push(`final.status must be one of: ${FINAL_STATUSES.join(", ")}`);
   }
   if (event.reason != null && !isNonEmptyString(event.reason)) {

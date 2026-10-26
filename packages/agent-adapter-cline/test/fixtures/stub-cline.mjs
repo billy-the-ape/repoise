@@ -6,7 +6,9 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 function emit(obj) {
-  process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), ...obj }) + "\n");
+  process.stdout.write(
+    JSON.stringify({ ts: new Date().toISOString(), ...obj }) + "\n",
+  );
 }
 
 if (process.argv[2] === "version") {
@@ -46,17 +48,25 @@ if (process.env.CLONE_ECHO_KEY === "1" && process.env.CLINE_TEST_KEY) {
   // way a real CLI would in an invalid-key error.
   const key = process.env.CLINE_TEST_KEY;
   process.stdout.write(`echoed secret ${key} on stdout\n`);
-  process.stderr.write(`${JSON.stringify({ type: "error", message: `invalid key ${key}` })}\n`);
+  process.stderr.write(
+    `${JSON.stringify({ type: "error", message: `invalid key ${key}` })}\n`,
+  );
 }
 
 if (mode === "fail") {
-  process.stderr.write(`${JSON.stringify({ type: "error", message: "stub failure" })}\n`);
+  process.stderr.write(
+    `${JSON.stringify({ type: "error", message: "stub failure" })}\n`,
+  );
   process.exit(1);
 }
 if (mode === "hang") {
   emit({ type: "run_start" });
   process.on("SIGINT", () => {
-    emit({ type: "run_aborted", reason: "cancelled", message: "stub cancelled" });
+    emit({
+      type: "run_aborted",
+      reason: "cancelled",
+      message: "stub cancelled",
+    });
     emit({
       type: "run_result",
       finishReason: "aborted",

@@ -4,6 +4,12 @@ import { emit, hello, readRequest } from "./helpers.mjs";
 
 await readRequest();
 hello();
-emit({ v: 1, t: "note", ts: Date.now(), code: "ok", message: "before malformed" });
+emit({
+  v: 1,
+  t: "note",
+  ts: Date.now(),
+  code: "ok",
+  message: "before malformed",
+});
 process.stdout.write('{"v":1,"t":"note","ts":1,"code":"broken",\n');
 process.exit(0);

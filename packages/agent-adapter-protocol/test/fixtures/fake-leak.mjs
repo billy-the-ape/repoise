@@ -8,7 +8,10 @@ import { hello, readRequest } from "./helpers.mjs";
 
 await readRequest();
 hello();
-const heartbeat = join(dirname(fileURLToPath(import.meta.url)), "heartbeat.mjs");
+const heartbeat = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "heartbeat.mjs",
+);
 const grandchild = spawn(process.execPath, [heartbeat], {
   env: { ...process.env, HB_FILE: process.env.LEAK_HB_FILE },
   stdio: ["ignore", "ignore", "ignore"],

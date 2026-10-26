@@ -230,12 +230,16 @@ tooling additionally use Node 24 in CI, with pnpm (pinned by the root
 Turborepo dev dependencies; install using `pnpm install --frozen-lockfile
 --ignore-scripts`. The Prettier globs and `pnpm test` (`node --test`) cover
 scripts/release, scripts/eval and scripts/ci, plus the npm wrapper sources,
-the root and launcher manifests, `turbo.json`, `pnpm-workspace.yaml` and
-workflow YAML. Run `pnpm run format` before committing those changes, then
+the workspace packages under `packages/` (agent adapter protocol and Cline
+adapter), the root and launcher manifests, `turbo.json`, `pnpm-workspace.yaml`
+and workflow YAML. Run `pnpm run format` before committing those changes, then
 `pnpm run format:check` and `pnpm test`. Turbo tasks (`pnpm exec turbo run
 format:check|test|check:native|build:native`, plus the `:windows` variants)
-orchestrate the same steps; the native bridge tasks run single-threaded per
-platform with Turbo output caching disabled. The offline lexical evaluation
+orchestrate the same steps; the adapter packages' `test` scripts
+(`node --test test/*.test.mjs`) join the root `test` task through Turbo, so
+CI (`pnpm exec turbo run test` in the Check jobs) runs them too. The native
+bridge tasks run single-threaded per platform with Turbo output caching
+disabled. The offline lexical evaluation
 harness runs separately: cargo build --package repoise-cli, then
 node scripts/eval/harness.mjs (results in the git-ignored eval-results/
 directory); see the [eval runbook](../scripts/eval/RUNBOOK.md).

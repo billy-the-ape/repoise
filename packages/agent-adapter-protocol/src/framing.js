@@ -22,7 +22,9 @@ export async function* readNdjsonLines(stream, maxLineBytes) {
       yield {
         line,
         error:
-          Buffer.byteLength(line, "utf8") > maxLineBytes ? "line_oversized" : null,
+          Buffer.byteLength(line, "utf8") > maxLineBytes
+            ? "line_oversized"
+            : null,
       };
     }
     // The buffered tail is a single unterminated line that already exceeds

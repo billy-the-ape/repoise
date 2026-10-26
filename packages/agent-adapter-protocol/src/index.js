@@ -235,14 +235,16 @@ export async function runAdapter(request, options = {}) {
   let sawAnyLine = false;
   let stop = false;
   const helloTimer = setTimeout(() => {
-    if (!sawAnyLine && !done) failProtocol("no_hello", "no hello within the hello timeout");
+    if (!sawAnyLine && !done)
+      failProtocol("no_hello", "no hello within the hello timeout");
   }, helloTimeoutMs);
 
   const handleLine = async ({ line, error }) => {
-    sawAnyLine = true;
-    clearTimeout(helloTimer);
     if (error === "line_oversized") {
-      await failProtocol("event_oversized", `event line exceeds ${maxEventBytes} bytes`);
+      await failProtocol(
+        "event_oversized",
+        `event line exceeds ${maxEventBytes} bytes`,
+      );
       stop = true;
       return;
     }
@@ -255,8 +257,15 @@ export async function runAdapter(request, options = {}) {
       return;
     }
     if (line.trim() === "") return;
+    // Only a real event counts as the first line: a blank line followed by a
+    // stall must not disarm the hello timeout.
+    sawAnyLine = true;
+    clearTimeout(helloTimer);
     if (finalEvent) {
-      await failProtocol("events_after_final", "event received after the final event");
+      await failProtocol(
+        "events_after_final",
+        "event received after the final event",
+      );
       stop = true;
       return;
     }
@@ -311,7 +320,9 @@ export async function runAdapter(request, options = {}) {
       }
       hello = event;
       const required = request.condition.requiredCapabilities ?? [];
-      const missing = required.filter((cap) => event.capabilities?.[cap] !== true);
+      const missing = required.filter(
+        (cap) => event.capabilities?.[cap] !== true,
+      );
       if (missing.length > 0) {
         await failProtocol(
           "missing_required_capability",
@@ -339,58 +350,70 @@ export async function runAdapter(request, options = {}) {
     }
     events.push(event);
     writeEventFile(event);
-    options.onEvent?.(event);
+    try {
+      options.onEvent?.(event);
+    } catch (error) {
+      // A faulty consumer callback must not abort the protocol or skip the
+      // owned-process cleanup: record it and keep driving the trial.
+      warnings.push({
+        code: "on_event_callback_failed",
+        message: error.message,
+      });
+    }
   };
 
-  while (!done && !stop) {
-    const race = [
-      nextLine().then((result) => ({
-        kind: result.done ? "exit" : "line",
-        value: result.value,
-      })),
-      exited.then(() => ({ kind: "exit", value: null })),
-    ];
-    if (finalEvent) {
-      // The protocol is complete; allow a short window for the adapter to
-      // exit on its own, then escalate. Reading continues in the meantime so
-      // events emitted after the final are still detected and rejected.
-      race.push(delay(2000).then(() => ({ kind: "grace", value: null })));
-    }
-    const winner = await Promise.race(race);
-    if (winner.kind === "line") pendingLine = null;
-    if (winner.kind === "exit") {
-      // The child exited; drain lines still buffered by the stream before
-      // finishing (the final event may be among them).
-      for (;;) {
-        const remaining = await nextLine();
-        pendingLine = null;
-        if (remaining.done) break;
-        await handleLine(remaining.value);
-        if (stop) break;
+  try {
+    while (!done && !stop) {
+      const race = [
+        nextLine().then((result) => ({
+          kind: result.done ? "exit" : "line",
+          value: result.value,
+        })),
+        exited.then(() => ({ kind: "exit", value: null })),
+      ];
+      if (finalEvent) {
+        // The protocol is complete; allow a short window for the adapter to
+        // exit on its own, then escalate. Reading continues in the meantime so
+        // events emitted after the final are still detected and rejected.
+        race.push(delay(2000).then(() => ({ kind: "grace", value: null })));
       }
-      break;
+      const winner = await Promise.race(race);
+      if (winner.kind === "line") pendingLine = null;
+      if (winner.kind === "exit") {
+        // The child exited; drain lines still buffered by the stream before
+        // finishing (the final event may be among them).
+        for (;;) {
+          const remaining = await nextLine();
+          pendingLine = null;
+          if (remaining.done) break;
+          await handleLine(remaining.value);
+          if (stop) break;
+        }
+        break;
+      }
+      if (winner.kind === "grace") {
+        // Final received but the adapter did not exit within the grace window.
+        if (escalationTimer) clearTimeout(escalationTimer);
+        await killTree(child.pid, "SIGKILL");
+        child.stdout.destroy();
+        stop = true;
+        break;
+      }
+      await handleLine(winner.value);
     }
-    if (winner.kind === "grace") {
-      // Final received but the adapter did not exit within the grace window.
-      if (escalationTimer) clearTimeout(escalationTimer);
-      await killTree(child.pid, "SIGKILL");
-      child.stdout.destroy();
-      stop = true;
-      break;
-    }
-    await handleLine(winner.value);
+  } finally {
+    done = true;
+    clearTimeout(helloTimer);
+    if (wallTimer) clearTimeout(wallTimer);
+    if (escalationTimer) clearTimeout(escalationTimer);
+    abortSignal?.removeEventListener("abort", onAbort);
+    // Best-effort sweep of the owned process group after every path, clean or
+    // not: a descendant that survives the adapter's own exit (or ignores
+    // SIGINT) must not outlive the trial. killTree resolves when the group is
+    // already gone.
+    await killTree(child.pid, "SIGKILL");
+    await exited;
   }
-
-  done = true;
-  if (wallTimer) clearTimeout(wallTimer);
-  if (escalationTimer) clearTimeout(escalationTimer);
-  abortSignal?.removeEventListener("abort", onAbort);
-  // Best-effort sweep of the owned process group after every path, clean or
-  // not: a descendant that survives the adapter's own exit (or ignores
-  // SIGINT) must not outlive the trial. killTree resolves when the group is
-  // already gone.
-  await killTree(child.pid, "SIGKILL");
-  await exited;
 
   if (finalEvent) ledger?.recordFinal(finalEvent.usage);
   // A final received during an in-flight host cancellation still takes

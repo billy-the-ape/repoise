@@ -41,7 +41,9 @@ export class UsageLedger {
         // Cumulative snapshots: the largest observed value wins, so an
         // out-of-order or repeated snapshot cannot inflate the total.
         this.ledger[field] =
-          this.ledger[field] === null ? values[field] : Math.max(this.ledger[field], values[field]);
+          this.ledger[field] === null
+            ? values[field]
+            : Math.max(this.ledger[field], values[field]);
       }
     }
   }
@@ -66,7 +68,11 @@ export class UsageLedger {
       const finalValue = this.final ? this.final[field] : null;
       if (this.semantics === "cumulative") {
         result[field] =
-          ledgerValue === null ? finalValue : finalValue === null ? ledgerValue : Math.max(ledgerValue, finalValue);
+          ledgerValue === null
+            ? finalValue
+            : finalValue === null
+              ? ledgerValue
+              : Math.max(ledgerValue, finalValue);
       } else {
         result[field] = finalValue ?? ledgerValue;
       }

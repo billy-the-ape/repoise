@@ -7,7 +7,7 @@ Status: implemented (2026-10-26). Depends on [AP-01](01-workspace-and-ci.md) and
 
 Shipped as protocol v1 in `packages/agent-adapter-protocol/` (host plus the
 checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
-`packages/agent-adapter-cline/`, with 17 protocol conformance tests and 8
+`packages/agent-adapter-cline/`, with 19 protocol conformance tests and 8
 adapter tests (stub-CLI driven through the real host). Implemented decisions
 and deviations from the proposals below are documented in
 [docs/agent-adapters.md](../../agent-adapters.md):

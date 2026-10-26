@@ -15,7 +15,8 @@ export function resolveClineExecutable() {
   const explicit = process.env.CLONE_EXECUTABLE || process.env.CLINE_EXECUTABLE;
   if (explicit) {
     if (explicit.includes("/") || explicit.includes("\\")) {
-      if (!existsSync(explicit)) return { executable: null, error: "cline_not_found" };
+      if (!existsSync(explicit))
+        return { executable: null, error: "cline_not_found" };
     }
     return { executable: explicit, error: null };
   }
@@ -46,7 +47,10 @@ export function probeClineVersion(executable) {
 /** Build the argv, environment and prompt for the trial's cline run.
  * The raw credential value never enters argv here; the caller receives a
  * `credential` object and appends the key flag itself at spawn time. */
-export function buildInvocation(request, { configDir, dataDir, mcpSettingsPath }) {
+export function buildInvocation(
+  request,
+  { configDir, dataDir, mcpSettingsPath },
+) {
   const argv = [
     "--json",
     "-c",
@@ -86,7 +90,11 @@ export function buildInvocation(request, { configDir, dataDir, mcpSettingsPath }
   // global servers leak into the trial; baseline mode gets an empty list.
   const mcpServers = {};
   const mcp = request.condition.mcp;
-  if (request.condition.retrievalMode === "repoise" && mcp && mcp.argv.length > 0) {
+  if (
+    request.condition.retrievalMode === "repoise" &&
+    mcp &&
+    mcp.argv.length > 0
+  ) {
     mcpServers[mcp.serverName] = {
       command: mcp.argv[0],
       args: mcp.argv.slice(1),

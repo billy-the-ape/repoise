@@ -10,6 +10,8 @@ await readRequest();
 hello();
 const child = join(dirname(fileURLToPath(import.meta.url)), "child.mjs");
 const code = await new Promise((resolve) => {
-  spawn(process.execPath, [child], { stdio: "ignore" }).once("close", (c) => resolve(c));
+  spawn(process.execPath, [child], { stdio: "ignore" }).once("close", (c) =>
+    resolve(c),
+  );
 });
 process.exit(code ?? 1);
