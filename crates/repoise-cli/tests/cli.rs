@@ -600,3 +600,236 @@ fn index_json_incremental_reports_reuse_in_json_and_progress() {
         "incremental reconcile must cover the file without reparsing: {stderr}"
     );
 }
+
+/// Parses machine stdout as NDJSON envelopes (one JSON value per line).
+fn ndjson_events(stdout: &[u8]) -> Vec<serde_json::Value> {
+    std::str::from_utf8(stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line).expect("each machine stdout line must be a JSON envelope")
+        })
+        .collect()
+}
+
+/// Sends `signal` (e.g. `"INT"`, `"TERM"`) to `pid` with the POSIX `kill`.
+#[cfg(unix)]
+fn kill(pid: u32, signal: &str) {
+    let status = Command::new("kill")
+        .args([format!("-{signal}"), pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -{signal} {pid} must succeed");
+}
+
+fn terminal_events(events: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    events
+        .iter()
+        .filter(|event| {
+            ["completed", "cancelled", "failed"].contains(&event["type"].as_str().unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn capabilities_json_is_a_stable_handshake() {
+    let output = cli(&["capabilities", "--json"]);
+    assert!(output.status.success());
+    let doc: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(doc["schemaVersion"], 1);
+    assert_eq!(doc["name"], "repoise");
+    assert_eq!(doc["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(doc["eventStream"]["version"], 1);
+    let schema = doc["eventStream"]["schema"].as_str().unwrap();
+    assert_eq!(schema, "schemas/event-stream.v1.schema.json");
+    // The schema ships at the workspace root, two levels above this crate.
+    let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(schema);
+    assert!(
+        schema_path.exists(),
+        "the advertised event-stream schema must be checked in"
+    );
+    // The command matrix advertises the NDJSON machine mode for exactly the
+    // streaming operations.
+    let commands = doc["commands"].as_array().unwrap();
+    let modes = |name: &str| {
+        commands
+            .iter()
+            .find(|command| command["name"] == name)
+            .expect("command is listed")["machine"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(modes("index"), vec!["json", "events"]);
+    assert_eq!(modes("watch"), vec!["json", "events"]);
+    assert_eq!(modes("search"), vec!["json"]);
+    assert_eq!(modes("mcp"), vec!["mcp-stdio"]);
+    // The exit-code table stays stable for automation.
+    assert_eq!(doc["exitCodes"]["ok"], 0);
+    assert_eq!(doc["exitCodes"]["operational"], 1);
+    assert_eq!(doc["exitCodes"]["usage"], 2);
+    assert_eq!(doc["exitCodes"]["indexMissingOrStale"], 3);
+    assert_eq!(doc["exitCodes"]["coverageNotMet"], 4);
+    // The benchmark facade is discoverable but absent in this build.
+    assert_eq!(doc["benchmark"]["supported"], false);
+    assert_eq!(doc["benchmark"]["command"], "bench");
+}
+
+#[test]
+fn index_events_streams_ndjson_with_one_terminal() {
+    let root = temp_root("index-events");
+    let canonical = std::fs::canonicalize(&root).unwrap();
+    let output = cli(&["index", "--events", root.to_str().unwrap()]);
+    assert!(output.status.success());
+    let events = ndjson_events(&output.stdout);
+    assert!(!events.is_empty());
+    // Envelope contract: required fields, one run id, sequences from zero.
+    let run_id = events[0]["runId"].as_str().unwrap();
+    for (position, event) in events.iter().enumerate() {
+        for field in [
+            "schemaVersion",
+            "runId",
+            "sequence",
+            "timestamp",
+            "type",
+            "payload",
+        ] {
+            assert!(
+                event.get(field).is_some(),
+                "event {position} misses {field}: {event}"
+            );
+        }
+        assert_eq!(event["schemaVersion"], 1);
+        assert_eq!(event["runId"], run_id);
+        assert_eq!(event["sequence"], position);
+    }
+    assert_eq!(events[0]["type"], "started");
+    assert_eq!(events[0]["payload"]["operation"], "index");
+    assert_eq!(
+        events[0]["payload"]["scope"]["root"],
+        canonical.to_str().unwrap()
+    );
+    assert_eq!(
+        events[0]["payload"]["scope"]["snapshotMode"],
+        "plain-directory"
+    );
+    // Progress events carry phase-scoped counts and units.
+    let progress: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["type"] == "progress")
+        .collect();
+    assert!(!progress.is_empty(), "expected progress events: {events:?}");
+    for event in progress {
+        assert!(event["payload"]["phase"].is_string());
+        assert!(event["payload"]["unit"].is_string());
+        assert!(event["payload"]["done"].is_u64());
+        assert!(event["payload"]["elapsedMs"].is_u64());
+    }
+    // Exactly one terminal event, and it is the last line.
+    assert_eq!(terminal_events(&events).len(), 1);
+    assert_eq!(events.last().unwrap()["type"], "completed");
+    assert_eq!(
+        events.last().unwrap()["payload"]["result"]["files_indexed"],
+        1
+    );
+    // Machine stdout carries protocol records only; stderr has no envelopes.
+    for line in String::from_utf8(output.stderr).unwrap().lines() {
+        assert!(
+            !line.trim_start().starts_with('{'),
+            "an envelope leaked to stderr: {line}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn watch_events_cancels_with_a_terminal_event_on_sigint() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let root = temp_root("watch-events");
+    // Prime the scope so the watch loop starts idle (no first publish).
+    let primed = cli(&["index", "--json", root.to_str().unwrap()]);
+    assert!(primed.status.success());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args([
+            "watch",
+            "--events",
+            "--interval",
+            "200",
+            root.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read the started event");
+    let started: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(started["type"], "started");
+    assert_eq!(started["payload"]["operation"], "watch");
+
+    kill(child.id(), "INT");
+    let status = child.wait().expect("wait for watch to exit");
+    assert!(status.success(), "SIGINT must stop watch with exit code 0");
+
+    let mut events = vec![started];
+    for result in reader.lines() {
+        let line = result.expect("read the remaining events");
+        events.push(serde_json::from_str(&line).unwrap());
+    }
+    assert_eq!(terminal_events(&events).len(), 1);
+    assert_eq!(events.last().unwrap()["type"], "cancelled");
+    assert_eq!(events.last().unwrap()["payload"]["reason"], "signal");
+}
+
+#[cfg(unix)]
+#[test]
+fn status_reports_the_active_watch_owner_and_clears_it_after_exit() {
+    use std::process::Stdio;
+
+    let root = temp_root("status-owner");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", root.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    // Poll until the watch loop has published its owner marker. Status
+    // exits 3 while the index is missing, but still prints its JSON.
+    let mut owner = None;
+    for _ in 0..50 {
+        let probe = cli(&["status", "--json", root.to_str().unwrap()]);
+        match probe.status.code() {
+            Some(0) | Some(3) => {}
+            other => panic!("unexpected status exit code: {other:?}"),
+        }
+        let doc: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(probe.stdout).unwrap()).unwrap();
+        if doc["owner"]["state"] == "active" && doc["owner"]["operation"] == "watch" {
+            owner = Some(doc);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let doc = owner.expect("watch should own the scope while running");
+    assert_eq!(doc["owner"]["state"], "active");
+
+    kill(child.id(), "TERM");
+    assert!(child.wait().unwrap().success());
+
+    let cleared = cli(&["status", "--json", root.to_str().unwrap()]);
+    let cleared: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(cleared.stdout).unwrap()).unwrap();
+    assert!(
+        cleared["owner"].is_null(),
+        "the owner marker must be removed on clean exit: {cleared}"
+    );
+}

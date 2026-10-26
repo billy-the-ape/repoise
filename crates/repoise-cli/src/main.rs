@@ -21,6 +21,8 @@ use repoise_core::search::{QueryEmbedder, SearchMode};
 use repoise_core::store::Store;
 use repoise_core::{CACHE_ENV_VAR, CONFIG_FILENAME};
 
+mod capabilities;
+mod events;
 mod mcp;
 mod output;
 mod progress;
@@ -50,6 +52,8 @@ enum Command {
     Overlay,
     Mcp,
     Purge,
+    Capabilities,
+    Bench,
 }
 
 struct CliOptions {
@@ -87,6 +91,7 @@ struct CliOptions {
     repo_id: Option<String>,
     worktree_id: Option<String>,
     allow_refresh: bool,
+    events: bool,
 }
 
 const USAGE: &str = "\
@@ -112,15 +117,22 @@ COMMANDS:
     overlay update [ROOT]         3-way template migration of the overlay
     init [ROOT]                   Configure the repository (non-interactive)
     purge                         Remove generated cache data (--all or one scope)
+    capabilities                  Report version, event-stream protocol, features,
+                                  commands, benchmark status and exit codes
+    bench                         Not available in this build (see capabilities)
     help                          Show this help
     version                       Print version information
 
 GLOBAL OPTIONS:
     --json                      Emit machine-readable JSON (index: progress to stderr)
+    --events                    NDJSON event stream on stdout for index and watch
+                                (machine lifecycle events; see docs/automation.md)
     --config <PATH>             Override the committed config path
     --local-config <PATH>       Override the local override path
     --max-file-bytes <N>        Override the max accepted file size
     --committed                 Use the committed Git snapshot (not the working tree)
+    REPOISE_EVENTS_HEARTBEAT_MS Heartbeat interval in ms for --event
+                                streams (default 15000, minimum 10)
 
 SEARCH OPTIONS:
     --path-filter <GLOB>        Filter results by repository-relative path
@@ -224,6 +236,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         repo_id: None,
         worktree_id: None,
         allow_refresh: false,
+        events: false,
     };
     let mut positional = Vec::new();
     let mut i = 0;
@@ -246,7 +259,10 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "overlay" => opts.command = Command::Overlay,
             "mcp" => opts.command = Command::Mcp,
             "purge" => opts.command = Command::Purge,
+            "capabilities" => opts.command = Command::Capabilities,
+            "bench" => opts.command = Command::Bench,
             "--json" => opts.json = true,
+            "--events" => opts.events = true,
             "--dry-run" => opts.dry_run = true,
             "--yes" | "-y" => opts.yes = true,
             "--committed" => opts.committed = true,
@@ -401,7 +417,12 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                     ));
                 }
             },
-            Command::Greet | Command::Help | Command::Version | Command::Purge => {
+            Command::Greet
+            | Command::Help
+            | Command::Version
+            | Command::Purge
+            | Command::Capabilities
+            | Command::Bench => {
                 return Err(format!("unexpected argument: {first}"));
             }
         }
@@ -415,6 +436,12 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
     }
     if matches!(opts.command, Command::Overlay) && opts.overlay_action.is_none() {
         return Err("overlay requires an action (uninstall or update)".into());
+    }
+    if opts.json && opts.events {
+        return Err("--events and --json are mutually exclusive".into());
+    }
+    if opts.events && !matches!(opts.command, Command::Index | Command::Watch) {
+        return Err("--events is supported for the index and watch commands only".into());
     }
     Ok(opts)
 }
@@ -486,7 +513,28 @@ fn run(opts: CliOptions) -> Result<ExitCode, String> {
         Command::Mcp => mcp::run_mcp(&opts),
         Command::Overlay => run_overlay(&opts),
         Command::Purge => run_purge(&opts),
+        Command::Capabilities => run_capabilities(&opts),
+        Command::Bench => run_bench(),
     }
+}
+
+fn run_capabilities(opts: &CliOptions) -> Result<ExitCode, String> {
+    let document = capabilities::document(events::heartbeat_interval().as_millis() as u64);
+    if opts.json {
+        println!("{}", json(&document)?);
+    } else {
+        capabilities::print_human(&document);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_bench() -> Result<ExitCode, String> {
+    // Discoverable but not available: the benchmark coordinator is planned in
+    // the agent platform program (AP-04).
+    eprintln!(
+        "bench is not available in this build: the benchmark coordinator is planned in the agent platform program (AP-04); run `repoise capabilities --json` for the current benchmark status"
+    );
+    Ok(ExitCode::from(1))
 }
 
 fn cli_overrides(opts: &CliOptions) -> Result<CliOverrides, String> {
@@ -561,6 +609,20 @@ fn run_explain(opts: &CliOptions) -> Result<ExitCode, String> {
 
 fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     let ctx = build_context(opts)?;
+    let db_path = ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id);
+    let scope_dir = db_path
+        .parent()
+        .ok_or_else(|| "internal error: scope directory has no parent".to_string())?;
+    // Advisory writer-ownership marker: detects concurrent or stale writers
+    // for this scope and reports them; it never blocks the build.
+    let (owner_guard, owner_warnings) =
+        repoise_core::ownership::OwnerGuard::acquire(scope_dir, "index");
+    for warning in &owner_warnings {
+        eprintln!("warning: {warning}");
+    }
+    if opts.events {
+        return run_index_events(&ctx, owner_guard);
+    }
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::indexing::IndexRequest::default();
     let client = embedding_client(&ctx.effective, CancellationToken::new())?;
@@ -580,7 +642,11 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     } else {
         println!("{started}");
     }
-    let progress: Option<&dyn repoise_core::progress::IndexProgressReporter> = Some(&reporter);
+    let wrapped = OwnerRefreshingReporter {
+        inner: reporter,
+        guard: &owner_guard,
+    };
+    let progress: Option<&dyn repoise_core::progress::IndexProgressReporter> = Some(&wrapped);
     let result = repoise_core::indexing::index(
         ctx.adapter.as_ref(),
         ctx.mode,
@@ -594,7 +660,7 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     );
     // Terminate any unterminated in-place progress line so the final summary
     // or an error starts on a fresh line (no-op when piped).
-    reporter.finish();
+    wrapped.inner.finish();
     let outcome = result.map_err(|err| err.to_string())?;
     if opts.json {
         println!("{}", json(&outcome)?);
@@ -681,9 +747,125 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
                 );
             }
         }
-        println!("elapsed: {}", progress::format_duration(reporter.elapsed()));
+        println!(
+            "elapsed: {}",
+            progress::format_duration(wrapped.inner.elapsed())
+        );
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Wraps a progress reporter so the advisory owner marker is refreshed
+/// while a long build runs (the marker is the health signal for concurrent
+/// `status` callers).
+struct OwnerRefreshingReporter<'a, R> {
+    inner: R,
+    guard: &'a repoise_core::ownership::OwnerGuard,
+}
+
+impl<R: repoise_core::progress::IndexProgressReporter> repoise_core::progress::IndexProgressReporter
+    for OwnerRefreshingReporter<'_, R>
+{
+    fn phase_started(&self, phase: repoise_core::progress::IndexPhase, total: Option<u64>) {
+        self.guard.refresh();
+        self.inner.phase_started(phase, total);
+    }
+
+    fn progress(&self, phase: repoise_core::progress::IndexPhase, done: u64, total: u64) {
+        self.guard.refresh();
+        self.inner.progress(phase, done, total);
+    }
+
+    fn phase_finished(&self, phase: repoise_core::progress::IndexPhase) {
+        self.guard.refresh();
+        self.inner.phase_finished(phase);
+    }
+}
+
+/// Runs `index` in `--events` mode: the machine stdout carries the NDJSON
+/// event stream (started, progress, warning, heartbeat, completed/failed);
+/// diagnostics go to stderr.
+fn run_index_events(
+    ctx: &Context,
+    owner_guard: repoise_core::ownership::OwnerGuard,
+) -> Result<ExitCode, String> {
+    use serde_json::json;
+
+    let root = ctx
+        .adapter
+        .canonical_root()
+        .map_err(|err| err.to_string())?;
+    let scope = events::Scope {
+        root: root.to_string_lossy().to_string(),
+        repo_id: ctx.repo_id.clone(),
+        worktree_id: ctx.worktree_id.clone(),
+        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
+    };
+    let stream = events::EventStream::stdout("index");
+    stream.start_heartbeat(events::heartbeat_interval());
+    stream.start(&scope);
+    // Sessions are built after the stream starts so their degradation notes
+    // (stderr) follow the start event in the run's logical order.
+    let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
+    let request = repoise_core::indexing::IndexRequest::default();
+    let client = embedding_client(&ctx.effective, CancellationToken::new())?;
+    let session = client.as_ref();
+    let enrichment = enrichment_session(ctx)?;
+    let enrichment_session = enrichment.as_ref();
+    // Explicit degradation notes as machine-readable warning events.
+    if ctx.effective.embedding.is_some() && session.is_none() {
+        stream.emit(
+            "warning",
+            json!({
+                "operation": "index",
+                "message": "embedding is configured but unavailable (missing profile, credential, or transport); this build is lexical-only"
+            }),
+        );
+    }
+    let reporter = events::EventProgressReporter::new(stream.clone());
+    let wrapped = OwnerRefreshingReporter {
+        inner: reporter,
+        guard: &owner_guard,
+    };
+    let result = repoise_core::indexing::index(
+        ctx.adapter.as_ref(),
+        ctx.mode,
+        &ctx.effective,
+        &store,
+        &ctx.cache,
+        &request,
+        session,
+        enrichment_session,
+        Some(&wrapped),
+    );
+    let scope_value = serde_json::to_value(&scope).unwrap_or_default();
+    match result {
+        Ok(outcome) => {
+            stream.terminal(
+                "completed",
+                json!({
+                    "operation": "index",
+                    "scope": scope_value,
+                    "result": serde_json::to_value(&outcome).unwrap_or_default(),
+                }),
+            );
+            eprintln!("index run {} completed", stream.run_id());
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            stream.terminal(
+                "failed",
+                json!({
+                    "operation": "index",
+                    "scope": scope_value,
+                    "code": "operational",
+                    "message": err.to_string(),
+                    "retryable": serde_json::Value::Null,
+                }),
+            );
+            Err(err.to_string())
+        }
+    }
 }
 
 /// Builds the optional history enrichment session from the effective config.
@@ -844,6 +1026,12 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
             view.cache.db_path.display(),
             view.cache.db_bytes
         );
+        if let Some(owner) = &view.owner {
+            println!(
+                "owner: pid {} ({}, {})",
+                owner.pid, owner.operation, owner.state
+            );
+        }
         if let Some(err) = &view.last_error {
             println!("last error: {err}");
         }
@@ -1021,10 +1209,22 @@ fn run_check(opts: &CliOptions) -> Result<ExitCode, String> {
 }
 
 fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
+    use serde_json::json;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     let ctx = build_context(opts)?;
+    let db_path = ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id);
+    let scope_dir = db_path
+        .parent()
+        .ok_or_else(|| "internal error: scope directory has no parent".to_string())?;
+    // Advisory writer-ownership marker for the watch scope; refreshed every
+    // loop iteration so an idle watch does not look stale.
+    let (owner_guard, owner_warnings) =
+        repoise_core::ownership::OwnerGuard::acquire(scope_dir, "watch");
+    for warning in &owner_warnings {
+        eprintln!("warning: {warning}");
+    }
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let options = repoise_core::watch::WatchOptions {
         interval: Duration::from_millis(
@@ -1044,6 +1244,16 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     // every debounced publication runs it through the shared index path.
     // Missing configuration (or this build lacking the transport) keeps
     // watch publications lexical-only.
+    let root = ctx
+        .adapter
+        .canonical_root()
+        .map_err(|err| err.to_string())?;
+    let scope = events::Scope {
+        root: root.to_string_lossy().to_string(),
+        repo_id: ctx.repo_id.clone(),
+        worktree_id: ctx.worktree_id.clone(),
+        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
+    };
     let embed_cancel = CancellationToken::new();
     let client = embedding_client(&ctx.effective, embed_cancel.clone())?;
     let embed_configured = client.is_some();
@@ -1065,10 +1275,12 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         // Stop embedding work inside an in-flight publication as well.
         cancel_token.cancel();
     }) {
-        return Err(format!("could not install SIGINT handler: {err}"));
+        // Ctrl+C everywhere; with the ctrlc `termination` feature also
+        // SIGTERM/SIGHUP on Unix and CTRL_CLOSE_EVENT on Windows.
+        return Err(format!("could not install the signal handler: {err}"));
     }
-    println!(
-        "watching {}/{} (interval {} ms, debounce {} ms; embeddings {}); Ctrl+C cancels",
+    let summary = format!(
+        "watching {}/{} (interval {} ms, debounce {} ms; embeddings {})",
         ctx.repo_id,
         ctx.worktree_id,
         options.interval.as_millis(),
@@ -1079,6 +1291,70 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
             "lexical-only"
         }
     );
+    if opts.events {
+        let stream = events::EventStream::stdout("watch");
+        stream.start_heartbeat(events::heartbeat_interval());
+        stream.start(&scope);
+        eprintln!("{summary}; SIGINT/SIGTERM cancels");
+        let mut last_generation: Option<i64> = None;
+        loop {
+            match watcher.step(&cancel) {
+                Ok(repoise_core::watch::WatchStep::Idle) => {}
+                Ok(repoise_core::watch::WatchStep::Published(outcome)) => {
+                    last_generation = Some(outcome.generation_id);
+                    owner_guard.refresh();
+                    stream.emit(
+                        "progress",
+                        json!({
+                            "operation": "watch",
+                            "phase": "publication",
+                            "generationId": outcome.generation_id,
+                            "changedPaths": outcome.changed_paths,
+                            "filesReparsed": outcome.files_reparsed,
+                            "forceFull": outcome.force_full,
+                            "branchSwitch": outcome.branch_switch,
+                            "configChange": outcome.config_change,
+                            "vectorsTotal": outcome.vectors_total,
+                            "embedding": serde_json::to_value(&outcome.embedding)
+                                .unwrap_or_default(),
+                            "durationMs": outcome.duration_ms,
+                        }),
+                    );
+                }
+                Ok(repoise_core::watch::WatchStep::Cancelled) => {}
+                Err(err) => {
+                    eprintln!("watch step failed: {err}");
+                    stream.emit(
+                        "warning",
+                        json!({
+                            "operation": "watch",
+                            "message": format!("watch step failed: {err}"),
+                        }),
+                    );
+                }
+            }
+            if cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            owner_guard.refresh();
+            std::thread::sleep(options.interval);
+        }
+        stream.terminal(
+            "cancelled",
+            json!({
+                "operation": "watch",
+                "scope": serde_json::to_value(&scope).unwrap_or_default(),
+                "reason": "signal",
+                "lastGeneration": last_generation,
+            }),
+        );
+        eprintln!(
+            "watch run {} stopped (safe cancel; last complete generation retained)",
+            stream.run_id()
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("{summary}; Ctrl+C cancels");
     loop {
         match watcher.step(&cancel) {
             Ok(repoise_core::watch::WatchStep::Idle) => {}
@@ -1131,6 +1407,7 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         if cancel.load(Ordering::SeqCst) {
             break;
         }
+        owner_guard.refresh();
         std::thread::sleep(options.interval);
     }
     println!("watch stopped (safe cancel; last complete generation retained)");

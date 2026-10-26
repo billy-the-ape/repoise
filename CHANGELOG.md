@@ -10,6 +10,45 @@ CI now selects affected check sets for pull requests through `scripts/ci/impact-
 
 Release tooling resolves the real npm CLI even when pnpm points `npm_execpath` at pnpm's own CLI. Registry packing/staging semantics, the published packages and consumer installation are unchanged; no consumer migration is required. See `docs/plans/agent-platform/01-workspace-and-ci.md` for the implementation record.
 
+### CLI automation contracts (AP-02)
+
+The CLI gained machine-automation surfaces without changing existing
+`--json` output:
+
+- `repoise capabilities` (and `--json`) — version/capabilities handshake:
+  event-stream protocol version and checked-in schema, build features,
+  command/machine-output matrix, benchmark availability (planned `bench`,
+  not shipped), the stable exit-code table (0 ok, 1 operational, 2 usage,
+  3 index missing/stale, 4 coverage not met) and the additive
+  compatibility policy. Schema: `schemas/capabilities.v1.schema.json`.
+- `repoise index --events` and `repoise watch --events` — NDJSON event
+  streams on stdout (started, phase-scoped progress, warning, 15 s
+  heartbeat overridable via `REPOISE_EVENTS_HEARTBEAT_MS`, and exactly one
+  terminal of completed/cancelled/failed on controlled exit); diagnostics
+  stay on stderr. Envelope: `schemaVersion`, `runId`, strictly increasing
+  `sequence`, UTC ISO-8601 `timestamp`, `type`, typed `payload`.
+  Schema: `schemas/event-stream.v1.schema.json`. A stream without a
+  terminal event is incomplete output.
+- `watch` now cancels gracefully on SIGINT/SIGTERM (Unix; `Ctrl+C` on
+  Windows) via `ctrlc` with the `termination` feature: the last complete
+  generation is retained, a `cancelled` event is emitted and the process
+  exits 0. `index` remains abruptly interruptible (transactional
+  publication preserves the last complete generation).
+- Advisory writer-ownership marker (`owner.json` in the worktree scope
+  directory): `index` and `watch` acquire/refresh/release it without
+  blocking; a fresh foreign marker warns on stderr and the run proceeds
+  (publications stay transactional); `status` reports it read-only
+  (`owner` field, `active`/`stale` state; 10-minute staleness window,
+  5-second refresh); `purge` removes it with the scope.
+- Watch publication events/reporting now include `configChange`
+  (effective-configuration-driven publication; false on the first build).
+
+No new environment variables are required (`REPOISE_EVENTS_HEARTBEAT_MS`
+is an optional override); no migration or deployment actions. See
+[docs/automation.md](docs/automation.md) and
+`docs/plans/agent-platform/02-cli-contracts.md` for the implementation
+record.
+
 ### Cross-worktree cache reuse
 
 Linked worktrees of one local Git repository now share reusable parse

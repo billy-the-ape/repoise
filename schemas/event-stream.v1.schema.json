@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repoise.dev/schemas/event-stream.v1.schema.json",
+  "title": "Repoise event-stream envelope (version 1)",
+  "description": "One line of the `repoise --events` NDJSON stream is one event: a JSON object with exactly these required envelope fields. The machine stdout carries only event lines; diagnostics go to stderr. Each run starts with a `started` event and ends with exactly one terminal event (`completed`, `cancelled` or `failed`); a stream that ends without its terminal event means the process did not finish the run. Consumers must ignore unknown event types and unknown fields, and must reject a stream whose `schemaVersion` they do not support; breaking changes bump the version (see docs/automation.md).",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "sequence", "timestamp", "type", "payload"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Event-stream protocol version. Consumers must reject versions they do not support."
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+-[0-9]+-[0-9a-f]+$",
+      "description": "Unique id for one run: `<operation>-<pid>-<start nanos hex>`. All events of one run share it."
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonically increasing per-run position; the first event has sequence 0. Gaps are never produced between visible events."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+      "description": "UTC RFC 3339 timestamp with millisecond precision."
+    },
+    "type": {
+      "type": "string",
+      "enum": ["started", "progress", "warning", "heartbeat", "completed", "cancelled", "failed"],
+      "description": "Event type. `started` opens the run; exactly one of `completed`/`cancelled`/`failed` closes it."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Type-specific payload; shape documented per event type in docs/automation.md."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "started" } } },
+      "then": {
+        "required": ["payload"],
+        "properties": {
+          "payload": {
+            "required": ["operation", "scope"],
+            "properties": {
+              "operation": { "enum": ["index", "watch"] },
+              "scope": { "$ref": "#/$defs/scope" },
+              "pid": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "progress" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["operation", "phase"],
+            "properties": {
+              "operation": { "enum": ["index", "watch"] },
+              "phase": { "type": "string" },
+              "unit": { "type": "string" },
+              "done": { "type": "integer", "minimum": 0 },
+              "total": { "type": ["integer", "null"], "minimum": 0 },
+              "elapsedMs": { "type": "integer", "minimum": 0 },
+              "etaSeconds": { "type": ["integer", "null"], "minimum": 0 },
+              "generationId": { "type": "integer" },
+              "changedPaths": { "type": "array", "items": { "type": "string" } },
+              "filesReparsed": { "type": "integer", "minimum": 0 },
+              "forceFull": { "type": "boolean" },
+              "branchSwitch": { "type": "boolean" },
+              "configChange": { "type": "boolean" },
+              "vectorsTotal": { "type": "integer", "minimum": 0 },
+              "embedding": { "type": ["object", "null"] },
+              "durationMs": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "warning" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["operation", "message"],
+            "properties": {
+              "operation": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "heartbeat" } } },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["operation", "elapsedMs"],
+            "properties": {
+              "operation": { "type": "string" },
+              "elapsedMs": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "enum": ["completed", "cancelled", "failed"] } }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": ["operation", "scope"],
+            "properties": {
+              "operation": { "enum": ["index", "watch"] },
+              "scope": { "$ref": "#/$defs/scope" },
+              "result": { "type": "object" },
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "retryable": { "type": ["boolean", "null"] },
+              "reason": { "type": "string" },
+              "lastGeneration": { "type": ["integer", "null"] }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "required": ["root", "repoId", "worktreeId", "snapshotMode"],
+      "properties": {
+        "root": { "type": "string" },
+        "repoId": { "type": "string" },
+        "worktreeId": { "type": "string" },
+        "snapshotMode": {
+          "enum": ["working-tree", "committed", "plain-directory"]
+        }
+      }
+    }
+  }
+}
