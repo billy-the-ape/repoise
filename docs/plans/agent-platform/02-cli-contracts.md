@@ -185,14 +185,26 @@ Post-review fixes (2026-10-26, PR #37 review):
   `index_events_setup_failure_emits_a_failed_terminal` (an embedding profile
   whose endpoint env var holds a non-http(s) URL).
 - The filesystem scan (`adapter::filesystem::scan`) now skips entries that
-  vanish between enumeration and read (NotFound only; other I/O errors still
-  fail). Previously a `status` inventory of a live root could fail with an
-  adapter I/O error while `watch` published into the in-root `.repoise`
-  cache — the race behind the macOS CI failure of the owner-lifecycle test.
-  Unit test: `scan_skips_entries_that_vanish_mid_scan`.
+  vanish between enumeration and read. On Unix only NotFound qualifies; on
+  Windows a delete-pending file can surface as PermissionDenied
+  (ERROR_ACCESS_DENIED), which is re-checked via `symlink_metadata` before
+  being treated as vanished (any other I/O error still fails). Previously a
+  `status` inventory of a live root could fail with an adapter I/O error
+  while `watch` published into the in-root `.repoise` cache — the race
+  behind the macOS CI failure of the owner-lifecycle test, and the Windows
+  CI failure of the scan unit test. Unit test:
+  `scan_skips_entries_that_vanish_mid_scan`.
 - The owner-lifecycle test primes the scope with `index --json` before
   starting `watch` (no first-open race) and surfaces the probe's stderr in
   its failure message.
+- Owner marker publication is atomic: `acquire` and `refresh` write a
+  sibling temp file (`owner.json.tmp.<pid>`) and rename it over
+  `owner.json`, so concurrent readers never observe a truncated or partial
+  record. A partial read previously drove `acquire` into the
+  unreadable-marker branch, which deleted the live owner's marker and
+  skipped the concurrent-writer warning. Tests:
+  `marker_writes_are_atomic_under_concurrent_reads`,
+  `truncated_marker_is_replaced_and_reported`.
 
 Deferred / not shipped with this PR:
 

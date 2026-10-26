@@ -7,6 +7,9 @@
 //! ownership. It is best-effort and never blocks or fails the operation:
 //! acquisition, refresh and release report diagnostics as warnings.
 //!
+//! Marker publication is atomic (sibling temp file + rename), so concurrent
+//! readers only ever observe a complete record.
+//!
 //! The marker is scoped by the actual repository/worktree index scope
 //! directory (`<cache>/repos/<repoId>/worktrees/<worktreeId>/owner.json`),
 //! not by a repository remote URL. A PID alone is never treated as proof
@@ -81,6 +84,22 @@ pub fn marker_path(scope_dir: &Path) -> PathBuf {
     scope_dir.join(OWNER_FILE)
 }
 
+/// Atomically publishes `text` at `path`: write a sibling temp file
+/// (`owner.json.tmp.<pid>`) in the same directory and rename it over the
+/// target, so concurrent readers observe either the complete old record or
+/// the complete new one — never a truncated or partial file.
+fn write_marker_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_file_name(format!("{}.tmp.{}", OWNER_FILE, std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        fs::write(&tmp, text)?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 impl OwnerGuard {
     /// Attempts to acquire the advisory marker for `operation` (`"index"` or
     /// `"watch"`). Returns the guard plus diagnostics; non-empty diagnostics
@@ -152,7 +171,7 @@ impl OwnerGuard {
         // The scope directory may not exist before the first publication;
         // create it so the marker has a home.
         let _ = fs::create_dir_all(scope_dir);
-        match fs::write(&guard.path, record_text) {
+        match write_marker_atomic(&guard.path, &record_text) {
             Ok(()) => guard.mine = true,
             Err(err) => {
                 warnings.push(format!(
@@ -181,9 +200,9 @@ impl OwnerGuard {
             started_at_ms: self.started_at_ms,
             refreshed_at_ms: now_ms(),
         };
-        let _ = fs::write(
+        let _ = write_marker_atomic(
             &self.path,
-            serde_json::to_string(&record).unwrap_or_default(),
+            &serde_json::to_string(&record).unwrap_or_default(),
         );
     }
 }
@@ -357,5 +376,88 @@ mod tests {
             third >= second,
             "refresh after the window updates the marker"
         );
+    }
+
+    /// Marker publication is atomic: a reader racing with concurrent rewrites
+    /// must only ever observe a complete record (never a truncated one).
+    #[test]
+    fn marker_writes_are_atomic_under_concurrent_reads() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = scratch("atomic");
+        let path = marker_path(&dir);
+        // Seed a valid marker so readers never hit a missing file.
+        let seed = OwnerRecord {
+            schema_version: OWNER_SCHEMA_VERSION,
+            pid: 1,
+            operation: "index".to_string(),
+            started_at_ms: now_ms(),
+            refreshed_at_ms: now_ms(),
+        };
+        write_marker_atomic(&path, &serde_json::to_string(&seed).unwrap()).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer_stop = stop.clone();
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            let mut i = 0u64;
+            while !writer_stop.load(Ordering::Relaxed) {
+                let record = OwnerRecord {
+                    schema_version: OWNER_SCHEMA_VERSION,
+                    pid: 2 + (i % 3) as u32,
+                    operation: "watch".to_string(),
+                    started_at_ms: now_ms(),
+                    refreshed_at_ms: now_ms() + i,
+                };
+                write_marker_atomic(&writer_path, &serde_json::to_string(&record).unwrap())
+                    .unwrap();
+                i += 1;
+            }
+        });
+        let mut complete_reads = 0u32;
+        while complete_reads < 500 {
+            match fs::read_to_string(&path) {
+                Ok(text) => {
+                    let record: OwnerRecord = serde_json::from_str(&text).unwrap_or_else(|err| {
+                        panic!("reader observed a partial marker: {err}; text: {text:?}")
+                    });
+                    assert_eq!(record.schema_version, OWNER_SCHEMA_VERSION);
+                    complete_reads += 1;
+                }
+                // A transient sharing failure while the marker is being
+                // replaced is retryable; any completed read must be a full
+                // record.
+                Err(_) => std::thread::yield_now(),
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = writer.join();
+    }
+
+    /// A truncated marker (the failure mode of a non-atomic write) is
+    /// replaced with a valid record and reported — it is never mistaken for a
+    /// live owner.
+    #[test]
+    fn truncated_marker_is_replaced_and_reported() {
+        let dir = scratch("truncated");
+        let full = OwnerRecord {
+            schema_version: OWNER_SCHEMA_VERSION,
+            pid: 9999,
+            operation: "watch".to_string(),
+            started_at_ms: now_ms(),
+            refreshed_at_ms: now_ms(),
+        };
+        let full_text = serde_json::to_string(&full).unwrap();
+        fs::write(marker_path(&dir), &full_text[..full_text.len() / 2]).unwrap();
+        let (guard, warnings) = OwnerGuard::acquire(&dir, "index");
+        assert!(
+            warnings.iter().any(|w| w.contains("unreadable")),
+            "truncated marker is reported: {warnings:?}"
+        );
+        let report = inspect(&dir).expect("valid marker after recovery");
+        assert_eq!(report.pid, std::process::id());
+        drop(guard);
+        assert!(inspect(&dir).is_none());
     }
 }

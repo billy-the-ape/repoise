@@ -132,6 +132,27 @@ pub fn scan_directory(canonical_root: &Path, dir: &Path) -> Result<Vec<SourceEnt
     Ok(entries)
 }
 
+/// True when an I/O error means the entry is gone rather than a real
+/// failure. On Unix only NotFound qualifies (permission errors are real).
+/// On Windows, a file that a concurrent writer just unlinked (delete-pending)
+/// can surface as PermissionDenied (ERROR_ACCESS_DENIED); re-check the entry
+/// — if the metadata lookup also fails with NotFound or PermissionDenied the
+/// entry is gone, otherwise the error is genuine.
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn entry_gone(path: &Path, err: &std::io::Error) -> bool {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => true,
+        #[cfg(windows)]
+        std::io::ErrorKind::PermissionDenied => {
+            matches!(
+                fs::symlink_metadata(path).err().map(|err| err.kind()),
+                Some(std::io::ErrorKind::NotFound) | Some(std::io::ErrorKind::PermissionDenied)
+            )
+        }
+        _ => false,
+    }
+}
+
 fn scan(
     canonical_root: &Path,
     dir: &Path,
@@ -143,18 +164,18 @@ fn scan(
     // skipped; any other I/O error is a real failure.
     let read_dir = match fs::read_dir(dir) {
         Ok(dir) => dir,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if entry_gone(dir, &err) => return Ok(()),
         Err(err) => return Err(AdapterError::Io(err)),
     };
     for result in read_dir {
         let entry = match result {
             Ok(entry) => entry,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) if entry_gone(dir, &err) => continue,
             Err(err) => return Err(AdapterError::Io(err)),
         };
         let file_type = match entry.file_type() {
             Ok(file_type) => file_type,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) if entry_gone(&entry.path(), &err) => continue,
             Err(err) => return Err(AdapterError::Io(err)),
         };
         if file_type.is_symlink() {
@@ -167,7 +188,7 @@ fn scan(
         } else if file_type.is_file() {
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) if entry_gone(&path, &err) => continue,
                 Err(err) => return Err(AdapterError::Io(err)),
             };
             let relative = path

@@ -46,7 +46,10 @@ The CLI gained machine-automation surfaces without changing existing
   failures emit a `failed` terminal event (the stream always ends with one
   terminal on controlled exit); the filesystem scan skips entries that
   vanish mid-scan so a `status` probe no longer fails while `watch`
-  publishes into the in-root cache; `Store::open` sets the busy timeout
+  publishes into the in-root cache; on Windows the scan also tolerates
+  delete-pending `PermissionDenied` via a metadata re-check; owner marker
+  writes are atomic (sibling temp file + rename) so concurrent readers never
+  observe a partial record; `Store::open` sets the busy timeout
   before the WAL pragma so concurrent first opens of a new database wait
   instead of failing.
 
