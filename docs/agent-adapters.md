@@ -26,8 +26,10 @@ valid one (preflight, spawn and missing-final failures report
 the artifact dir. Host-side enforcement includes the hello timeout,
 per-line byte and event-count limits, strict envelope validation, usage
 semantics (cumulative max vs delta sum), wall-clock escalation, and a
-best-effort process-group sweep after every path, so a leaked grandchild can
-never outlive the trial.
+best-effort process-group sweep after every path, so a leaked grandchild of
+the adapter's own process group can never outlive the trial. (An adapter
+that deliberately moves its children into another process group is
+responsible for sweeping them itself - see the Cline adapter below.)
 
 **Cancellation is cooperative and cross-platform.** On cancellation (host
 request or wall clock) the host first sends a `cancel` control line on the
@@ -116,6 +118,16 @@ reference (2026-10-19); live behavior is not yet measured.
   version probe or spawn still produces a final), and signals the child's
   whole tree explicitly (`process.kill(-pid, ...)` on POSIX, reaching any
   MCP servers the CLI spawned).
+- Nothing in the child group outlives the trial: the request and every
+  control line share one stdin line consumer, so a `cancel` arriving in the
+  same chunk as the request is never discarded, and a stop that lands
+  before the spawn suppresses the spawn itself (cooperative `cancelled`
+  final without starting the CLI). The adapter sweeps the child group
+  (SIGKILL, tolerating ESRCH) on every final and on process exit, and its
+  stop escalation (3 s) is shorter than the host's default grace (5 s), so
+  a host forced-kill cannot orphan the group. The one residual is a host
+  protocol-violation kill, which SIGKILLs the adapter before any cleanup
+  hook can run.
 - `CLONE_*`-prefixed environment variables are the documented
   adapter-specific passthrough namespace to the spawned CLI (used by the
   test stub); the rest of the environment is a minimal allowlist
@@ -145,7 +157,9 @@ the exact argv/env the harness observed, per-trial MCP settings,
 effective-config redaction, status mapping for cancellation and failure,
 rejection of non-`env:` credential references, credential scrubbing from
 forwarded CLI output (including a key straddling the unparsed-line
-truncation boundary), and cross-platform launching of explicit Node
+truncation boundary), a `cancel` control line arriving in the same stdin
+chunk as the request, a leaked grandchild inside the Cline child group
+being swept with the trial, and cross-platform launching of explicit Node
 script executables.
 
 ## Status and boundaries

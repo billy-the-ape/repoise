@@ -94,8 +94,12 @@ Windows, where signals cannot reach console-less Node processes; POSIX
 adapters additionally receive a group SIGINT), escalating to a forced kill
 after the grace window; the Cline child runs in its own process group on
 POSIX so the child's `aborted` result can no longer race the adapter's own
-handler. Coverage: 20
-protocol conformance tests and 10 adapter tests (stub-CLI driven through
+handler, and the adapter sweeps that child group (SIGKILL) on every final
+and exit with a 3s stop escalation shorter than the host's default 5s
+grace so a host forced-kill cannot orphan it; a `cancel` control line in
+the same stdin chunk as the request is never discarded, and a stop that
+lands before the spawn suppresses the spawn. Coverage: 20
+protocol conformance tests and 12 adapter tests (stub-CLI driven through
 the real host), wired into CI through per-package `test` scripts run by
 `turbo run test` in the Check jobs. No environment variables
 are required for the protocol host itself; the Cline adapter honors

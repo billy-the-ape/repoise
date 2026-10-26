@@ -39,23 +39,41 @@ const num = (value) =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
-// The request travels on stdin as the first line; the host keeps stdin
-// open afterwards and may send a `cancel` control line on cancellation
-// (the cooperative channel that also exists on Windows, where signals
-// cannot be delivered to console-less Node processes).
-function readRequestLine() {
-  return new Promise((resolve) => {
-    let buffer = "";
-    const onData = (chunk) => {
-      buffer += chunk;
-      const index = buffer.indexOf("\n");
-      if (index === -1) return;
+/**
+ * Split a stdin stream into lines for the adapter: the first line is the
+ * JSON request, every subsequent line is a host control line (the host
+ * keeps stdin open and sends `cancel` on cancellation - the cooperative
+ * channel that also exists on Windows, where signals cannot be delivered
+ * to console-less Node processes). Both callbacks are fed by one line
+ * consumer, so a `cancel` arriving in the same chunk as the request can
+ * never be discarded.
+ */
+export function attachStdinLines(inputStream, onRequestLine, onControlLine) {
+  const stream = inputStream ?? process.stdin;
+  let buffer = "";
+  let firstLineDone = false;
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk) => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf("\n")) !== -1) {
       const line = buffer.slice(0, index);
-      process.stdin.removeListener("data", onData);
-      resolve(line);
-    };
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", onData);
+      buffer = buffer.slice(index + 1);
+      if (!firstLineDone) {
+        firstLineDone = true;
+        onRequestLine(line);
+      } else {
+        onControlLine(line);
+      }
+    }
+  });
+  // Stdin closed without a newline: deliver whatever arrived ("" if
+  // nothing) instead of never firing.
+  stream.on("end", () => {
+    if (!firstLineDone) {
+      firstLineDone = true;
+      onRequestLine(buffer);
+    }
   });
 }
 
@@ -94,10 +112,36 @@ export async function main() {
     initiateStop("cancelled", "cancellation requested"),
   );
 
+  // One stdin reader for both the request (the first line) and the host's
+  // control lines; see attachStdinLines for why one consumer matters.
+  const requestReady = new Promise((resolve) => {
+    attachStdinLines(process.stdin, resolve, (line) => {
+      if (line.trim() === "cancel")
+        initiateStop("cancelled", "host requested cancellation");
+    });
+  });
+
+  // The cline child (and any MCP servers it started) live in their own
+  // process group that the host cannot reach, so the adapter sweeps them
+  // on every final and on every exit path.
+  function sweepChild() {
+    if (!child) return;
+    try {
+      if (process.platform === "win32") {
+        child.kill("SIGKILL");
+      } else {
+        process.kill(-child.pid, "SIGKILL");
+      }
+    } catch {
+      // Group already gone.
+    }
+  }
+  process.on("exit", sweepChild);
+
   emit(helloEvent());
   let request = null;
   try {
-    request = JSON.parse(await readRequestLine());
+    request = JSON.parse(await requestReady);
   } catch {
     request = null;
   }
@@ -300,6 +344,14 @@ export async function main() {
     return value;
   };
 
+  // A stop that arrived before the trial started (during the stdin read,
+  // the version probe or the file writes) must not spawn the CLI at all;
+  // only "cancelled" can be set this early.
+  if (stopKind !== null) {
+    emitFinal("cancelled", "host_requested");
+    return;
+  }
+
   try {
     child = spawn(executable, [...prefixArgs, ...spawnArgv], {
       env: invocation.env,
@@ -352,6 +404,7 @@ export async function main() {
           : null,
       exitCode,
     });
+    sweepChild(); // Never orphan the child group on any final path.
     process.exit(0);
   }
 
@@ -395,6 +448,9 @@ export async function main() {
       }
     };
     signalChild("SIGINT");
+    // Shorter than the host's default cancelGraceMs (5000 ms), so if the
+    // child ignores SIGINT this adapter kills its own group before the
+    // host force-kills us and orphans it.
     escalationTimer = setTimeout(() => {
       signalChild("SIGKILL");
       // Last resort: always end with a final even if close never fires.
@@ -406,24 +462,8 @@ export async function main() {
           ),
         2000,
       ).unref();
-    }, 5000);
+    }, 3000);
   }
-
-  // Cooperative cancellation over the control channel: the host keeps the
-  // request stdin open and sends a `cancel` line when it wants the trial
-  // stopped. On Windows this is the only graceful channel; on POSIX it
-  // arrives together with (and possibly before) the group SIGINT.
-  let controlBuffer = "";
-  process.stdin.on("data", (chunk) => {
-    controlBuffer += chunk;
-    let index;
-    while ((index = controlBuffer.indexOf("\n")) !== -1) {
-      const line = controlBuffer.slice(0, index).trim();
-      controlBuffer = controlBuffer.slice(index + 1);
-      if (line === "cancel")
-        initiateStop("cancelled", "host requested cancellation");
-    }
-  });
 
   const finishFromRunResult = () => {
     if (finalEmitted) return;

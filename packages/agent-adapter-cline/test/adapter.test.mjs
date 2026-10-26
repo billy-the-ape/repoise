@@ -9,6 +9,7 @@ import {
   readFileSync,
   chmodSync,
   existsSync,
+  statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -20,6 +21,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const adapterBin = join(here, "..", "bin", "agent-adapter-cline.js");
 const stub = join(here, "fixtures", "stub-cline.mjs");
 chmodSync(stub, 0o755);
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function makeRoot() {
   const root = mkdtempSync(join(tmpdir(), "ap03-cline-"));
@@ -262,6 +265,46 @@ test("host cancellation maps to final cancelled", async () => {
   const { result } = await pending;
   assert.equal(result.status, "cancelled");
   assert.equal(result.events.at(-1).t, "final");
+});
+
+test("a cancel in the same stdin chunk as the request is not lost", async () => {
+  const { PassThrough } = await import("node:stream");
+  const { attachStdinLines } = await import("../src/main.js");
+  const stream = new PassThrough();
+  const controlLines = [];
+  const requestReady = new Promise((resolve) => {
+    attachStdinLines(stream, resolve, (line) => controlLines.push(line));
+  });
+  // One chunk: the request line followed by the cancel line, exactly the
+  // shape a pre-aborted host signal produces (request + `cancel` back to
+  // back).
+  stream.write(`${JSON.stringify({ protocolVersion: 1 })}\ncancel\n`);
+  const requestLine = await requestReady;
+  assert.deepEqual(JSON.parse(requestLine), { protocolVersion: 1 });
+  // The control line was consumed from the same chunk, not discarded.
+  assert.deepEqual(controlLines, ["cancel"]);
+});
+
+test("a grandchild in the cline group is swept with the trial", async () => {
+  const { root, workspace, artifacts } = makeRoot();
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    stubMode: "leak",
+    extraEnv: { CLONE_LEAK_HB_FILE: heartbeatFile },
+  });
+  assert.equal(result.status, "completed");
+  if (process.platform === "win32") return; // group kill is POSIX-only
+  const size = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  assert.ok(size > 0, "the grandchild heartbeat never ran");
+  // It must stop once the adapter swept the child group on the final.
+  await sleep(300);
+  assert.equal(
+    statSync(heartbeatFile).size,
+    size,
+    "grandchild kept writing after the trial ended",
+  );
 });
 
 test("failed cline child without run_result maps to adapter_error", async () => {

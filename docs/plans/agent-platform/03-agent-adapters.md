@@ -7,7 +7,7 @@ Status: implemented (2026-10-26). Depends on [AP-01](01-workspace-and-ci.md) and
 
 Shipped as protocol v1 in `packages/agent-adapter-protocol/` (host plus the
 checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
-`packages/agent-adapter-cline/`, with 20 protocol conformance tests and 10
+`packages/agent-adapter-cline/`, with 20 protocol conformance tests and 12
 adapter tests (stub-CLI driven through the real host). Implemented decisions
 and deviations from the proposals below are documented in
 [docs/agent-adapters.md](../../agent-adapters.md):
@@ -29,7 +29,13 @@ and deviations from the proposals below are documented in
   SIGINT), escalating to a forced kill after the grace window. The Cline
   child runs in its own process group on POSIX so the child's `aborted`
   result cannot race the adapter's own signal handler, and the adapter's
-  SIGINT/SIGTERM handlers are registered before the request is read.
+  SIGINT/SIGTERM handlers are registered before the request is read. The
+  adapter additionally owns its child group: it sweeps it (SIGKILL) on
+  every final and on exit, its 3s stop escalation is shorter than the
+  host's default 5s grace, one stdin line consumer feeds both the request
+  and the control lines (a `cancel` in the same chunk as the request is
+  never discarded), and a stop that lands before the spawn suppresses the
+  spawn.
 - The conformance suite includes the fake adapters, framing and
   grandchild-kill tests; no live Cline run has been executed.
 
