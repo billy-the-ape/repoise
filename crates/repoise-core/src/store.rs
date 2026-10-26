@@ -292,9 +292,13 @@ impl Store {
             fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(&self.path)?;
+        // The busy timeout must be in place before the WAL pragma (and any
+        // other locking step) so a concurrent first open of the same new
+        // database waits for the creation lock instead of failing with
+        // "database is locked".
+        conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA_SQL)?;
         // Version seeding, check and migration run inside one transaction so a
         // concurrent open or a crash can never leave a half-migrated database

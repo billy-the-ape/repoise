@@ -148,20 +148,36 @@ it as `npx --no-install repoise`.
   It reports live phase progress (discovery, reconciliation, optional
   embedding and history enrichment, publication) with counts, elapsed time, and
   an approximate ETA only when the observed rate is reliable. With `--json`,
-  progress goes to stderr so stdout stays a single JSON document.
+  progress goes to stderr so stdout stays a single JSON document. With
+  `--events`, stdout becomes an NDJSON event stream (started, progress,
+  warning, heartbeat, and one terminal event); see
+  [docs/automation.md](docs/automation.md).
 
   ```sh
   repoise index
   repoise index --committed
+  repoise index --events
   ```
 
 - `repoise watch [OPTIONS] [ROOT]` — incremental watch loop; stays running
-  until Ctrl+C and retains the last complete generation (not an installed
-  background daemon). Options: `--interval <MS>` (default 500),
+  until cancelled (SIGINT/SIGTERM on Unix, Ctrl+C on Windows; the last
+  complete generation is retained) and is not an installed background daemon.
+  Options: `--interval <MS>` (default 500),
   `--debounce <MS>` (default 200), `--max-pending <N>` (default 4096).
+  `--events` streams the same NDJSON protocol as `index --events`.
 
   ```sh
   repoise watch --interval 500 --debounce 200
+  repoise watch --events
+  ```
+
+- `repoise capabilities [OPTIONS]` — version/capabilities handshake for
+  automation: event-stream protocol and schema, build features, command
+  machine-output matrix, benchmark availability, stable exit codes, and the
+  compatibility policy (`--json` for the machine document).
+
+  ```sh
+  repoise capabilities --json
   ```
 
 - `repoise purge` — remove generated cache data: `--all` removes the entire

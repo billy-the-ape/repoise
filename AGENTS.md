@@ -29,6 +29,12 @@ descriptions, CLI help and the managed AGENTS.md snippet (template 1.2.0).
 `repoise index` reports live phase progress (discovery, reconciliation,
 optional embedding/history, publication) to stdout, or stderr under `--json`,
 with counts, elapsed time and an approximate ETA only when reliable.
+The CLI automation contracts (agent platform AP-02) ship the
+`repoise capabilities` handshake, an explicit `--events` NDJSON stream for
+`index` and `watch` (started/progress/warning/heartbeat plus one terminal
+event; checked-in schemas under schemas/), stable exit codes, documented
+SIGINT/SIGTERM cancellation for `watch`, and an advisory writer-ownership
+marker surfaced by `status` (docs/automation.md).
 The functional 0.1.0-alpha.1 preview is published as native archives and all four
 npm packages under both latest and next; the version remains an alpha preview. Public-registry CLI/MCP
 checks passed on macOS ARM64; Linux/Windows registry-install checks remain
@@ -61,11 +67,12 @@ affected check sets per PR through `scripts/ci/impact-map.json` and
 expected results (unknown paths, empty diffs and selection failures run the
 full suite).
 
-Follow-on planning for the polyglot workspace, CLI automation contracts, external
-agent adapters, real-agent benchmarks and VS Code UI lives in the
-[agent platform roadmap](docs/plans/agent-platform/README.md). Start there for
-implementation order, open questions and per-PR acceptance criteria. This is
-proposed work; no benchmark command or editor extension ships from that plan.
+Follow-on planning for external agent adapters, real-agent benchmarks and the
+VS Code UI lives in the [agent platform roadmap](docs/plans/agent-platform/README.md);
+AP-01 (workspace/CI) and AP-02 (CLI automation contracts) are implemented.
+Start there for implementation order, open questions and per-PR acceptance
+criteria. The remaining cards are proposed work; no benchmark command or
+editor extension ships from that plan.
 
 ## Read only the context relevant to the task
 
@@ -80,6 +87,7 @@ proposed work; no benchmark command or editor extension ships from that plan.
 | Intake, parsing and freshness planning             | Master plan sections 4–7                                                                                               |
 | Persistent index, cache layout and purge           | [Storage guide](docs/storage.md)                                                                                     |
 | MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md)                                                                                             |
+| CLI automation (capabilities, `--events`, exit codes, signals, ownership) | [Automation contracts](docs/automation.md)                                                              |
 | Agent setup, CLI/MCP retrieval workflow and worktrees | [Agent setup](docs/agents.md)                                                                                     |
 | Portable consumer skill and one-command installation | [Agent skill](skills/repoise/SKILL.md); [installation](docs/agents.md#install-the-agent-skill) |
 | Build/CI integration and consumer guide            | [Build/CI guide](docs/build-ci.md)                                                                                   |

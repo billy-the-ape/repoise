@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repoise.dev/schemas/capabilities.v1.schema.json",
+  "title": "Repoise capabilities document (version 1)",
+  "description": "The `repoise capabilities` JSON document: the machine handshake an automation layer uses to discover the binary's version, event-stream protocol, build features, command/machine-output matrix, benchmark availability, stable exit codes and compatibility policy.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "name",
+    "version",
+    "eventStream",
+    "features",
+    "commands",
+    "benchmark",
+    "exitCodes",
+    "compatibility"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "const": "repoise" },
+    "version": { "type": "string" },
+    "eventStream": {
+      "type": "object",
+      "required": ["schema", "version", "operations", "heartbeatIntervalMs"],
+      "properties": {
+        "schema": { "const": "schemas/event-stream.v1.schema.json" },
+        "version": { "const": 1 },
+        "operations": {
+          "type": "array",
+          "items": { "enum": ["index", "watch"] },
+          "uniqueItems": true
+        },
+        "heartbeatIntervalMs": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "enum": ["event-stream", "mcp-stdio", "remote-embedding", "github-enrichment"]
+      },
+      "uniqueItems": true
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "machine"],
+        "properties": {
+          "name": { "type": "string" },
+          "machine": {
+            "type": "array",
+            "items": { "enum": ["json", "events", "mcp-stdio"] },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "benchmark": {
+      "type": "object",
+      "required": ["supported", "command"],
+      "properties": {
+        "supported": { "type": "boolean" },
+        "command": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+    "exitCodes": {
+      "type": "object",
+      "required": ["ok", "operational", "usage", "indexMissingOrStale", "coverageNotMet"],
+      "properties": {
+        "ok": { "const": 0 },
+        "operational": { "const": 1 },
+        "usage": { "const": 2 },
+        "indexMissingOrStale": { "const": 3 },
+        "coverageNotMet": { "const": 4 }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "required": ["policy", "supportedEventStreamVersions"],
+      "properties": {
+        "policy": { "const": "additive" },
+        "supportedEventStreamVersions": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

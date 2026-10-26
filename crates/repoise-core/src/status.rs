@@ -139,6 +139,9 @@ pub struct StatusView {
     pub freshness: StatusFreshness,
     /// Cache location and sizes.
     pub cache: StatusCache,
+    /// Advisory writer-ownership marker for this scope, when one is present
+    /// (a concurrent or recently stopped `index`/`watch` writer).
+    pub owner: Option<crate::ownership::OwnerReport>,
     /// Linked-worktree sharing state (shared store, opt-out, fallback).
     pub sharing: crate::shared::SharingInfo,
     /// Last recorded build error, if any.
@@ -252,6 +255,9 @@ pub fn status(
     let wal_bytes = fs::metadata(db_path.with_extension("sqlite-wal"))
         .map(|m| m.len())
         .unwrap_or(0);
+    // Advisory writer-ownership marker for this scope (read-only; never
+    // creates anything).
+    let owner = db_path.parent().and_then(crate::ownership::inspect);
 
     Ok(StatusView {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -284,6 +290,7 @@ pub fn status(
             db_bytes,
             wal_bytes,
         },
+        owner,
         last_error,
     })
 }

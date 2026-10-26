@@ -83,6 +83,10 @@ pub struct WatchPublication {
     pub force_full: bool,
     /// Branch/workspace switch detected since the previous scan.
     pub branch_switch: bool,
+    /// Effective configuration fingerprint changed since the published
+    /// generation (a configuration-driven publication; false for the
+    /// watcher's first publication).
+    pub config_change: bool,
     /// Vector records published in this generation (0 when lexical-only).
     pub vectors_total: usize,
     /// Embedding session stats for this publication, when an embedding
@@ -206,6 +210,12 @@ impl Watcher {
         // Bounded pending set: paths changed versus the published generation.
         let changed_paths = self.changed_paths(&inventory)?;
         let force_full = branch_switch_now || changed_paths.len() > self.options.max_pending_paths;
+        // Configuration-driven publication: the effective fingerprint moved
+        // away from the published one (not applicable on the first build).
+        let config_change = self
+            .published_fingerprint
+            .as_deref()
+            .is_some_and(|prev| prev != self.eff.fingerprint());
 
         let built = Instant::now();
         let request = IndexRequest {
@@ -236,6 +246,7 @@ impl Watcher {
             files_reparsed: outcome.files_reparsed,
             force_full,
             branch_switch: branch_switch_now,
+            config_change,
             vectors_total: outcome.vectors_total,
             embedding: outcome.embedding,
             duration_ms: built.elapsed().as_millis() as u64,

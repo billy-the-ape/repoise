@@ -1,6 +1,8 @@
 # AP-02: CLI automation and lifecycle contracts
 
-Status: proposed. Depends on [AP-01](01-workspace-and-ci.md).
+Status: implemented (2026-10-26); see the [implementation record](#implementation-record-2026-10-26)
+at the end of this document for the shipped design, validation and deferred items.
+Depends on [AP-01](01-workspace-and-ci.md).
 Consumers: agent adapters, benchmark coordinator and VS Code extension.
 
 ## Outcome
@@ -114,3 +116,115 @@ policy; how existing progress work maps to the contract; watchdog thresholds
 versus legitimate long provider requests; ownership/lock diagnostics; and any
 minimum Windows host requirements. These must be resolved before UI/adapters
 depend on the interface. Adding a daemon or network control API is out of scope.
+
+## Implementation record (2026-10-26)
+
+Implemented as one reviewable PR against `main`
+([#37](https://github.com/billy-the-ape/repoise/pull/37)). Current-state guide:
+[docs/automation.md](../../../docs/automation.md).
+
+Settled decisions:
+
+- Streaming mode: explicit `--events` flag on `index` and `watch` (the machine
+  modes advertised by `capabilities`); existing `--json` output is untouched.
+  Stdout carries NDJSON protocol records only; diagnostics stay on stderr.
+- Handshake: new `repoise capabilities` command (human summary or `--json`
+  document, schema version 1) advertising version, event-stream protocol and
+  schema, build features, the command/machine-mode matrix, benchmark
+  availability (`supported: false`; `bench` prints a stable pointer error,
+  exit 1), the stable exit-code table and the additive compatibility policy.
+- Event stream v1 (`schemas/event-stream.v1.schema.json`): envelope with
+  `schemaVersion`, `runId`, zero-based strictly increasing `sequence`, UTC
+  ISO-8601 `timestamp`, `type` and typed `payload`. Events: `started`
+  (resolved scope), `progress`, `warning`, `heartbeat` (15 s default,
+  `REPOISE_EVENTS_HEARTBEAT_MS` override floored at 10 ms), and exactly one
+  terminal of `completed`/`cancelled`/`failed` on controlled exit. Missing
+  terminal event = incomplete output (abrupt death). In-phase progress is
+  throttled to at least 100 ms apart; phase start, completion and the final
+  update always emit. ETAs stay phase-scoped and suppressed until reliable.
+- Progress mapping: the existing human `ProgressReporter` and the new event
+  reporter both implement the same `IndexProgressReporter` service interface;
+  the human reporter is unchanged. Watch publications emit one `progress`
+  event per generation, now including the new `configChange` field
+  (effective-configuration-driven publication; false on the first build).
+- Signals: `watch` uses `ctrlc` with the `termination` feature (workspace
+  dependency now enables it). `SIGINT`/`SIGTERM`/`SIGHUP` (Unix) and
+  `Ctrl+C` (Windows) cancel at the next step boundary, preserve the last
+  complete generation, emit `cancelled` (`reason: "signal"`) and exit 0.
+  `index` has no graceful handler (abrupt death leaves the last complete
+  generation via transactional publication); both are documented.
+- Ownership: advisory marker `owner.json` in the worktree scope directory
+  (`repoise-core::ownership`), scoped by repo/worktree index identity, not a
+  remote URL. Writers acquire (creating the scope directory if needed),
+  refresh at most every 5 s and release only their exact record. Fresh
+  foreign markers (under 10 min) warn on stderr and proceed; stale markers
+  (10 min) are silently superseded. `status` reports the marker read-only
+  (`owner` field with `active`/`stale` state); `purge` removes it with the
+  scope. PID is never liveness proof; refresh freshness is the signal. No
+  lock, no daemon, no blocking.
+- MCP: unchanged — JSON-RPC only on stdout, no progress injection.
+
+Validation: unit tests for the envelope contract (fields, sequences, single
+terminal, heartbeat, throttled progress) and the ownership lifecycle
+(acquire/inspect/release, stale detection, foreign-marker preservation);
+integration tests for the capabilities handshake, `index --events` NDJSON
+purity and terminal outcome, `watch --events` SIGINT cancellation, a
+`failed` terminal for `index --events` session-setup failure, and the owner
+marker appearing in `status` while watch runs and clearing after a clean
+SIGTERM exit. Existing `--json`/MCP suites pass unchanged.
+
+Post-review fixes (2026-10-26, PR #37 review):
+
+- `Store::open` sets the 5 s busy timeout before the `journal_mode=WAL`
+  pragma, so a concurrent first open of the same new database waits for the
+  creation lock instead of failing with "database is locked".
+- `index --events` session-setup failures (`embedding_client` /
+  `enrichment_session` errors after `stream.start`) now emit a `failed`
+  terminal event before exiting 1, so the stream always ends with exactly
+  one terminal event on controlled exit. Regression test:
+  `index_events_setup_failure_emits_a_failed_terminal` (an embedding profile
+  whose endpoint env var holds a non-http(s) URL).
+- The filesystem scan (`adapter::filesystem::scan`) now skips entries that
+  vanish between enumeration and read. On Unix only NotFound qualifies; on
+  Windows a delete-pending file can surface as PermissionDenied
+  (ERROR_ACCESS_DENIED), which is re-checked via `symlink_metadata` before
+  being treated as vanished (any other I/O error still fails). Previously a
+  `status` inventory of a live root could fail with an adapter I/O error
+  while `watch` published into the in-root `.repoise` cache — the race
+  behind the macOS CI failure of the owner-lifecycle test, and the Windows
+  CI failure of the scan unit test. The scan root itself stays fatal
+  (a vanished root fails the scan rather than yielding the empty inventory
+  that a `watch` could publish as a zero-file generation). Unit tests:
+  `scan_skips_entries_that_vanish_mid_scan`,
+  `scan_of_a_missing_root_is_an_error`.
+- The owner-lifecycle test primes the scope with `index --json` before
+  starting `watch` (no first-open race) and surfaces the probe's stderr in
+  its failure message.
+- Owner marker publication is atomic: `acquire` and `refresh` write a
+  sibling temp file (`owner.json.tmp.<pid>`) and rename it over
+  `owner.json`, so concurrent readers never observe a truncated or partial
+  record. A partial read previously drove `acquire` into the
+  unreadable-marker branch, which deleted the live owner's marker and
+  skipped the concurrent-writer warning. Tests:
+  `marker_writes_are_atomic_under_concurrent_reads`,
+  `truncated_marker_is_replaced_and_reported`.
+- `stream.start` now emits the `started` event before the heartbeat thread
+  is spawned (in both `index --events` and `watch --events`), so `started`
+  is always sequence 0 even under a short `REPOISE_EVENTS_HEARTBEAT_MS`
+  override; the heartbeat loop tick is capped at `min(interval, 25 ms)` so
+  short override intervals are honoured.
+- `heartbeat_emits_between_activity` polls with a bounded deadline (5 s)
+  instead of a fixed 80 ms sleep: the fixed sleep failed on a loaded macOS
+  runner where heartbeat-thread start latency exceeded the window (CI run
+  40285589778).
+
+Deferred / not shipped with this PR:
+
+- `repoise bench` and its exit-code partitioning (AP-04); capabilities only
+  advertises the planned command.
+- MCP progress through protocol mechanisms (negotiated capabilities).
+- Windows live signal/cancellation verification (the Unix path is tested;
+  Windows behavior follows `ctrlc` and is documented, not measured).
+- Editor/adapter conformance against the contract (AP-03/AP-07).
+- `index --events` graceful signal handling (abrupt-death semantics are
+  documented instead).

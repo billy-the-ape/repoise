@@ -23,9 +23,9 @@ use repoise_core::progress::{IndexPhase, IndexProgressReporter};
 const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 /// Minimum completed units before a per-unit ETA is shown (below this a few
 /// slow units skew the estimate too much to be honest).
-const MIN_UNITS_FOR_ETA: u64 = 8;
+pub(crate) const MIN_UNITS_FOR_ETA: u64 = 8;
 /// Minimum observed phase time before an ETA is shown.
-const MIN_TIME_FOR_ETA: Duration = Duration::from_millis(100);
+pub(crate) const MIN_TIME_FOR_ETA: Duration = Duration::from_millis(100);
 
 /// Renders index progress to stdout, or stderr in `--json` mode.
 pub struct ProgressReporter {
@@ -250,7 +250,7 @@ impl Inner {
 /// Pure ETA arithmetic: `None` when the estimate would be misleading
 /// (no first-report baseline yet, too few units completed since it, too
 /// little observed time, or a sub-second remainder).
-fn eta_seconds_from(
+pub(crate) fn eta_seconds_from(
     done: u64,
     total: u64,
     base_done: Option<u64>,

@@ -126,29 +126,78 @@ pub fn read_within_root(canonical_root: &Path, relative: &Path) -> Result<Vec<u8
 
 /// Recursively scans `dir` (never following symlinks) into sorted entries.
 pub fn scan_directory(canonical_root: &Path, dir: &Path) -> Result<Vec<SourceEntry>, AdapterError> {
+    // A missing root is a real failure: scanning it as an empty inventory
+    // would let a `watch` publish a zero-file generation over a real index
+    // if the root is renamed, removed or unmounted. Only entries that vanish
+    // mid-recursion are skipped.
     let mut entries = Vec::new();
-    scan(canonical_root, dir, &mut entries)?;
+    scan(canonical_root, dir, true, &mut entries)?;
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
+}
+
+/// True when an I/O error means the entry is gone rather than a real
+/// failure. On Unix only NotFound qualifies (permission errors are real).
+/// On Windows, a file that a concurrent writer just unlinked (delete-pending)
+/// can surface as PermissionDenied (ERROR_ACCESS_DENIED); re-check the entry
+/// — if the metadata lookup also fails with NotFound or PermissionDenied the
+/// entry is gone, otherwise the error is genuine.
+#[cfg_attr(not(windows), allow(unused_variables))]
+fn entry_gone(path: &Path, err: &std::io::Error) -> bool {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => true,
+        #[cfg(windows)]
+        std::io::ErrorKind::PermissionDenied => {
+            matches!(
+                fs::symlink_metadata(path).err().map(|err| err.kind()),
+                Some(std::io::ErrorKind::NotFound) | Some(std::io::ErrorKind::PermissionDenied)
+            )
+        }
+        _ => false,
+    }
 }
 
 fn scan(
     canonical_root: &Path,
     dir: &Path,
+    is_root: bool,
     entries: &mut Vec<SourceEntry>,
 ) -> Result<(), AdapterError> {
-    for result in fs::read_dir(dir)? {
-        let entry = result?;
-        let file_type = entry.file_type()?;
+    // A scan of a live tree can race with a concurrent writer (for example
+    // `status` inventories the root while `watch` publishes into the
+    // in-root cache). Entries that vanish between enumeration and read are
+    // skipped; any other I/O error is a real failure. The root itself stays
+    // fatal: a vanished root must fail the scan, not yield an empty
+    // inventory.
+    let read_dir = match fs::read_dir(dir) {
+        Ok(dir) => dir,
+        Err(err) if !is_root && entry_gone(dir, &err) => return Ok(()),
+        Err(err) => return Err(AdapterError::Io(err)),
+    };
+    for result in read_dir {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(err) if !is_root && entry_gone(dir, &err) => continue,
+            Err(err) => return Err(AdapterError::Io(err)),
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) if entry_gone(&entry.path(), &err) => continue,
+            Err(err) => return Err(AdapterError::Io(err)),
+        };
         if file_type.is_symlink() {
             // Never follow symlinks (security and determinism).
             continue;
         }
         let path = entry.path();
         if file_type.is_dir() {
-            scan(canonical_root, &path, entries)?;
+            scan(canonical_root, &path, false, entries)?;
         } else if file_type.is_file() {
-            let bytes = fs::read(&path)?;
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(err) if entry_gone(&path, &err) => continue,
+                Err(err) => return Err(AdapterError::Io(err)),
+            };
             let relative = path
                 .strip_prefix(canonical_root)
                 .map_err(|_| AdapterError::Containment(path.clone()))?
@@ -161,4 +210,80 @@ fn scan(
         }
     }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A concurrent writer churning a file must not fail a scan: entries that
+    /// vanish between enumeration and read are skipped, stable entries remain.
+    #[test]
+    fn scan_skips_entries_that_vanish_mid_scan() {
+        let dir = std::env::temp_dir().join(format!("repoise-scan-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let root = fs::canonicalize(&dir).unwrap();
+        fs::write(root.join("stable.txt"), "stable").unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let churn_stop = stop.clone();
+        let churn_root = root.clone();
+        let churner = std::thread::spawn(move || {
+            let mut writing = true;
+            while !churn_stop.load(Ordering::Relaxed) {
+                let path = churn_root.join("churning.txt");
+                if writing {
+                    let _ = fs::write(&path, "data");
+                } else {
+                    let _ = fs::remove_file(&path);
+                }
+                writing = !writing;
+            }
+        });
+        for _ in 0..200 {
+            let entries =
+                scan_directory(&root, &root).expect("scan must tolerate vanishing entries");
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.path.to_string_lossy() == "stable.txt"),
+                "stable entries must survive: {entries:?}"
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = churner.join();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A missing scan root is a real failure, not an empty inventory: a
+    /// `watch` must not publish a zero-file generation over a real index if
+    /// the root is renamed, removed or unmounted.
+    #[test]
+    fn scan_of_a_missing_root_is_an_error() {
+        let missing = std::env::temp_dir().join(format!(
+            "repoise-scan-missing-{}-{}",
+            std::process::id(),
+            now_id()
+        ));
+        let _ = fs::remove_dir_all(&missing);
+        let result = scan_directory(&missing, &missing);
+        let missing_root = matches!(
+            result.as_ref(),
+            Err(AdapterError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound
+        );
+        assert!(
+            missing_root,
+            "a missing root must fail, not scan empty: {result:?}"
+        );
+    }
+
+    /// Unique id suffix so parallel test binaries never share a path.
+    fn now_id() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    }
 }
