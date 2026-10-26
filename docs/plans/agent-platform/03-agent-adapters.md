@@ -7,7 +7,7 @@ Status: implemented (2026-10-26). Depends on [AP-01](01-workspace-and-ci.md) and
 
 Shipped as protocol v1 in `packages/agent-adapter-protocol/` (host plus the
 checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
-`packages/agent-adapter-cline/`, with 22 protocol conformance tests and 13
+`packages/agent-adapter-cline/`, with 23 protocol conformance tests and 13
 adapter tests (stub-CLI driven through the real host). Implemented decisions
 and deviations from the proposals below are documented in
 [docs/agent-adapters.md](../../agent-adapters.md):
@@ -39,7 +39,9 @@ and deviations from the proposals below are documented in
   records the child's root pid in `child-pid.txt` under the artifact dir,
   and the host sweeps that recorded pid after every path - the backstop
   that covers protocol-violation kills, which SIGKILL the adapter before
-  any of its own cleanup can run.
+  any of its own cleanup can run; the host clears a stale file at run
+  start and only sweeps pids above 1 that are neither the host nor its
+  parent.
 - The checked-in schemas were corrected to match the implemented contract
   (request description: stdin stays open for `cancel` control lines;
   hello usage-semantics object scoped to `t: hello`; final usage carries

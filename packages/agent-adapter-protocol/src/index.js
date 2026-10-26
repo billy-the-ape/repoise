@@ -8,6 +8,7 @@ import {
   appendFileSync,
   mkdirSync,
   readFileSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -101,6 +102,14 @@ export async function runAdapter(request, options = {}) {
 
   try {
     mkdirSync(request.outputs.artifactDir, { recursive: true });
+    // A reused artifact dir may hold a child-pid.txt from an earlier trial;
+    // drop it before this run so the end-of-run sweep can only see this
+    // run's recorded pid (never a stale, possibly recycled one).
+    try {
+      unlinkSync(join(request.outputs.artifactDir, "child-pid.txt"));
+    } catch {
+      // Nothing stale (or unreadable): nothing to clear.
+    }
   } catch (error) {
     return assemble({
       status: "adapter_error",
@@ -445,7 +454,14 @@ export async function runAdapter(request, options = {}) {
           "utf8",
         ).trim(),
       );
-      if (Number.isInteger(recorded) && recorded > 0) {
+      // Only sweep sane pids: never pid 1 (which would signal the whole
+      // session, including this host), and never the host or its parent.
+      if (
+        Number.isInteger(recorded) &&
+        recorded > 1 &&
+        recorded !== process.pid &&
+        recorded !== process.ppid
+      ) {
         await killTree(recorded, "SIGKILL");
       }
     } catch {

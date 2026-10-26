@@ -501,7 +501,7 @@ export async function main() {
       return emitFinal("agent_error", "run_aborted");
     return emitFinal(
       "agent_error",
-      `finish_reason_${finishReason ?? "unknown"}`,
+      `finish_reason_${redact(String(finishReason ?? "unknown"))}`,
     );
   };
 

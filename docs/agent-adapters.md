@@ -34,8 +34,11 @@ adapter MAY record the child tree's root pid in `child-pid.txt` under
 `outputs.artifactDir` (POSIX: the process-group leader, so the host's
 group kill reaches the whole tree; Windows: the root pid for the tree
 kill), and the host sweeps that recorded pid best-effort after every path
-— this is what covers protocol-violation kills, which SIGKILL the adapter
-before any of its own cleanup can run.
+(guarded: only pids above 1 that are neither the host nor its parent are
+swept, and the host clears any stale file at run start, so a reused
+artifact dir cannot leak a recycled pid) — this is what covers
+protocol-violation kills, which SIGKILL the adapter before any of its own
+cleanup can run.
 
 **Cancellation is cooperative and cross-platform.** On cancellation (host
 request or wall clock) the host first sends a `cancel` control line on the
@@ -91,7 +94,8 @@ reference (2026-10-19); live behavior is not yet measured.
   output is additionally scrubbed of the resolved credential value
   (substituted with `[REDACTED]`) at every forwarding site, redacting
   before any truncation so a key straddling a truncation boundary cannot
-  leak.
+  leak; the mapped `finishReason` passed into `final.reason` goes through
+  the same redaction.
 - Cline's `--auto-approve` is always on (trials need unattended operation);
   therefore `read_only_restriction` is declared `false` in the hello — the
   runner must enforce workspace boundaries, and adapters that lack the
@@ -160,7 +164,9 @@ delivered), grandchild-kill verification on hangs, grandchild sweep after a
 clean adapter exit, host timeout not replaced by a cooperative cancelled
 final, events after the final, spawn failure, blank first lines, a throwing
 `onEvent` callback, schema-minimal requests, the host's `child-pid.txt`
-sweep of a recorded child group after a protocol violation, and acceptance
+sweep of a recorded child group after a protocol violation, clearing of a
+stale `child-pid.txt` at run start (plus the guard that never sweeps pid 1
+or the host's own pids), and acceptance
 of the protocol's own happy path (request plus every event) by the
 checked-in schemas (validated with ajv). The adapter suite drives the
 real Cline adapter through the real host with a stub Cline CLI, asserting

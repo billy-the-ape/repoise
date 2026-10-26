@@ -100,16 +100,18 @@ escalation shorter than the host's default 5s grace so a host forced-kill
 cannot orphan it; the adapter also records the child's root pid in
 `child-pid.txt` under the artifact dir, and the host sweeps that recorded
 pid after every path - the backstop that covers protocol-violation kills,
-which SIGKILL the adapter before any of its own cleanup can run; a
-`cancel` control line in the same stdin chunk as the request is never
-discarded, and a stop that lands before the spawn suppresses the spawn. The
+which SIGKILL the adapter before any of its own cleanup can run; the
+host clears a stale `child-pid.txt` at run start and only sweeps pids
+above 1 that are neither the host nor its parent; a `cancel` control line in
+the same stdin chunk as the request is never discarded, and a stop that
+lands before the spawn suppresses the spawn. The
 checked-in schemas were corrected to match the implemented contract (the
 request description now says stdin stays open for `cancel` control lines;
 the hello usage-semantics object is scoped to `t: hello`; the final usage
 carries the normalized totals shape with an optional `estimated` flag;
 `profile.sampling` accepts null), and both suites now validate their own
 requests and event streams against the schemas with ajv so schema/validator
-drift fails CI. Coverage: 22
+drift fails CI. Coverage: 23
 protocol conformance tests and 13 adapter tests (stub-CLI driven through
 the real host), wired into CI through per-package `test` scripts run by
 `turbo run test` in the Check jobs. No environment variables

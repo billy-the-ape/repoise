@@ -3,7 +3,14 @@
 // deterministic and covered by a checked-in fixture.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, statSync, existsSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  statSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -252,6 +259,29 @@ test("host sweeps the recorded child group after a protocol violation", async ()
     first,
     "recorded child group survived the protocol-violation kill",
   );
+});
+
+test("stale child-pid.txt is cleared at run start and bogus pids are not swept", async () => {
+  // A reused artifact dir may hold a child-pid.txt from an earlier trial;
+  // the host drops it before the run so the sweep sees only this run's pid.
+  const root = mkdtempSync(join(tmpdir(), "ap03-badpid-"));
+  const request = makeRequest(root);
+  const artifacts = join(root, "artifacts");
+  mkdirSync(artifacts, { recursive: true });
+  writeFileSync(join(artifacts, "child-pid.txt"), "99999\n");
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-ok.mjs")],
+  });
+  assert.equal(result.status, "completed");
+  assert.ok(
+    !existsSync(join(artifacts, "child-pid.txt")),
+    "stale child-pid.txt must be cleared at run start",
+  );
+  // A recorded pid of 1 must never become process.kill(-1): the run
+  // completes and the test host survives to assert it.
+  const { result: bad } = await runFixture("fake-bad-pid.mjs");
+  assert.equal(bad.status, "completed");
 });
 
 test("checked-in schemas accept the protocol's own happy path", async () => {
