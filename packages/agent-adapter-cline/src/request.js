@@ -56,6 +56,19 @@ export function validateRequest(request) {
   ) {
     errors.push("profile.harness.name is required");
   }
+  // The adapter is a standalone CLI: do not rely on the host's validation.
+  // Only env: references can be handled safely; anything else (including a
+  // raw key string) is rejected instead of being recorded verbatim.
+  const provider = profile?.provider;
+  if (
+    typeof provider === "object" &&
+    provider !== null &&
+    provider.credentialRef != null &&
+    (typeof provider.credentialRef !== "string" ||
+      !/^env:[A-Za-z_][A-Za-z0-9_]*$/.test(provider.credentialRef))
+  ) {
+    errors.push("profile.provider.credentialRef must be null or env:VAR_NAME");
+  }
   const outputs = request.outputs;
   if (typeof outputs !== "object" || outputs === null) errors.push("outputs is required");
   else if (!isAbsolute(outputs.artifactDir)) {

@@ -57,12 +57,10 @@ export function validateRequest(request) {
       errors.push("workspace.root must be an absolute path");
     if (!["read", "write"].includes(workspace.scope))
       errors.push('workspace.scope must be "read" or "write"');
-    if (workspace.revision !== null && !isNonEmptyString(workspace.revision))
+    if (workspace.revision != null && !isNonEmptyString(workspace.revision))
       errors.push("workspace.revision must be a string or null");
-    if (
-      !Array.isArray(workspace.allowedWritePaths) ||
-      workspace.allowedWritePaths.some((p) => !isAbsoluteOrBarePath(p))
-    )
+    const allowedWritePaths = workspace.allowedWritePaths ?? [];
+    if (!Array.isArray(allowedWritePaths) || allowedWritePaths.some((p) => !isAbsoluteOrBarePath(p)))
       errors.push("workspace.allowedWritePaths must be absolute paths");
   }
 
@@ -75,7 +73,7 @@ export function validateRequest(request) {
     if (hasPrompt === hasPromptFile) {
       errors.push("task must set exactly one of prompt or promptFile");
     }
-    if (task.promptFile !== null && !isAbsoluteOrBarePath(task.promptFile))
+    if (task.promptFile != null && !isAbsoluteOrBarePath(task.promptFile))
       errors.push("task.promptFile must be an absolute path");
     if (!isNonEmptyString(task.taskVersion))
       errors.push("task.taskVersion must be a non-empty string");
@@ -99,7 +97,7 @@ export function validateRequest(request) {
       }
     }
     const mcp = condition.mcp;
-    if (mcp !== null) {
+    if (mcp != null) {
       if (typeof mcp !== "object") errors.push("condition.mcp must be null or an object");
       else {
         if (!isNonEmptyString(mcp.serverName))
@@ -111,7 +109,7 @@ export function validateRequest(request) {
       }
     }
     const overlay = condition.guidanceOverlay;
-    if (overlay !== null && (typeof overlay !== "object" || typeof overlay.enabled !== "boolean")) {
+    if (overlay != null && (typeof overlay !== "object" || typeof overlay.enabled !== "boolean")) {
       errors.push("condition.guidanceOverlay must be null or { enabled, description? }");
     }
   }
@@ -126,23 +124,23 @@ export function validateRequest(request) {
       errors.push("profile.harness.name must be a non-empty string");
     }
     const provider = profile.provider;
-    if (provider !== null) {
+    if (provider != null) {
       if (typeof provider !== "object" || !isNonEmptyString(provider.id)) {
         errors.push("profile.provider must be null or { id, credentialRef? }");
       } else if (
-        provider.credentialRef !== null &&
+        provider.credentialRef != null &&
         !/^env:[A-Za-z_][A-Za-z0-9_]*$/.test(provider.credentialRef)
       ) {
         errors.push("profile.provider.credentialRef must be null or env:VAR_NAME");
       }
     }
     const model = profile.model;
-    if (model !== null && (typeof model !== "object" || !isNonEmptyString(model.id))) {
+    if (model != null && (typeof model !== "object" || !isNonEmptyString(model.id))) {
       errors.push("profile.model must be null or { id, revision? }");
     }
     const reasoning = profile.reasoning;
     if (
-      reasoning !== null &&
+      reasoning != null &&
       (typeof reasoning !== "object" ||
         !["none", "low", "medium", "high", "xhigh"].includes(reasoning.level))
     ) {
@@ -150,7 +148,7 @@ export function validateRequest(request) {
     }
     const compaction = profile.compaction;
     if (
-      compaction !== null &&
+      compaction != null &&
       (typeof compaction !== "object" ||
         !["agentic", "basic", "off"].includes(compaction.mode))
     ) {
@@ -158,9 +156,9 @@ export function validateRequest(request) {
     }
   }
 
-  const limits = request.limits;
+  const limits = request.limits ?? {};
   if (typeof limits !== "object" || limits === null) {
-    errors.push("limits is required");
+    errors.push("limits must be an object");
   } else {
     if (!isOptionalNonNegative(limits.wallClockMs, "int-1"))
       errors.push("limits.wallClockMs must be null or an integer >= 1");
@@ -185,7 +183,7 @@ export function validateRequest(request) {
     if (!isAbsoluteOrBarePath(outputs.artifactDir))
       errors.push("outputs.artifactDir must be an absolute path");
     for (const field of ["eventsFile", "resultFile"]) {
-      if (outputs[field] !== null && !isAbsoluteOrBarePath(outputs[field]))
+      if (outputs[field] != null && !isAbsoluteOrBarePath(outputs[field]))
         errors.push(`outputs.${field} must be an absolute path or null`);
     }
   }
@@ -244,7 +242,7 @@ export function validateFinalEvent(event) {
   if (typeof event.status !== "string" || !FINAL_STATUSES.includes(event.status)) {
     errors.push(`final.status must be one of: ${FINAL_STATUSES.join(", ")}`);
   }
-  if (event.reason !== null && !isNonEmptyString(event.reason)) {
+  if (event.reason != null && !isNonEmptyString(event.reason)) {
     errors.push("final.reason must be a string or null");
   }
   return errors;

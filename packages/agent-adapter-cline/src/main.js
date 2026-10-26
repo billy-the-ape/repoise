@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { ADAPTER_VERSION, helloEvent } from "./capabilities.js";
 import { validateRequest } from "./request.js";
 import {
@@ -204,7 +205,11 @@ export async function main() {
       provider: request.profile.provider
         ? {
             id: request.profile.provider.id,
-            credentialRef: request.profile.provider.credentialRef ?? null,
+            credentialRef:
+              typeof request.profile.provider.credentialRef === "string" &&
+              /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(request.profile.provider.credentialRef)
+                ? request.profile.provider.credentialRef
+                : null,
             credentialPresent: invocation.credential !== null,
           }
         : null,
@@ -247,6 +252,11 @@ export async function main() {
       cwd: request.workspace.root,
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+    });
+    // Async stdin write failures (EPIPE / destroyed stream after a failed
+    // spawn) surface as "error" events, not synchronous throws.
+    child.stdin.on("error", (error) => {
+      emitFinal("adapter_error", `stdin_write_failed: ${error.message}`);
     });
     child.stdin.write(invocation.prompt);
     child.stdin.end();
@@ -508,9 +518,13 @@ export async function main() {
     if (!finalEmitted && runResult) finishFromRunResult();
   };
 
+  // StringDecoder instances keep multibyte UTF-8 characters that span
+  // chunk boundaries intact.
+  const stdoutDecoder = new StringDecoder("utf8");
+  const stderrDecoder = new StringDecoder("utf8");
   let stdoutBuffer = "";
   child.stdout.on("data", (chunk) => {
-    stdoutBuffer += chunk.toString("utf8");
+    stdoutBuffer += stdoutDecoder.write(chunk);
     let index;
     while ((index = stdoutBuffer.indexOf("\n")) !== -1) {
       const line = stdoutBuffer.slice(0, index);
@@ -519,7 +533,7 @@ export async function main() {
     }
   });
   child.stderr.on("data", (chunk) => {
-    const text = chunk.toString("utf8");
+    const text = stderrDecoder.write(chunk);
     stderrTail = (stderrTail + text).slice(-4096);
     for (const line of text.split("\n")) {
       if (line.trim() === "") continue;

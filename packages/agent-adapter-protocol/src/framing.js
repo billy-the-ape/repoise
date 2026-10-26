@@ -2,14 +2,19 @@
 // explicit error instead of being silently dropped: an overlong line aborts
 // the stream, and a partial line at EOF is a truncation, not a drop.
 
+import { StringDecoder } from "node:string_decoder";
+
 /** Async generator over complete lines of a stream. Each yield is
  * `{ line, error }` where error is null, `"line_oversized"` or
  * `"truncated"`. The generator returns after a truncation or after the
  * stream ends. */
 export async function* readNdjsonLines(stream, maxLineBytes) {
+  // A StringDecoder keeps multibyte UTF-8 characters that span chunk
+  // boundaries intact.
+  const decoder = new StringDecoder("utf8");
   let buffer = "";
   for await (const chunk of stream) {
-    buffer += Buffer.from(chunk).toString("utf8");
+    buffer += decoder.write(chunk);
     let index;
     while ((index = buffer.indexOf("\n")) !== -1) {
       const line = buffer.slice(0, index);
@@ -27,6 +32,7 @@ export async function* readNdjsonLines(stream, maxLineBytes) {
       return;
     }
   }
+  buffer += decoder.end();
   if (buffer.length > 0) {
     yield {
       line: buffer,

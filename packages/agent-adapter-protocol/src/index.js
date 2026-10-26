@@ -88,9 +88,10 @@ export async function runAdapter(request, options = {}) {
     });
   }
 
-  const maxEventBytes = request.limits.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
-  const maxEvents = request.limits.maxEvents ?? DEFAULT_MAX_EVENTS;
-  const wallClockMs = request.limits.wallClockMs ?? null;
+  const limits = request.limits ?? {};
+  const maxEventBytes = limits.maxEventBytes ?? DEFAULT_MAX_EVENT_BYTES;
+  const maxEvents = limits.maxEvents ?? DEFAULT_MAX_EVENTS;
+  const wallClockMs = limits.wallClockMs ?? null;
   const eventsFile = request.outputs.eventsFile;
 
   try {
@@ -140,8 +141,17 @@ export async function runAdapter(request, options = {}) {
   }
 
   child.on("error", (error) => {
-    spawnError = error;
+    spawnError = spawnError ?? error;
   });
+
+  // Async stdin write failures (EPIPE / destroyed stream after a failed
+  // spawn) surface as "error" events, not synchronous throws.
+  child.stdin.on("error", (error) => {
+    spawnError = spawnError ?? error;
+  });
+  // Drain stderr so a chatty adapter cannot block on a full pipe buffer;
+  // diagnostics are not part of the protocol.
+  child.stderr.on("data", () => {});
 
   // The versioned JSON request travels on stdin, then stdin closes.
   try {
@@ -330,33 +340,23 @@ export async function runAdapter(request, options = {}) {
     events.push(event);
     writeEventFile(event);
     options.onEvent?.(event);
-
-    if (finalEvent) {
-      // The protocol is complete; allow a short window for the adapter to
-      // exit on its own, then escalate. A final received during an in-flight
-      // host cancellation still takes precedence over the host status.
-      const settled = await Promise.race([
-        exited.then(() => "exit"),
-        delay(2000).then(() => "wait"),
-      ]);
-      if (settled !== "exit") {
-        if (escalationTimer) clearTimeout(escalationTimer);
-        await killTree(child.pid, "SIGKILL");
-        child.stdout.destroy();
-        await exited;
-      }
-      stop = true;
-    }
   };
 
   while (!done && !stop) {
-    const winner = await Promise.race([
+    const race = [
       nextLine().then((result) => ({
         kind: result.done ? "exit" : "line",
         value: result.value,
       })),
       exited.then(() => ({ kind: "exit", value: null })),
-    ]);
+    ];
+    if (finalEvent) {
+      // The protocol is complete; allow a short window for the adapter to
+      // exit on its own, then escalate. Reading continues in the meantime so
+      // events emitted after the final are still detected and rejected.
+      race.push(delay(2000).then(() => ({ kind: "grace", value: null })));
+    }
+    const winner = await Promise.race(race);
     if (winner.kind === "line") pendingLine = null;
     if (winner.kind === "exit") {
       // The child exited; drain lines still buffered by the stream before
@@ -370,6 +370,14 @@ export async function runAdapter(request, options = {}) {
       }
       break;
     }
+    if (winner.kind === "grace") {
+      // Final received but the adapter did not exit within the grace window.
+      if (escalationTimer) clearTimeout(escalationTimer);
+      await killTree(child.pid, "SIGKILL");
+      child.stdout.destroy();
+      stop = true;
+      break;
+    }
     await handleLine(winner.value);
   }
 
@@ -379,10 +387,13 @@ export async function runAdapter(request, options = {}) {
   abortSignal?.removeEventListener("abort", onAbort);
   await exited;
 
-  if (finalEvent) {
+  if (finalEvent) ledger?.recordFinal(finalEvent.usage);
+  // A final received during an in-flight host cancellation still takes
+  // precedence over the host status, but a protocol violation (e.g. events
+  // after the final) is never downgraded.
+  if (finalEvent && status !== "protocol_error") {
     status = finalEvent.status;
     reason = finalEvent.reason ?? null;
-    ledger?.recordFinal(finalEvent.usage);
   } else if (status === null) {
     status = "adapter_error";
     reason = spawnError

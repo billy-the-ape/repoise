@@ -215,3 +215,39 @@ test("leaked grandchild is killed with the owned tree", async () => {
     "leaked grandchild kept writing after the owned tree was killed",
   );
 });
+
+test("event after the final is a protocol error", async () => {
+  const { result } = await runFixture("fake-trailing.mjs");
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "events_after_final");
+});
+
+test("unresolvable executable is adapter_error, not a host crash", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-spawn-"));
+  const request = makeRequest(root);
+  const result = await runAdapter(request, {
+    executable: "/nonexistent/ap03-adapter",
+    args: [],
+  });
+  assert.equal(result.status, "adapter_error");
+  assert.ok(result.reason.startsWith("spawn_failed"));
+});
+
+test("schema-minimal request (absent optional fields) is accepted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-minimal-"));
+  const request = {
+    protocolVersion: 1,
+    identity: { experimentId: "e", trialId: "t", taskId: "k", replication: 0 },
+    workspace: { root: "/tmp/ap03-workspace", scope: "read" },
+    task: { prompt: "Say hello", taskVersion: "1", taskHash: "sha256:x" },
+    condition: { retrievalMode: "baseline", requiredCapabilities: [] },
+    profile: { harness: { name: "fake" } },
+    outputs: { artifactDir: join(root, "artifacts") },
+  };
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-ok.mjs")],
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.reason, null);
+});

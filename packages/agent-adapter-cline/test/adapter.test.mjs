@@ -221,6 +221,19 @@ test("required capability the CLI cannot provide fails preflight", async () => {
   assert.equal(result.reason, "missing_required_capability");
 });
 
+test("a non-env credentialRef is rejected before any effective-config", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: {
+      profile: { provider: { id: "stub-provider", credentialRef: "sk-raw-key-123" } },
+    },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "invalid_request");
+});
+
 test("missing explicit executable maps to adapter_error cline_not_found", async () => {
   const { root, workspace, artifacts } = makeRoot();
   const request = makeRequest({ workspace, artifacts });

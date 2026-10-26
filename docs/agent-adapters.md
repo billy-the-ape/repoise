@@ -25,6 +25,9 @@ artifact dir. Host-side enforcement includes the hello timeout, per-line
 byte and event-count limits, strict envelope validation, usage semantics
 (cumulative max vs delta sum), wall-clock escalation (SIGINT → SIGKILL) and
 process-group kills, so a leaked grandchild can never outlive the trial.
+After the `final` event the host keeps reading (UTF-8 safe across chunk
+boundaries) until the adapter exits or a short grace window escalates, so
+trailing events are detected and rejected.
 
 ## Contract invariants (enforced, not documented aspirations)
 
@@ -40,7 +43,7 @@ process-group kills, so a leaked grandchild can never outlive the trial.
   cacheWriteTokens, costUsd}`; unavailable fields are `null`, and
   `inputTokens`/`outputTokens` must be present (cost is optional).
 - `final.status` is one of `completed`, `cancelled`, `agent_error`,
-  `adapter_error`, `budget_stop`, `timeout`.
+  `adapter_error`, `budget_stop`, `timeout`, `protocol_error`.
 
 ## Cline adapter
 
@@ -95,11 +98,13 @@ node --test packages/agent-adapter-cline/test/adapter.test.mjs
 
 The conformance suite runs fake fixture adapters through the real host and
 covers the happy path, handshake rejections, usage semantics, framing
-violations, budgetless stalls, failed children, host cancellation and
-grandchild-kill verification. The adapter suite drives the real Cline
+violations, budgetless stalls, failed children, host cancellation,
+grandchild-kill verification, events after the final, spawn failure, and
+schema-minimal requests. The adapter suite drives the real Cline
 adapter through the real host with a stub Cline CLI, asserting the exact
 argv/env the harness observed, per-trial MCP settings, effective-config
-redaction, and status mapping for cancellation and failure.
+redaction, status mapping for cancellation and failure, and rejection of
+non-`env:` credential references.
 
 ## Status and boundaries
 
