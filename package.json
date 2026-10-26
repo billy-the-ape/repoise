@@ -5,8 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@12.3.4",
   "scripts": {
-    "format": "prettier --write \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"scripts/ci/*.mjs\" \"scripts/ci/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \"turbo.json\" \"pnpm-workspace.yaml\" \".github/workflows/*.yml\"",
-    "format:check": "prettier --check \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"scripts/ci/*.mjs\" \"scripts/ci/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"package*.json\" \"turbo.json\" \"pnpm-workspace.yaml\" \".github/workflows/*.yml\"",
+    "format": "prettier --write \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"scripts/ci/*.mjs\" \"scripts/ci/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"packages/**/*.js\" \"packages/**/*.mjs\" \"packages/*/package.json\" \"package*.json\" \"turbo.json\" \"pnpm-workspace.yaml\" \".github/workflows/*.yml\"",
+    "format:check": "prettier --check \"scripts/release/*.mjs\" \"scripts/eval/*.mjs\" \"scripts/eval/*.json\" \"scripts/ci/*.mjs\" \"scripts/ci/*.json\" \"npm/repoise/**/*.cjs\" \"npm/repoise/package.json\" \"packages/**/*.js\" \"packages/**/*.mjs\" \"packages/*/package.json\" \"package*.json\" \"turbo.json\" \"pnpm-workspace.yaml\" \".github/workflows/*.yml\"",
     "test": "node --test scripts/release/*.test.mjs scripts/eval/*.test.mjs scripts/ci/*.test.mjs",
     "check:native": "bash scripts/check.sh",
     "check:native:windows": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1",

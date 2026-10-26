@@ -1,7 +1,56 @@
 # AP-03: consumer-owned agent runner protocol
 
-Status: proposed. Depends on [AP-01](01-workspace-and-ci.md) and
+Status: implemented (2026-10-26). Depends on [AP-01](01-workspace-and-ci.md) and
 [AP-02](02-cli-contracts.md). Agree the trial schema with AP-04/AP-05 first.
+
+## Implementation status
+
+Shipped as protocol v1 in `packages/agent-adapter-protocol/` (host plus the
+checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
+`packages/agent-adapter-cline/`, with 23 protocol conformance tests and 13
+adapter tests (stub-CLI driven through the real host). Implemented decisions
+and deviations from the proposals below are documented in
+[docs/agent-adapters.md](../../agent-adapters.md):
+
+- The adapter executable override is `CLINE_EXECUTABLE` (not the proposed
+  `REPOISE_BENCH_RUNNER`, which remains a runner-level proposal for AP-04).
+- Credentials are accepted as `env:` references only and travel to the CLI
+  through its documented per-run key flag; they never enter the request,
+  the effective-config artifact or events.
+- The Cline hello declares `tool_telemetry` and `read_only_restriction`
+  false; `read_only_restriction` therefore fails preflight when required,
+  and `maxToolCalls` produces a warning instead of a silent approximation.
+- Completion is keyed solely on the Cline `run_result`; a CLI failure
+  without `run_result` is `adapter_error/no_run_result`.
+- Cancellation is cooperative and cross-platform: the host keeps the
+  request stdin open and sends a `cancel` control line on cancellation
+  (the only graceful channel on Windows, where signals cannot reach
+  console-less Node processes; POSIX adapters additionally receive a group
+  SIGINT), escalating to a forced kill after the grace window. The Cline
+  child runs in its own process group on POSIX so the child's `aborted`
+  result cannot race the adapter's own signal handler, and the adapter's
+  SIGINT/SIGTERM handlers are registered before the request is read. The
+  adapter additionally owns its child group: it sweeps it (SIGKILL) on
+  every final, on exit, and when its own stdout closes (host death), its
+  3s stop escalation is shorter than the host's default 5s grace, one
+  stdin line consumer feeds both the request and the control lines (a
+  `cancel` in the same chunk as the request is never discarded), and a
+  stop that lands before the spawn suppresses the spawn. The adapter also
+  records the child's root pid in `child-pid.txt` under the artifact dir,
+  and the host sweeps that recorded pid after every path - the backstop
+  that covers protocol-violation kills, which SIGKILL the adapter before
+  any of its own cleanup can run; the host clears a stale file at run
+  start and only sweeps pids above 1 that are neither the host nor its
+  parent.
+- The checked-in schemas were corrected to match the implemented contract
+  (request description: stdin stays open for `cancel` control lines;
+  hello usage-semantics object scoped to `t: hello`; final usage carries
+  the normalized totals shape with an optional `estimated` flag;
+  `profile.sampling` accepts null), and both test suites validate their
+  own requests and event streams against the schemas with ajv so
+  schema/validator drift fails CI.
+- The conformance suite includes the fake adapters, framing and
+  grandchild-kill tests; no live Cline run has been executed.
 
 ## Outcome and boundaries
 

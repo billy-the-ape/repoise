@@ -1,10 +1,11 @@
 # Agent platform and evaluation roadmap
 
-Status: proposed implementation program. AP-01 (workspace and CI foundation)
-and AP-02 (CLI automation contracts) are implemented; the remaining cards
-below remain proposed. Recorded October 19, 2026 (America/Denver); AP-01
-implementation recorded October 20, 2026; AP-02 implementation recorded
-October 26, 2026.
+Status: proposed implementation program. AP-01 (workspace and CI foundation),
+AP-02 (CLI automation contracts) and AP-03 (agent adapter protocol with the
+first Cline adapter) are implemented; the remaining cards below remain
+proposed. Recorded October 19, 2026 (America/Denver); AP-01 implementation
+recorded October 20, 2026; AP-02 implementation recorded October 26, 2026;
+AP-03 implementation recorded October 26, 2026.
 
 ## Purpose
 
@@ -48,7 +49,7 @@ reviewable scope, retaining the same interfaces and acceptance requirements.
 | ----- | ----------------------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------- |
 | AP-01 | [Workspace and CI](01-workspace-and-ci.md)                  | This plan                               | Incremental Cargo + pnpm/Turbo workspace, affected checks, packaging preservation | Implemented (2026-10-20, [#36](https://github.com/billy-the-ape/repoise/pull/36))        |
 | AP-02 | [CLI automation contracts](02-cli-contracts.md)             | AP-01                                   | Versioned events, capabilities, progress and cancellation for automation/UI       | Implemented (2026-10-26, [#37](https://github.com/billy-the-ape/repoise/pull/37))                       |
-| AP-03 | [Agent adapter protocol](03-agent-adapters.md)              | AP-01, AP-02                            | External runner protocol, conformance fixtures and first Cline adapter            | Proposed                       |
+| AP-03 | [Agent adapter protocol](03-agent-adapters.md)              | AP-01, AP-02                            | External runner protocol, conformance fixtures and first Cline adapter            | Implemented (2026-10-26, [#38](https://github.com/billy-the-ape/repoise/pull/38))                          |
 | AP-04 | [Benchmark execution](04-benchmark-runner.md)               | AP-02, AP-03                            | Isolated trials and verified retrieval conditions with budgets/artifacts          | Proposed                       |
 | AP-05 | [Suites, metrics and reports](05-suites-metrics-reports.md) | AP-04; define schema with AP-03         | Independent grading, per-trial records and comparable reports                     | Proposed                       |
 | AP-06 | [Pilot and expansion](06-pilot-and-expansion.md)            | AP-04, AP-05                            | ai-gateway pilot, then broader repository/model/harness experiments               | Proposed                       |

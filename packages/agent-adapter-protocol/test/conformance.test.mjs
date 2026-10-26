@@ -1,0 +1,420 @@
+// Protocol v1 conformance suite: synthetic fake-adapter fixtures driven
+// through the coordinator host. No live inference; every scenario is
+// deterministic and covered by a checked-in fixture.
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  mkdtempSync,
+  statSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import Ajv from "ajv";
+import { runAdapter } from "../src/index.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const fixtures = join(here, "fixtures");
+const schemasDir = join(here, "..", "..", "..", "schemas");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function makeRequest(root, overrides = {}) {
+  const base = {
+    protocolVersion: 1,
+    identity: {
+      experimentId: "exp-1",
+      trialId: "trial-1",
+      taskId: "task-1",
+      replication: 0,
+    },
+    workspace: {
+      root: "/tmp/ap03-workspace",
+      revision: null,
+      scope: "read",
+      allowedWritePaths: [],
+    },
+    task: {
+      prompt: "Say hello",
+      promptFile: null,
+      taskVersion: "1",
+      taskHash: "sha256:test",
+    },
+    condition: {
+      retrievalMode: "baseline",
+      requiredCapabilities: [],
+      mcp: null,
+      guidanceOverlay: null,
+    },
+    profile: {
+      harness: { name: "fake", revision: null },
+      provider: null,
+      model: null,
+      reasoning: null,
+      compaction: null,
+      sampling: null,
+    },
+    limits: {},
+    outputs: {
+      artifactDir: join(root, "artifacts"),
+      eventsFile: join(root, "events.ndjson"),
+      resultFile: join(root, "result.json"),
+    },
+  };
+  const merged = { ...base, ...overrides };
+  merged.limits = { ...base.limits, ...(overrides.limits ?? {}) };
+  merged.condition = { ...base.condition, ...(overrides.condition ?? {}) };
+  return merged;
+}
+
+async function runFixture(name, { requestOverrides, runOptions } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "ap03-protocol-"));
+  const request = makeRequest(root, requestOverrides);
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, name)],
+    ...(runOptions ?? {}),
+  });
+  return { root, request, result };
+}
+
+test("successful run: handshake, events, usage, outputs", async () => {
+  const { root, result } = await runFixture("fake-ok.mjs");
+  assert.equal(result.status, "completed");
+  assert.equal(result.reason, null);
+  assert.equal(result.adapter.name, "fake");
+  assert.equal(result.adapter.version, "1.0.0");
+  assert.equal(result.harness.revisionSource, "pinned");
+  assert.equal(result.events[0].t, "hello");
+  assert.equal(result.events.at(-1).t, "final");
+  assert.equal(result.exitCode, 0);
+  assert.ok(result.elapsedMs >= 0);
+  assert.equal(result.adapterDurationMs, 120);
+  // Delta events sum to the final total; the total is authoritative.
+  assert.deepEqual(
+    {
+      input: result.usage.inputTokens,
+      output: result.usage.outputTokens,
+      cost: result.usage.costUsd,
+    },
+    { input: 15, output: 25, cost: 0.015 },
+  );
+  assert.equal(result.usage.estimated, false);
+  assert.deepEqual(result.unknownEventTypes, []);
+  assert.equal(result.errors.length, 0);
+  const eventsFile = readFileSync(join(root, "events.ndjson"), "utf8");
+  assert.equal(eventsFile.trim().split("\n").length, result.events.length);
+  const resultFile = JSON.parse(
+    readFileSync(join(root, "result.json"), "utf8"),
+  );
+  assert.equal(resultFile.status, "completed");
+});
+
+test("incompatible protocol version fails preflight", async () => {
+  const { result } = await runFixture("fake-bad-version.mjs");
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "unsupported_protocol_version");
+  assert.equal(
+    result.events.length,
+    0,
+    "a rejected hello is not an accepted event",
+  );
+  assert.equal(result.hello, null);
+});
+
+test("missing required capability fails preflight, never approximated", async () => {
+  const { result } = await runFixture("fake-missing-telemetry.mjs", {
+    requestOverrides: {
+      condition: { requiredCapabilities: ["tool_telemetry"] },
+    },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "missing_required_capability");
+  assert.ok(result.errors.join(" ").includes("tool_telemetry"));
+});
+
+test("cumulative usage takes max, never sums snapshots and final", async () => {
+  const { result } = await runFixture("fake-cumulative.mjs");
+  assert.equal(result.status, "completed");
+  assert.equal(result.usage.inputTokens, 30);
+  assert.equal(result.usage.costUsd, 0.03);
+  assert.equal(result.usage.outputTokens, null);
+});
+
+test("delta usage sums deltas and does not add the final total twice", async () => {
+  const { result } = await runFixture("fake-delta.mjs");
+  assert.equal(result.status, "completed");
+  assert.equal(result.usage.inputTokens, 30);
+});
+
+test("malformed JSON line is a protocol error", async () => {
+  const { result } = await runFixture("fake-malformed.mjs");
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "malformed_event");
+});
+
+test("truncated trailing line is a protocol error", async () => {
+  const { result } = await runFixture("fake-truncated.mjs");
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "truncated_event");
+});
+
+test("oversized event line is a protocol error", async () => {
+  const { result } = await runFixture("fake-oversized.mjs", {
+    requestOverrides: { limits: { maxEventBytes: 200 } },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "event_oversized");
+});
+
+test("stalled process hits the wall clock and is escalated to timeout", async () => {
+  const { result } = await runFixture("fake-stalled.mjs", {
+    requestOverrides: { limits: { wallClockMs: 1000 } },
+    runOptions: { cancelGraceMs: 200 },
+  });
+  assert.equal(result.status, "timeout");
+  assert.equal(result.reason, "wall_clock_exceeded");
+  assert.ok(result.elapsedMs >= 1000);
+});
+
+test("failed child without a final event is adapter_error", async () => {
+  const { result } = await runFixture("fake-failed-child.mjs");
+  assert.equal(result.status, "adapter_error");
+  assert.equal(result.reason, "nonzero_exit");
+  assert.equal(result.exitCode, 1);
+});
+
+test("host cancellation: cooperative adapter emits final cancelled", async () => {
+  const controller = new AbortController();
+  const pending = runFixture("fake-cancel.mjs", {
+    runOptions: { signal: controller.signal, cancelGraceMs: 3000 },
+  });
+  setTimeout(() => controller.abort(), 300);
+  const { result } = await pending;
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.events.at(-1).t, "final");
+  assert.equal(result.events.at(-1).status, "cancelled");
+});
+
+test("cooperative cancellation travels on the stdin cancel line without signals", async () => {
+  const controller = new AbortController();
+  const pending = runFixture("fake-cancel-line.mjs", {
+    runOptions: { signal: controller.signal, cancelGraceMs: 3000 },
+  });
+  setTimeout(() => controller.abort(), 300);
+  const { result } = await pending;
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.reason, "host_requested");
+  assert.equal(result.events.at(-1).t, "final");
+  assert.equal(result.events.at(-1).status, "cancelled");
+});
+
+test("leaked grandchild is killed with the owned tree", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-leak-"));
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const controller = new AbortController();
+  const request = makeRequest(root);
+  const pending = runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-leak.mjs")],
+    signal: controller.signal,
+    cancelGraceMs: 200,
+    env: { LEAK_HB_FILE: heartbeatFile },
+  });
+  setTimeout(() => controller.abort(), 400);
+  const result = await pending;
+  assert.equal(result.status, "cancelled");
+  assert.ok(existsSync(heartbeatFile));
+  const first = statSync(heartbeatFile).size;
+  assert.ok(first > 0, "heartbeat ran before the kill");
+  await sleep(600);
+  const second = statSync(heartbeatFile).size;
+  assert.equal(
+    second,
+    first,
+    "leaked grandchild kept writing after the owned tree was killed",
+  );
+});
+
+test("host sweeps the recorded child group after a protocol violation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-proto-leak-"));
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const request = makeRequest(root, { limits: { maxEventBytes: 1000 } });
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-protocol-leak.mjs")],
+    env: { PROTO_LEAK_HB_FILE: heartbeatFile },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "event_oversized");
+  const first = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  assert.ok(first > 0, "heartbeat ran before the protocol-violation kill");
+  await sleep(600);
+  const second = statSync(heartbeatFile).size;
+  assert.equal(
+    second,
+    first,
+    "recorded child group survived the protocol-violation kill",
+  );
+});
+
+test("stale child-pid.txt is cleared at run start and bogus pids are not swept", async () => {
+  // A reused artifact dir may hold a child-pid.txt from an earlier trial;
+  // the host drops it before the run so the sweep sees only this run's pid.
+  const root = mkdtempSync(join(tmpdir(), "ap03-badpid-"));
+  const request = makeRequest(root);
+  const artifacts = join(root, "artifacts");
+  mkdirSync(artifacts, { recursive: true });
+  writeFileSync(join(artifacts, "child-pid.txt"), "99999\n");
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-ok.mjs")],
+  });
+  assert.equal(result.status, "completed");
+  assert.ok(
+    !existsSync(join(artifacts, "child-pid.txt")),
+    "stale child-pid.txt must be cleared at run start",
+  );
+  // A recorded pid of 1 must never become process.kill(-1): the run
+  // completes and the test host survives to assert it.
+  const { result: bad } = await runFixture("fake-bad-pid.mjs");
+  assert.equal(bad.status, "completed");
+});
+
+test("checked-in schemas accept the protocol's own happy path", async () => {
+  const ajv = new Ajv({ validateSchema: false, strict: false });
+  const validateRequest = ajv.compile(
+    JSON.parse(
+      readFileSync(join(schemasDir, "adapter-request.v1.schema.json"), "utf8"),
+    ),
+  );
+  const validateEvent = ajv.compile(
+    JSON.parse(
+      readFileSync(join(schemasDir, "adapter-events.v1.schema.json"), "utf8"),
+    ),
+  );
+  const { request, result } = await runFixture("fake-ok.mjs");
+  assert.ok(
+    validateRequest(request),
+    `request: ${JSON.stringify(validateRequest.errors)}`,
+  );
+  for (const event of result.events) {
+    assert.ok(
+      validateEvent(event),
+      `${event.t}: ${JSON.stringify(validateEvent.errors)}`,
+    );
+  }
+});
+
+test("event after the final is a protocol error", async () => {
+  const { result } = await runFixture("fake-trailing.mjs");
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "events_after_final");
+});
+
+test("host timeout is not replaced by a cooperative cancelled final", async () => {
+  const { result } = await runFixture("fake-timeout-coop.mjs", {
+    requestOverrides: { limits: { wallClockMs: 1000 } },
+    runOptions: { cancelGraceMs: 200 },
+  });
+  assert.equal(result.status, "timeout");
+  assert.equal(result.reason, "wall_clock_exceeded");
+  assert.equal(result.events.at(-1).t, "final");
+  assert.equal(result.events.at(-1).status, "cancelled");
+});
+
+test("grandchild surviving a clean adapter exit is swept with the group", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-exit-leak-"));
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const request = makeRequest(root);
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-exit-leak.mjs")],
+    env: { LEAK_HB_FILE: heartbeatFile },
+  });
+  assert.equal(result.status, "completed");
+  // The group sweep runs before runAdapter resolves; give the grandchild a
+  // moment that would have produced more heartbeats, then verify stability.
+  await sleep(300);
+  const first = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  await sleep(500);
+  const second = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  assert.equal(
+    second,
+    first,
+    "grandchild kept writing after the adapter exited cleanly",
+  );
+});
+
+test("a blank first line does not disarm the hello timeout", async () => {
+  const { result } = await runFixture("fake-blank-first.mjs", {
+    runOptions: { helloTimeoutMs: 500 },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "no_hello");
+});
+
+test("a throwing onEvent callback is recorded and the group is still swept", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-onEvent-"));
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const request = makeRequest(root);
+  let calls = 0;
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-exit-leak.mjs")],
+    env: { LEAK_HB_FILE: heartbeatFile },
+    onEvent: () => {
+      calls += 1;
+      throw new Error("consumer callback exploded");
+    },
+  });
+  assert.ok(calls > 0, "onEvent was never invoked");
+  assert.equal(result.status, "completed");
+  assert.ok(
+    result.warnings.some((w) => w.code === "on_event_callback_failed"),
+    "throwing callback must be recorded as a warning",
+  );
+  // The finally-path sweep must still have killed the grandchild.
+  await sleep(300);
+  const first = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  await sleep(500);
+  const second = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  assert.equal(
+    second,
+    first,
+    "grandchild survived a throwing onEvent callback",
+  );
+});
+
+test("unresolvable executable is adapter_error, not a host crash", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-spawn-"));
+  const request = makeRequest(root);
+  const result = await runAdapter(request, {
+    executable: "/nonexistent/ap03-adapter",
+    args: [],
+  });
+  assert.equal(result.status, "adapter_error");
+  assert.ok(result.reason.startsWith("spawn_failed"));
+});
+
+test("schema-minimal request (absent optional fields) is accepted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-minimal-"));
+  const request = {
+    protocolVersion: 1,
+    identity: { experimentId: "e", trialId: "t", taskId: "k", replication: 0 },
+    workspace: { root: "/tmp/ap03-workspace", scope: "read" },
+    task: { prompt: "Say hello", taskVersion: "1", taskHash: "sha256:x" },
+    condition: { retrievalMode: "baseline", requiredCapabilities: [] },
+    profile: { harness: { name: "fake" } },
+    outputs: { artifactDir: join(root, "artifacts") },
+  };
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-ok.mjs")],
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.reason, null);
+});

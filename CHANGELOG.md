@@ -62,6 +62,65 @@ is an optional override); no migration or deployment actions. See
 `docs/plans/agent-platform/02-cli-contracts.md` for the implementation
 record.
 
+### Agent adapter protocol and first adapter (AP-03)
+
+A versioned external-agent adapter protocol landed as two pnpm workspace
+packages: `agent-adapter-protocol` (request/event JSON schemas under
+`schemas/`, and a protocol host that spawns the adapter in its own
+process group, enforces the hello handshake, budgets and protocol rules,
+and always returns exactly one result — a `final` event is present only
+when the adapter emitted a valid one) and `agent-adapter-cline` (the first
+adapter, driving the installed Cline headless CLI with per-trial isolated
+state, per-trial MCP settings, an immutable redacted effective-config
+artifact, and credential passing only through a spawn-time `-k` flag).
+The Cline adapter is not an npm package. Host enforcement includes the
+hello timeout, per-line byte and event-count limits, strict envelope
+validation, cumulative/delta usage semantics, wall-clock escalation
+(SIGINT → SIGKILL, and a cooperative `cancelled` final never replaces a
+host-initiated timeout), post-final reading (events after the final are
+rejected as `protocol_error`), a best-effort process-group sweep after
+every path (timers, abort listeners and the sweep are guaranteed by a
+`finally` block; a throwing `onEvent` callback is recorded as a warning
+instead of aborting the run), blank first lines never disarm the hello
+timeout, and credential scrubbing from all forwarded Cline output
+(redacted before any truncation, so a key straddling a truncation boundary
+cannot leak). The Cline adapter resolves executables into a launch spec:
+explicit `.js`/`.mjs`/`.cjs` paths run through `process.execPath` (Windows
+cannot execute shebang scripts), with bare `cline` documented as requiring
+an explicit script path or native executable on Windows. Cancellation is
+cooperative and cross-platform: the host keeps the request stdin open and
+sends a `cancel` control line on cancellation (the only graceful channel on
+Windows, where signals cannot reach console-less Node processes; POSIX
+adapters additionally receive a group SIGINT), escalating to a forced kill
+after the grace window; the Cline child runs in its own process group on
+POSIX so the child's `aborted` result can no longer race the adapter's own
+handler, and the adapter sweeps that child group (SIGKILL) on every final,
+on exit, and when its own stdout closes (host death) with a 3s stop
+escalation shorter than the host's default 5s grace so a host forced-kill
+cannot orphan it; the adapter also records the child's root pid in
+`child-pid.txt` under the artifact dir, and the host sweeps that recorded
+pid after every path - the backstop that covers protocol-violation kills,
+which SIGKILL the adapter before any of its own cleanup can run; the
+host clears a stale `child-pid.txt` at run start and only sweeps pids
+above 1 that are neither the host nor its parent; a `cancel` control line in
+the same stdin chunk as the request is never discarded, and a stop that
+lands before the spawn suppresses the spawn. The
+checked-in schemas were corrected to match the implemented contract (the
+request description now says stdin stays open for `cancel` control lines;
+the hello usage-semantics object is scoped to `t: hello`; the final usage
+carries the normalized totals shape with an optional `estimated` flag;
+`profile.sampling` accepts null), and both suites now validate their own
+requests and event streams against the schemas with ajv so schema/validator
+drift fails CI. Coverage: 23
+protocol conformance tests and 13 adapter tests (stub-CLI driven through
+the real host), wired into CI through per-package `test` scripts run by
+`turbo run test` in the Check jobs. No environment variables
+are required for the protocol host itself; the Cline adapter honors
+`CLINE_EXECUTABLE` and the documented `CLONE_*` passthrough namespace. See
+[docs/agent-adapters.md](docs/agent-adapters.md) and
+`docs/plans/agent-platform/03-agent-adapters.md` for the implementation
+record.
+
 ### Cross-worktree cache reuse
 
 Linked worktrees of one local Git repository now share reusable parse

@@ -90,9 +90,10 @@ test("cli, launcher, release, eval and schema changes select the Check jobs", ()
   }
 });
 
-test("reserved adapter and extension homes select broad checks", () => {
+test("agent adapter packages and the reserved extension home select broad checks", () => {
   for (const path of [
     "packages/agent-adapter-cline/src/runner.ts",
+    "packages/agent-adapter-protocol/src/index.js",
     "apps/vscode/package.json",
   ]) {
     const result = classifyPaths([entry("A", path)], map);
