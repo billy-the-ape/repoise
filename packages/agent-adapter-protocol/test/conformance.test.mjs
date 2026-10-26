@@ -190,6 +190,19 @@ test("host cancellation: cooperative adapter emits final cancelled", async () =>
   assert.equal(result.events.at(-1).status, "cancelled");
 });
 
+test("cooperative cancellation travels on the stdin cancel line without signals", async () => {
+  const controller = new AbortController();
+  const pending = runFixture("fake-cancel-line.mjs", {
+    runOptions: { signal: controller.signal, cancelGraceMs: 3000 },
+  });
+  setTimeout(() => controller.abort(), 300);
+  const { result } = await pending;
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.reason, "host_requested");
+  assert.equal(result.events.at(-1).t, "final");
+  assert.equal(result.events.at(-1).status, "cancelled");
+});
+
 test("leaked grandchild is killed with the owned tree", async () => {
   const root = mkdtempSync(join(tmpdir(), "ap03-leak-"));
   const heartbeatFile = join(root, "heartbeat.txt");

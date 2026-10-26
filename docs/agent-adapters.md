@@ -16,17 +16,29 @@ are its implementations; a future runner (AP-04) is the consumer.
 
 The protocol host is the only component that owns the child process. It
 spawns the adapter in its own process group, writes exactly one JSON request
-to its stdin, enforces the hello handshake, budgets and protocol rules, and
-always returns exactly one result (`{status, reason, errors, warnings,
-unknownEventTypes, events, hello, adapter, harness, usage, elapsedMs,
-adapterDurationMs, exitCode, exitSignal}`); a `final` event is present only
-when the adapter emitted a valid one (preflight, spawn and missing-final
-failures report `finalEvent: null`). It writes the optional
-`eventsFile`/`resultFile` under the artifact dir. Host-side enforcement
-includes the hello timeout, per-line byte and event-count limits, strict
-envelope validation, usage semantics (cumulative max vs delta sum),
-wall-clock escalation (SIGINT → SIGKILL), and a best-effort process-group
-sweep after every path, so a leaked grandchild can never outlive the trial.
+as the first stdin line (stdin stays open afterwards), enforces the hello
+handshake, budgets and protocol rules, and always returns exactly one result
+(`{status, reason, errors, warnings, unknownEventTypes, events, hello,
+adapter, harness, usage, elapsedMs, adapterDurationMs, exitCode,
+exitSignal}`); a `final` event is present only when the adapter emitted a
+valid one (preflight, spawn and missing-final failures report
+`finalEvent: null`). It writes the optional `eventsFile`/`resultFile` under
+the artifact dir. Host-side enforcement includes the hello timeout,
+per-line byte and event-count limits, strict envelope validation, usage
+semantics (cumulative max vs delta sum), wall-clock escalation, and a
+best-effort process-group sweep after every path, so a leaked grandchild can
+never outlive the trial.
+
+**Cancellation is cooperative and cross-platform.** On cancellation (host
+request or wall clock) the host first sends a `cancel` control line on the
+adapter's stdin — the channel that works on every platform, because on
+Windows signals cannot be delivered to console-less Node processes
+(`taskkill` without `/F` only posts WM_CLOSE to windows). Adapters SHOULD
+honor the line with a cooperative `cancelled` final. On POSIX the owned
+process group additionally receives SIGINT, so adapters that never read
+stdin keep the documented graceful path. After the grace window the
+escalation is a forced kill (`SIGKILL` / `taskkill /F /T`).
+
 After the `final` event the host keeps reading (UTF-8 safe across chunk
 boundaries) until the adapter exits or a short grace window escalates, so
 trailing events are detected and rejected.
@@ -95,6 +107,15 @@ reference (2026-10-19); live behavior is not yet measured.
   scripts); a bare `cline` resolves through `PATH` at spawn time — on
   Windows the npm `.cmd` shim cannot be spawned without a shell, so use an
   explicit script path or a native executable there.
+- Cancellation is race-free: the Cline child runs in its own process group
+  on POSIX (detached spawn), so the host's group-level SIGINT reaches only
+  this adapter — the child's `aborted` result can no longer race the
+  adapter's own handler and be misreported as `agent_error`. The adapter
+  honors both the host's `cancel` control line and SIGINT/SIGTERM (handlers
+  registered before the request is read, so a cancel during the stdin read,
+  version probe or spawn still produces a final), and signals the child's
+  whole tree explicitly (`process.kill(-pid, ...)` on POSIX, reaching any
+  MCP servers the CLI spawned).
 - `CLONE_*`-prefixed environment variables are the documented
   adapter-specific passthrough namespace to the spawned CLI (used by the
   test stub); the rest of the environment is a minimal allowlist
@@ -113,10 +134,11 @@ Both packages also define a `test` script (`node --test test/*.test.mjs`), so
 alongside the root test task, and the Prettier globs cover `packages/**`.
 The conformance suite runs fake fixture adapters through the real host and
 covers the happy path, handshake rejections, usage semantics, framing
-violations, budgetless stalls, failed children, host cancellation,
-grandchild-kill verification on hangs, grandchild sweep after a clean
-adapter exit, host timeout not replaced by a cooperative cancelled final,
-events after the final, spawn failure, blank first lines, a throwing
+violations, budgetless stalls, failed children, host cancellation (including
+cooperative cancellation over the stdin `cancel` control line with no signal
+delivered), grandchild-kill verification on hangs, grandchild sweep after a
+clean adapter exit, host timeout not replaced by a cooperative cancelled
+final, events after the final, spawn failure, blank first lines, a throwing
 `onEvent` callback, and schema-minimal requests. The adapter suite drives the
 real Cline adapter through the real host with a stub Cline CLI, asserting
 the exact argv/env the harness observed, per-trial MCP settings,

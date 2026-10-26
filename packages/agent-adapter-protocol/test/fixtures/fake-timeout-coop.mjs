@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Cooperative adapter: on SIGINT it emits a cancelled final and exits.
-// Under a host wall clock the host's timeout must not be replaced by the
-// cooperative cancelled final.
-import { emit, hello, readRequest } from "./helpers.mjs";
+// Cooperative adapter: on the stdin `cancel` control line or SIGINT it emits
+// a cancelled final and exits. Under a host wall clock the host's timeout
+// must not be replaced by the cooperative cancelled final.
+import { emit, hello, readRequest, watchControlLines } from "./helpers.mjs";
 
 const request = await readRequest();
 hello();
@@ -13,7 +13,7 @@ emit({
   trialId: request?.identity?.trialId ?? "trial-1",
   workspace: request?.workspace ?? {},
 });
-process.on("SIGINT", () => {
+const cancel = () => {
   emit({
     v: 1,
     t: "final",
@@ -32,6 +32,10 @@ process.on("SIGINT", () => {
     exitCode: 0,
   });
   process.exit(0);
+};
+watchControlLines((line) => {
+  if (line === "cancel") cancel();
 });
+process.on("SIGINT", cancel);
 setInterval(() => {}, 1_000_000);
 await new Promise(() => {});

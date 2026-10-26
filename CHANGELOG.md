@@ -87,7 +87,14 @@ timeout, and credential scrubbing from all forwarded Cline output
 cannot leak). The Cline adapter resolves executables into a launch spec:
 explicit `.js`/`.mjs`/`.cjs` paths run through `process.execPath` (Windows
 cannot execute shebang scripts), with bare `cline` documented as requiring
-an explicit script path or native executable on Windows. Coverage: 19
+an explicit script path or native executable on Windows. Cancellation is
+cooperative and cross-platform: the host keeps the request stdin open and
+sends a `cancel` control line on cancellation (the only graceful channel on
+Windows, where signals cannot reach console-less Node processes; POSIX
+adapters additionally receive a group SIGINT), escalating to a forced kill
+after the grace window; the Cline child runs in its own process group on
+POSIX so the child's `aborted` result can no longer race the adapter's own
+handler. Coverage: 20
 protocol conformance tests and 10 adapter tests (stub-CLI driven through
 the real host), wired into CI through per-package `test` scripts run by
 `turbo run test` in the Check jobs. No environment variables

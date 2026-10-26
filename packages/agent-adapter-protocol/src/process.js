@@ -3,8 +3,11 @@
 //   paths with spaces never invokes a shell.
 // - POSIX: the adapter runs in its own process group (detached spawn) so the
 //   coordinator can kill the whole owned tree and clean only what it owns.
-// - Windows: `taskkill /T` kills the owned process tree; SIGINT maps to a
-//   graceful kill, everything else to a forced kill.
+// - Windows: signals cannot be delivered to console-less Node processes
+//   (`taskkill` without `/F` only posts WM_CLOSE to windows, of which there
+//   are none), so cooperative cancellation travels on the host's stdin
+//   `cancel` control line and the escalation is a forced `taskkill /F /T`
+//   of the owned tree.
 
 import { execFile, spawn } from "node:child_process";
 
@@ -20,15 +23,17 @@ export function spawnAdapterProcess({ executable, args = [], env, cwd }) {
 }
 
 /** Send a signal to the owned process tree. Resolves even if the process is
- * already gone. */
+ * already gone. On Windows SIGINT is a no-op by design: graceful
+ * cancellation must use the host's stdin `cancel` control line, and only
+ * forced signals (SIGKILL → `taskkill /F /T`) are implemented. */
 export function killTree(pid, signal) {
   return new Promise((resolve) => {
     if (pid === undefined || pid === null) return resolve();
     if (process.platform === "win32") {
-      const forced = signal !== "SIGINT";
+      if (signal === "SIGINT") return resolve(); // No graceful signal exists.
       execFile(
         "taskkill",
-        ["/PID", String(pid), "/T", ...(forced ? ["/F"] : [])],
+        ["/PID", String(pid), "/T", "/F"],
         { shell: false },
         () => resolve(),
       );

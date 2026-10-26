@@ -7,7 +7,7 @@ Status: implemented (2026-10-26). Depends on [AP-01](01-workspace-and-ci.md) and
 
 Shipped as protocol v1 in `packages/agent-adapter-protocol/` (host plus the
 checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
-`packages/agent-adapter-cline/`, with 19 protocol conformance tests and 10
+`packages/agent-adapter-cline/`, with 20 protocol conformance tests and 10
 adapter tests (stub-CLI driven through the real host). Implemented decisions
 and deviations from the proposals below are documented in
 [docs/agent-adapters.md](../../agent-adapters.md):
@@ -22,6 +22,14 @@ and deviations from the proposals below are documented in
   and `maxToolCalls` produces a warning instead of a silent approximation.
 - Completion is keyed solely on the Cline `run_result`; a CLI failure
   without `run_result` is `adapter_error/no_run_result`.
+- Cancellation is cooperative and cross-platform: the host keeps the
+  request stdin open and sends a `cancel` control line on cancellation
+  (the only graceful channel on Windows, where signals cannot reach
+  console-less Node processes; POSIX adapters additionally receive a group
+  SIGINT), escalating to a forced kill after the grace window. The Cline
+  child runs in its own process group on POSIX so the child's `aborted`
+  result cannot race the adapter's own signal handler, and the adapter's
+  SIGINT/SIGTERM handlers are registered before the request is read.
 - The conformance suite includes the fake adapters, framing and
   grandchild-kill tests; no live Cline run has been executed.
 

@@ -153,10 +153,12 @@ export async function runAdapter(request, options = {}) {
   // diagnostics are not part of the protocol.
   child.stderr.on("data", () => {});
 
-  // The versioned JSON request travels on stdin, then stdin closes.
+  // The versioned JSON request travels on stdin as the first line. stdin
+  // stays open: on cancellation the host sends a `cancel` control line
+  // (the cooperative channel — the only graceful one on Windows, where
+  // signals cannot reach console-less Node processes).
   try {
     child.stdin.write(`${JSON.stringify(request)}\n`);
-    child.stdin.end();
   } catch (error) {
     spawnError = spawnError ?? error;
   }
@@ -187,6 +189,18 @@ export async function runAdapter(request, options = {}) {
     cancelling = true;
     status = kind === "timeout" ? "timeout" : "cancelled";
     reason = kind === "timeout" ? "wall_clock_exceeded" : "host_requested";
+    // Cooperative channel on every platform: the request stdin stays open,
+    // so the host sends a `cancel` control line first. Adapters SHOULD
+    // honor it with a cooperative final. On POSIX the owned group still
+    // receives SIGINT, so adapters that never read stdin keep the
+    // documented graceful path; on Windows killTree(SIGINT) is a no-op by
+    // design and the control line is the only graceful path.
+    try {
+      child.stdin.write("cancel\n");
+    } catch {
+      // Stdin may already be gone (adapter exited); on POSIX the group
+      // signal still applies.
+    }
     await killTree(child.pid, "SIGINT");
     escalationTimer = setTimeout(() => {
       killTree(child.pid, "SIGKILL");
@@ -412,6 +426,11 @@ export async function runAdapter(request, options = {}) {
     // SIGINT) must not outlive the trial. killTree resolves when the group is
     // already gone.
     await killTree(child.pid, "SIGKILL");
+    try {
+      child.stdin.end(); // Close the request/control channel.
+    } catch {
+      // Already closed.
+    }
     await exited;
   }
 

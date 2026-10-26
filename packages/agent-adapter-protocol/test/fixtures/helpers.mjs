@@ -1,15 +1,38 @@
 // Shared helpers for the synthetic fake-adapter fixtures. Each fixture is a
-// standalone Node script: it drains the request on stdin, emits protocol
-// events on stdout and exercises exactly one scenario.
+// standalone Node script: it reads the request (the first stdin line), emits
+// protocol events on stdout and exercises exactly one scenario. The host
+// keeps stdin open after the request and may send control lines (e.g.
+// `cancel`) on cancellation.
 
 export function readRequest() {
   return new Promise((resolve) => {
-    let data = "";
+    let buffer = "";
+    const onData = (chunk) => {
+      buffer += chunk;
+      const index = buffer.indexOf("\n");
+      if (index === -1) return;
+      const line = buffer.slice(0, index);
+      process.stdin.removeListener("data", onData);
+      resolve(line === "" ? null : JSON.parse(line));
+    };
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () =>
-      resolve(data === "" ? null : JSON.parse(data)),
-    );
+    process.stdin.on("data", onData);
+  });
+}
+
+// Invokes `onLine` for every control line the host sends after the request
+// (e.g. `cancel`). Blank lines are ignored.
+export function watchControlLines(onLine) {
+  let buffer = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk;
+    let index;
+    while ((index = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (line !== "") onLine(line);
+    }
   });
 }
 

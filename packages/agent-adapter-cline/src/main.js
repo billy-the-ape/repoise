@@ -39,12 +39,23 @@ const num = (value) =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
-function readStdin() {
+// The request travels on stdin as the first line; the host keeps stdin
+// open afterwards and may send a `cancel` control line on cancellation
+// (the cooperative channel that also exists on Windows, where signals
+// cannot be delivered to console-less Node processes).
+function readRequestLine() {
   return new Promise((resolve) => {
-    let data = "";
+    let buffer = "";
+    const onData = (chunk) => {
+      buffer += chunk;
+      const index = buffer.indexOf("\n");
+      if (index === -1) return;
+      const line = buffer.slice(0, index);
+      process.stdin.removeListener("data", onData);
+      resolve(line);
+    };
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("data", onData);
   });
 }
 
@@ -68,13 +79,25 @@ export async function main() {
   let stopKind = null; // "timeout" | "cancelled" | "budget_stop"
   let iterations = 0;
   let escalationTimer = null;
+  let child = null;
   const usageTotals = Object.fromEntries(USAGE_FIELDS.map((f) => [f, null]));
   let stderrTail = "";
+
+  // Signal handlers are registered before anything else so a host
+  // cancellation during the stdin read, the version probe or the spawn
+  // still produces a final (Node's default SIGINT action would otherwise
+  // kill the adapter without one).
+  process.on("SIGINT", () =>
+    initiateStop("cancelled", "cancellation requested"),
+  );
+  process.on("SIGTERM", () =>
+    initiateStop("cancelled", "cancellation requested"),
+  );
 
   emit(helloEvent());
   let request = null;
   try {
-    request = JSON.parse(await readStdin());
+    request = JSON.parse(await readRequestLine());
   } catch {
     request = null;
   }
@@ -277,13 +300,16 @@ export async function main() {
     return value;
   };
 
-  let child;
   try {
     child = spawn(executable, [...prefixArgs, ...spawnArgv], {
       env: invocation.env,
       cwd: request.workspace.root,
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      // POSIX: give the cline child its own process group so the host's
+      // group-level SIGINT reaches only this adapter; the adapter's
+      // initiateStop alone controls the child's signalling.
+      ...(process.platform === "win32" ? {} : { detached: true }),
     });
     // Async stdin write failures (EPIPE / destroyed stream after a failed
     // spawn) surface as "error" events, not synchronous throws.
@@ -350,13 +376,27 @@ export async function main() {
     return null;
   };
 
-  const initiateStop = (kind, message) => {
+  function initiateStop(kind, message) {
     if (finalEmitted || stopKind) return;
     stopKind = kind;
     if (message) emit({ v: 1, t: "warning", ts: now(), code: kind, message });
-    child.kill("SIGINT");
+    if (!child) return;
+    // The cline child runs in its own process group on POSIX, so signal its
+    // whole tree explicitly (this also reaches any MCP servers it spawned).
+    const signalChild = (signal) => {
+      if (process.platform === "win32") {
+        child.kill(signal);
+        return;
+      }
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        child.kill(signal); // Group already gone; fall back to the child.
+      }
+    };
+    signalChild("SIGINT");
     escalationTimer = setTimeout(() => {
-      child.kill("SIGKILL");
+      signalChild("SIGKILL");
       // Last resort: always end with a final even if close never fires.
       setTimeout(
         () =>
@@ -367,7 +407,23 @@ export async function main() {
         2000,
       ).unref();
     }, 5000);
-  };
+  }
+
+  // Cooperative cancellation over the control channel: the host keeps the
+  // request stdin open and sends a `cancel` line when it wants the trial
+  // stopped. On Windows this is the only graceful channel; on POSIX it
+  // arrives together with (and possibly before) the group SIGINT.
+  let controlBuffer = "";
+  process.stdin.on("data", (chunk) => {
+    controlBuffer += chunk;
+    let index;
+    while ((index = controlBuffer.indexOf("\n")) !== -1) {
+      const line = controlBuffer.slice(0, index).trim();
+      controlBuffer = controlBuffer.slice(index + 1);
+      if (line === "cancel")
+        initiateStop("cancelled", "host requested cancellation");
+    }
+  });
 
   const finishFromRunResult = () => {
     if (finalEmitted) return;
@@ -639,10 +695,4 @@ export async function main() {
       request.limits.wallClockMs,
     ).unref();
   }
-  process.on("SIGINT", () =>
-    initiateStop("cancelled", "cancellation requested"),
-  );
-  process.on("SIGTERM", () =>
-    initiateStop("cancelled", "cancellation requested"),
-  );
 }
