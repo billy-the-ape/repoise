@@ -385,13 +385,23 @@ export async function runAdapter(request, options = {}) {
   if (wallTimer) clearTimeout(wallTimer);
   if (escalationTimer) clearTimeout(escalationTimer);
   abortSignal?.removeEventListener("abort", onAbort);
+  // Best-effort sweep of the owned process group after every path, clean or
+  // not: a descendant that survives the adapter's own exit (or ignores
+  // SIGINT) must not outlive the trial. killTree resolves when the group is
+  // already gone.
+  await killTree(child.pid, "SIGKILL");
   await exited;
 
   if (finalEvent) ledger?.recordFinal(finalEvent.usage);
   // A final received during an in-flight host cancellation still takes
-  // precedence over the host status, but a protocol violation (e.g. events
-  // after the final) is never downgraded.
-  if (finalEvent && status !== "protocol_error") {
+  // precedence over the host status, except that a cooperative `cancelled`
+  // final never replaces a host-initiated timeout. A protocol violation
+  // (e.g. events after the final) is never downgraded.
+  if (
+    finalEvent &&
+    status !== "protocol_error" &&
+    !(status === "timeout" && finalEvent.status === "cancelled")
+  ) {
     status = finalEvent.status;
     reason = finalEvent.reason ?? null;
   } else if (status === null) {

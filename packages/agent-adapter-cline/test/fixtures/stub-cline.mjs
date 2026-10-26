@@ -41,6 +41,14 @@ writeFileSync(
   ),
 );
 
+if (process.env.CLONE_ECHO_KEY === "1" && process.env.CLINE_TEST_KEY) {
+  // Credential-scrubbing test: echo the key on both stdout and stderr the
+  // way a real CLI would in an invalid-key error.
+  const key = process.env.CLINE_TEST_KEY;
+  process.stdout.write(`echoed secret ${key} on stdout\n`);
+  process.stderr.write(`${JSON.stringify({ type: "error", message: `invalid key ${key}` })}\n`);
+}
+
 if (mode === "fail") {
   process.stderr.write(`${JSON.stringify({ type: "error", message: "stub failure" })}\n`);
   process.exit(1);

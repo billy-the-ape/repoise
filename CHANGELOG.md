@@ -62,6 +62,32 @@ is an optional override); no migration or deployment actions. See
 `docs/plans/agent-platform/02-cli-contracts.md` for the implementation
 record.
 
+### Agent adapter protocol and first adapter (AP-03)
+
+A versioned external-agent adapter protocol landed as two pnpm workspace
+packages: `agent-adapter-protocol` (request/event JSON schemas under
+`schemas/`, and a protocol host that spawns the adapter in its own
+process group, enforces the hello handshake, budgets and protocol rules,
+and always returns exactly one result — a `final` event is present only
+when the adapter emitted a valid one) and `agent-adapter-cline` (the first
+adapter, driving the installed Cline headless CLI with per-trial isolated
+state, per-trial MCP settings, an immutable redacted effective-config
+artifact, and credential passing only through a spawn-time `-k` flag).
+The Cline adapter is not an npm package. Host enforcement includes the
+hello timeout, per-line byte and event-count limits, strict envelope
+validation, cumulative/delta usage semantics, wall-clock escalation
+(SIGINT → SIGKILL, and a cooperative `cancelled` final never replaces a
+host-initiated timeout), post-final reading (events after the final are
+rejected as `protocol_error`), a best-effort process-group sweep after
+every path, and credential scrubbing from all forwarded Cline output.
+Coverage: 17 protocol conformance tests and 8 adapter tests (stub-CLI
+driven through the real host). No environment variables are required for
+the protocol host itself; the Cline adapter honors `CLINE_EXECUTABLE`
+and the documented `CLONE_*` passthrough namespace. See
+[docs/agent-adapters.md](docs/agent-adapters.md) and
+`docs/plans/agent-platform/03-agent-adapters.md` for the implementation
+record.
+
 ### Cross-worktree cache reuse
 
 Linked worktrees of one local Git repository now share reusable parse

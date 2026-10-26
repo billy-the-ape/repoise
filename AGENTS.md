@@ -69,10 +69,12 @@ full suite).
 
 Follow-on planning for external agent adapters, real-agent benchmarks and the
 VS Code UI lives in the [agent platform roadmap](docs/plans/agent-platform/README.md);
-AP-01 (workspace/CI) and AP-02 (CLI automation contracts) are implemented.
+AP-01 (workspace/CI), AP-02 (CLI automation contracts) and AP-03 (the versioned
+agent adapter protocol, its host and conformance fixtures, and the first
+Cline adapter — see [agent adapters](docs/agent-adapters.md)) are implemented.
 Start there for implementation order, open questions and per-PR acceptance
-criteria. The remaining cards are proposed work; no benchmark command or
-editor extension ships from that plan.
+criteria. The remaining cards (AP-04 through AP-07) are proposed work; no
+benchmark command or editor extension ships from that plan.
 
 ## Read only the context relevant to the task
 

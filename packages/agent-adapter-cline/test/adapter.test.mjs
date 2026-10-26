@@ -79,6 +79,7 @@ async function runAdapterTrial({
   requestOverrides,
   stubMode = "ok",
   signal,
+  extraEnv,
 }) {
   const request = makeRequest({ workspace, artifacts, requestOverrides });
   const result = await runAdapter(request, {
@@ -89,6 +90,7 @@ async function runAdapterTrial({
       CLINE_EXECUTABLE: stub,
       CLONE_STUB_MODE: stubMode,
       STUB_API_KEY: "test-key-123",
+      ...(extraEnv ?? {}),
     },
   });
   return { request, result };
@@ -232,6 +234,23 @@ test("a non-env credentialRef is rejected before any effective-config", async ()
   });
   assert.equal(result.status, "protocol_error");
   assert.equal(result.reason, "invalid_request");
+});
+
+test("a credential echoed by the CLI is scrubbed from all events", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const secret = "sk-echoed-secret-xyz789";
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: {
+      profile: { provider: { id: "stub-provider", credentialRef: "env:CLINE_TEST_KEY" } },
+    },
+    extraEnv: { CLINE_TEST_KEY: secret, CLONE_ECHO_KEY: "1" },
+  });
+  assert.equal(result.status, "completed");
+  const serialized = JSON.stringify(result.events);
+  assert.ok(!serialized.includes(secret), "credential leaked into events");
+  assert.ok(serialized.includes("[REDACTED]"), "redaction marker missing");
 });
 
 test("missing explicit executable maps to adapter_error cline_not_found", async () => {

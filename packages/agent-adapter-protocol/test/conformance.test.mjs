@@ -222,6 +222,40 @@ test("event after the final is a protocol error", async () => {
   assert.equal(result.reason, "events_after_final");
 });
 
+test("host timeout is not replaced by a cooperative cancelled final", async () => {
+  const { result } = await runFixture("fake-timeout-coop.mjs", {
+    requestOverrides: { limits: { wallClockMs: 1000 } },
+    runOptions: { cancelGraceMs: 200 },
+  });
+  assert.equal(result.status, "timeout");
+  assert.equal(result.reason, "wall_clock_exceeded");
+  assert.equal(result.events.at(-1).t, "final");
+  assert.equal(result.events.at(-1).status, "cancelled");
+});
+
+test("grandchild surviving a clean adapter exit is swept with the group", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-exit-leak-"));
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const request = makeRequest(root);
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-exit-leak.mjs")],
+    env: { LEAK_HB_FILE: heartbeatFile },
+  });
+  assert.equal(result.status, "completed");
+  // The group sweep runs before runAdapter resolves; give the grandchild a
+  // moment that would have produced more heartbeats, then verify stability.
+  await sleep(300);
+  const first = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  await sleep(500);
+  const second = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  assert.equal(
+    second,
+    first,
+    "grandchild kept writing after the adapter exited cleanly",
+  );
+});
+
 test("unresolvable executable is adapter_error, not a host crash", async () => {
   const root = mkdtempSync(join(tmpdir(), "ap03-spawn-"));
   const request = makeRequest(root);

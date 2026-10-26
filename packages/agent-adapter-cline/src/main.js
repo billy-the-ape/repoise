@@ -4,8 +4,9 @@
 // prepare isolated trial state under the artifact dir -> spawn cline ->
 // map the CLI's NDJSON events to protocol events -> exactly one final ->
 // exit 0. The raw credential value is resolved from the adapter process
-// environment at spawn time and never appears in the request, the
-// effective-config artifact or any event.
+// environment at spawn time; it never appears in the request or the
+// effective-config artifact, and is scrubbed from all forwarded Cline
+// output before it can appear in an event.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -245,6 +246,30 @@ export async function main() {
     ? [...invocation.argv, "-k", process.env[invocation.credential.name]]
     : invocation.argv;
 
+  // Forwarded Cline output can echo the credential (e.g. an invalid-key
+  // error). Scrub the resolved value from everything forwarded into events.
+  const credentialValue =
+    invocation.credential &&
+    typeof process.env[invocation.credential.name] === "string" &&
+    process.env[invocation.credential.name].length > 0
+      ? process.env[invocation.credential.name]
+      : null;
+  const redact = (text) =>
+    typeof text === "string" && credentialValue !== null
+      ? text.split(credentialValue).join("[REDACTED]")
+      : text;
+  const redactValue = (value) => {
+    if (typeof value === "string") return redact(value);
+    if (value !== null && typeof value === "object") {
+      try {
+        return JSON.parse(redact(JSON.stringify(value)));
+      } catch {
+        return "[REDACTED]";
+      }
+    }
+    return value;
+  };
+
   let child;
   try {
     child = spawn(executable, spawnArgv, {
@@ -373,7 +398,7 @@ export async function main() {
       }
       case "usage": {
         const values = mapClineUsage(event);
-        emit({ v: 1, t: "usage", ts: now(), values, raw: event, source: "provider" });
+        emit({ v: 1, t: "usage", ts: now(), values, raw: redactValue(event), source: "provider" });
         foldUsage(values);
         break;
       }
@@ -384,9 +409,9 @@ export async function main() {
           t: "note",
           ts: now(),
           code: "agent_done",
-          message: `agent finished (${event.reason ?? "unknown"})`,
+          message: `agent finished (${redact(String(event.reason ?? "unknown"))})`,
           data: {
-            reason: event.reason ?? null,
+            reason: redactValue(event.reason ?? null),
             textLength: text.length,
             textSha256: text ? sha256(text) : null,
           },
@@ -399,7 +424,7 @@ export async function main() {
           t: "warning",
           ts: now(),
           code: "agent_error_event",
-          message: String(event.message ?? "agent error event"),
+          message: redact(String(event.message ?? "agent error event")),
         });
         break;
       }
@@ -409,7 +434,7 @@ export async function main() {
           t: "note",
           ts: now(),
           code: "cline_notice",
-          message: String(event.message ?? ""),
+          message: redact(String(event.message ?? "")),
         });
         break;
       }
@@ -447,7 +472,7 @@ export async function main() {
         t: "note",
         ts: now(),
         code: "cline_unparsed_line",
-        data: { prefix: line.slice(0, 200) },
+        data: { prefix: redact(line.slice(0, 200)) },
       });
       return;
     }
@@ -464,9 +489,9 @@ export async function main() {
           t: "note",
           ts: now(),
           code: "run_result",
-          message: `run finished (${parsed.finishReason ?? "unknown"})`,
+          message: `run finished (${redact(String(parsed.finishReason ?? "unknown"))})`,
           data: {
-            finishReason: parsed.finishReason ?? null,
+            finishReason: redactValue(parsed.finishReason ?? null),
             iterations: parsed.iterations ?? null,
             model: parsed.model ?? null,
             durationMs: num(parsed.durationMs),
@@ -482,8 +507,8 @@ export async function main() {
           t: stopKind === "cancelled" ? "note" : "warning",
           ts: now(),
           code: "run_aborted",
-          message: `run aborted (${parsed.reason ?? "unknown"})`,
-          data: { reason: parsed.reason ?? null },
+          message: `run aborted (${redact(String(parsed.reason ?? "unknown"))})`,
+          data: { reason: redactValue(parsed.reason ?? null) },
         });
         break;
       case "run_start":
@@ -503,7 +528,7 @@ export async function main() {
           t: "warning",
           ts: now(),
           code: "cline_error",
-          message: String(parsed.message ?? "error"),
+          message: redact(String(parsed.message ?? "error")),
         });
         break;
       default:
@@ -545,7 +570,7 @@ export async function main() {
             t: "warning",
             ts: now(),
             code: "cline_stderr_error",
-            message: String(parsed.message ?? "error"),
+            message: redact(String(parsed.message ?? "error")),
           });
         }
       } catch {
@@ -570,7 +595,7 @@ export async function main() {
         t: "warning",
         ts: now(),
         code: "cline_stderr_tail",
-        message: stderrTail.trim().slice(-2000),
+        message: redact(stderrTail.trim().slice(-2000)),
       });
     }
     emitFinal("adapter_error", `no_run_result (exitCode=${code ?? null})`);

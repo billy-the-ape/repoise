@@ -17,14 +17,16 @@ are its implementations; a future runner (AP-04) is the consumer.
 The protocol host is the only component that owns the child process. It
 spawns the adapter in its own process group, writes exactly one JSON request
 to its stdin, enforces the hello handshake, budgets and protocol rules, and
-always terminates with one `final` event plus a returned result
-(`{status, reason, errors, warnings, unknownEventTypes, events, hello,
-adapter, harness, usage, elapsedMs, adapterDurationMs, exitCode,
-exitSignal}`), writing the optional `eventsFile`/`resultFile` under the
-artifact dir. Host-side enforcement includes the hello timeout, per-line
-byte and event-count limits, strict envelope validation, usage semantics
-(cumulative max vs delta sum), wall-clock escalation (SIGINT → SIGKILL) and
-process-group kills, so a leaked grandchild can never outlive the trial.
+always returns exactly one result (`{status, reason, errors, warnings,
+unknownEventTypes, events, hello, adapter, harness, usage, elapsedMs,
+adapterDurationMs, exitCode, exitSignal}`); a `final` event is present only
+when the adapter emitted a valid one (preflight, spawn and missing-final
+failures report `finalEvent: null`). It writes the optional
+`eventsFile`/`resultFile` under the artifact dir. Host-side enforcement
+includes the hello timeout, per-line byte and event-count limits, strict
+envelope validation, usage semantics (cumulative max vs delta sum),
+wall-clock escalation (SIGINT → SIGKILL), and a best-effort process-group
+sweep after every path, so a leaked grandchild can never outlive the trial.
 After the `final` event the host keeps reading (UTF-8 safe across chunk
 boundaries) until the adapter exits or a short grace window escalates, so
 trailing events are detected and rejected.
@@ -64,7 +66,10 @@ reference (2026-10-19); live behavior is not yet measured.
 - The prompt travels on stdin; the credential (from
   `provider.credentialRef`, only `env:` references are honored) travels
   through the `-k` flag at spawn time and never through the request, the
-  effective-config artifact, or any event.
+  effective-config artifact, or any event. Note the `-k` value is visible in
+  the child's argv to other local users on shared hosts; forwarded Cline
+  output is additionally scrubbed of the resolved credential value
+  (substituted with `[REDACTED]`) at every forwarding site.
 - Cline's `--auto-approve` is always on (trials need unattended operation);
   therefore `read_only_restriction` is declared `false` in the hello — the
   runner must enforce workspace boundaries, and adapters that lack the
@@ -99,12 +104,14 @@ node --test packages/agent-adapter-cline/test/adapter.test.mjs
 The conformance suite runs fake fixture adapters through the real host and
 covers the happy path, handshake rejections, usage semantics, framing
 violations, budgetless stalls, failed children, host cancellation,
-grandchild-kill verification, events after the final, spawn failure, and
-schema-minimal requests. The adapter suite drives the real Cline
-adapter through the real host with a stub Cline CLI, asserting the exact
-argv/env the harness observed, per-trial MCP settings, effective-config
-redaction, status mapping for cancellation and failure, and rejection of
-non-`env:` credential references.
+grandchild-kill verification on hangs, grandchild sweep after a clean
+adapter exit, host timeout not replaced by a cooperative cancelled final,
+events after the final, spawn failure, and schema-minimal requests. The
+adapter suite drives the real Cline adapter through the real host with a
+stub Cline CLI, asserting the exact argv/env the harness observed,
+per-trial MCP settings, effective-config redaction, status mapping for
+cancellation and failure, rejection of non-`env:` credential references, and
+credential scrubbing from forwarded CLI output.
 
 ## Status and boundaries
 
