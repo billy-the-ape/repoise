@@ -82,10 +82,15 @@ rejected as `protocol_error`), a best-effort process-group sweep after
 every path (timers, abort listeners and the sweep are guaranteed by a
 `finally` block; a throwing `onEvent` callback is recorded as a warning
 instead of aborting the run), blank first lines never disarm the hello
-timeout, and credential scrubbing from all forwarded Cline output.
-Coverage: 19 protocol conformance tests and 8 adapter tests (stub-CLI
-driven through the real host), wired into CI through per-package `test`
-scripts run by `turbo run test` in the Check jobs. No environment variables
+timeout, and credential scrubbing from all forwarded Cline output
+(redacted before any truncation, so a key straddling a truncation boundary
+cannot leak). The Cline adapter resolves executables into a launch spec:
+explicit `.js`/`.mjs`/`.cjs` paths run through `process.execPath` (Windows
+cannot execute shebang scripts), with bare `cline` documented as requiring
+an explicit script path or native executable on Windows. Coverage: 19
+protocol conformance tests and 10 adapter tests (stub-CLI driven through
+the real host), wired into CI through per-package `test` scripts run by
+`turbo run test` in the Check jobs. No environment variables
 are required for the protocol host itself; the Cline adapter honors
 `CLINE_EXECUTABLE` and the documented `CLONE_*` passthrough namespace. See
 [docs/agent-adapters.md](docs/agent-adapters.md) and

@@ -48,6 +48,9 @@ if (process.env.CLONE_ECHO_KEY === "1" && process.env.CLINE_TEST_KEY) {
   // way a real CLI would in an invalid-key error.
   const key = process.env.CLINE_TEST_KEY;
   process.stdout.write(`echoed secret ${key} on stdout\n`);
+  // Unparseable line whose key straddles the 200-char prefix boundary of
+  // cline_unparsed_line: redaction must happen before truncation.
+  process.stdout.write(`${"A".repeat(190)}${key} tail\n`);
   process.stderr.write(
     `${JSON.stringify({ type: "error", message: `invalid key ${key}` })}\n`,
   );

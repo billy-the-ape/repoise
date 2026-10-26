@@ -116,7 +116,11 @@ export async function main() {
     });
   }
 
-  const { executable, error: resolveError } = resolveClineExecutable();
+  const {
+    executable,
+    prefixArgs,
+    error: resolveError,
+  } = resolveClineExecutable();
   if (resolveError) {
     emitFinal("adapter_error", resolveError);
     return;
@@ -134,7 +138,7 @@ export async function main() {
   mkdirSync(configDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
 
-  const version = probeClineVersion(executable);
+  const version = probeClineVersion({ executable, prefixArgs });
   if (version) {
     emit({
       v: 1,
@@ -275,7 +279,7 @@ export async function main() {
 
   let child;
   try {
-    child = spawn(executable, spawnArgv, {
+    child = spawn(executable, [...prefixArgs, ...spawnArgv], {
       env: invocation.env,
       cwd: request.workspace.root,
       stdio: ["pipe", "pipe", "pipe"],
@@ -468,7 +472,7 @@ export async function main() {
             t: "note",
             ts: now(),
             code: "cline_agent_event",
-            data: { type: event.type },
+            data: { type: redactValue(event.type) },
           });
         }
         break;
@@ -489,7 +493,9 @@ export async function main() {
         t: "note",
         ts: now(),
         code: "cline_unparsed_line",
-        data: { prefix: redact(line.slice(0, 200)) },
+        // Redact the full line before truncating: a credential that
+        // straddles the 200-char boundary must not survive as a fragment.
+        data: { prefix: redact(line).slice(0, 200) },
       });
       return;
     }
@@ -509,8 +515,8 @@ export async function main() {
           message: `run finished (${redact(String(parsed.finishReason ?? "unknown"))})`,
           data: {
             finishReason: redactValue(parsed.finishReason ?? null),
-            iterations: parsed.iterations ?? null,
-            model: parsed.model ?? null,
+            iterations: redactValue(parsed.iterations ?? null),
+            model: redactValue(parsed.model ?? null),
             durationMs: num(parsed.durationMs),
             textLength: text.length,
             textSha256: text ? sha256(text) : null,
@@ -536,7 +542,9 @@ export async function main() {
           t: "note",
           ts: now(),
           code: parsed.type,
-          data: parsed.event?.type ? { type: parsed.event.type } : undefined,
+          data: parsed.event?.type
+            ? { type: redactValue(parsed.event.type) }
+            : undefined,
         });
         break;
       case "error":
@@ -554,7 +562,7 @@ export async function main() {
           t: "note",
           ts: now(),
           code: "unknown_event",
-          data: { type: parsed.type },
+          data: { type: redactValue(parsed.type) },
         });
     }
     if (!finalEmitted && runResult) finishFromRunResult();
@@ -576,7 +584,9 @@ export async function main() {
   });
   child.stderr.on("data", (chunk) => {
     const text = stderrDecoder.write(chunk);
-    stderrTail = (stderrTail + text).slice(-4096);
+    // Redact the accumulated tail before trimming so a credential that
+    // straddles the 4096-char boundary cannot survive in the tail.
+    stderrTail = redact(stderrTail + text).slice(-4096);
     for (const line of text.split("\n")) {
       if (line.trim() === "") continue;
       try {
@@ -614,7 +624,7 @@ export async function main() {
         t: "warning",
         ts: now(),
         code: "cline_stderr_tail",
-        message: redact(stderrTail.trim().slice(-2000)),
+        message: redact(stderrTail.trim()).slice(-2000),
       });
     }
     emitFinal("adapter_error", `no_run_result (exitCode=${code ?? null})`);

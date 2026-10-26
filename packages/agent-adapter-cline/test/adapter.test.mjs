@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runAdapter } from "../../agent-adapter-protocol/src/index.js";
+import { resolveClineExecutable } from "../src/cline.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const adapterBin = join(here, "..", "bin", "agent-adapter-cline.js");
@@ -320,6 +321,48 @@ test("a credential echoed by the CLI is scrubbed from all events", async () => {
   const serialized = JSON.stringify(result.events);
   assert.ok(!serialized.includes(secret), "credential leaked into events");
   assert.ok(serialized.includes("[REDACTED]"), "redaction marker missing");
+  // The stub also emits an unparseable line whose key straddles the 200-char
+  // prefix boundary: it must be redacted, not truncated mid-key.
+  const unparsed = result.events.find((e) => e.code === "cline_unparsed_line");
+  assert.ok(unparsed, "straddling unparsed line event missing");
+  assert.ok(
+    unparsed.data.prefix.includes("[REDACTED]"),
+    "straddling key not redacted",
+  );
+});
+
+test("explicit Node script executables launch through the Node binary", () => {
+  const previous = process.env.CLINE_EXECUTABLE;
+  delete process.env.CLONE_EXECUTABLE;
+  process.env.CLINE_EXECUTABLE = stub;
+  try {
+    const { executable, prefixArgs, error } = resolveClineExecutable();
+    assert.equal(error, null);
+    assert.equal(executable, process.execPath);
+    assert.deepEqual(prefixArgs, [stub]);
+  } finally {
+    if (previous === undefined) delete process.env.CLINE_EXECUTABLE;
+    else process.env.CLINE_EXECUTABLE = previous;
+  }
+});
+
+test("no explicit executable resolves to the bare cline command", () => {
+  const previous = process.env.CLINE_EXECUTABLE;
+  const previousClone = process.env.CLONE_EXECUTABLE;
+  delete process.env.CLINE_EXECUTABLE;
+  delete process.env.CLONE_EXECUTABLE;
+  try {
+    assert.deepEqual(resolveClineExecutable(), {
+      executable: "cline",
+      prefixArgs: [],
+      error: null,
+    });
+  } finally {
+    if (previous === undefined) delete process.env.CLINE_EXECUTABLE;
+    else process.env.CLINE_EXECUTABLE = previous;
+    if (previousClone === undefined) delete process.env.CLONE_EXECUTABLE;
+    else process.env.CLONE_EXECUTABLE = previousClone;
+  }
 });
 
 test("missing explicit executable maps to adapter_error cline_not_found", async () => {

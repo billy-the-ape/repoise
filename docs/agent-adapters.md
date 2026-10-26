@@ -69,7 +69,9 @@ reference (2026-10-19); live behavior is not yet measured.
   effective-config artifact, or any event. Note the `-k` value is visible in
   the child's argv to other local users on shared hosts; forwarded Cline
   output is additionally scrubbed of the resolved credential value
-  (substituted with `[REDACTED]`) at every forwarding site.
+  (substituted with `[REDACTED]`) at every forwarding site, redacting
+  before any truncation so a key straddling a truncation boundary cannot
+  leak.
 - Cline's `--auto-approve` is always on (trials need unattended operation);
   therefore `read_only_restriction` is declared `false` in the hello — the
   runner must enforce workspace boundaries, and adapters that lack the
@@ -87,7 +89,12 @@ reference (2026-10-19); live behavior is not yet measured.
   observed value per field. Per-token content events are not amplified into
   protocol events (recorded as a single note at most).
 - `CLINE_EXECUTABLE` (absolute path or bare name) overrides resolution;
-  a missing explicit path is `adapter_error/cline_not_found`.
+  a missing explicit path is `adapter_error/cline_not_found`. Cross-platform
+  launch: an explicit `.js`/`.mjs`/`.cjs` path is launched through
+  `process.execPath` (Windows `CreateProcess` cannot execute shebang
+  scripts); a bare `cline` resolves through `PATH` at spawn time — on
+  Windows the npm `.cmd` shim cannot be spawned without a shell, so use an
+  explicit script path or a native executable there.
 - `CLONE_*`-prefixed environment variables are the documented
   adapter-specific passthrough namespace to the spawned CLI (used by the
   test stub); the rest of the environment is a minimal allowlist
@@ -114,8 +121,10 @@ events after the final, spawn failure, blank first lines, a throwing
 real Cline adapter through the real host with a stub Cline CLI, asserting
 the exact argv/env the harness observed, per-trial MCP settings,
 effective-config redaction, status mapping for cancellation and failure,
-rejection of non-`env:` credential references, and credential scrubbing from
-forwarded CLI output.
+rejection of non-`env:` credential references, credential scrubbing from
+forwarded CLI output (including a key straddling the unparsed-line
+truncation boundary), and cross-platform launching of explicit Node
+script executables.
 
 ## Status and boundaries
 

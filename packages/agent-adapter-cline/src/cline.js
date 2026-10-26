@@ -11,33 +11,52 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+// Returns a launch spec `{ executable, prefixArgs }`: `executable` plus
+// arguments that precede the CLI argv. Explicit `.js`/`.mjs`/`.cjs` paths
+// are launched through the Node binary itself, because Windows
+// CreateProcess cannot execute shebang scripts and has no `.mjs`
+// extension association.
 export function resolveClineExecutable() {
   const explicit = process.env.CLONE_EXECUTABLE || process.env.CLINE_EXECUTABLE;
   if (explicit) {
     if (explicit.includes("/") || explicit.includes("\\")) {
       if (!existsSync(explicit))
-        return { executable: null, error: "cline_not_found" };
+        return { executable: null, prefixArgs: [], error: "cline_not_found" };
     }
-    return { executable: explicit, error: null };
+    if (/\.(?:js|mjs|cjs)$/i.test(explicit)) {
+      return {
+        executable: process.execPath,
+        prefixArgs: [explicit],
+        error: null,
+      };
+    }
+    return { executable: explicit, prefixArgs: [], error: null };
   }
   // Bare command: resolved through the adapter process PATH at spawn time.
-  return { executable: "cline", error: null };
+  // On Windows the npm `.cmd` shim cannot be spawned without a shell, so
+  // point CLONE_EXECUTABLE/CLINE_EXECUTABLE at the script or a native
+  // executable there (see docs/agent-adapters.md).
+  return { executable: "cline", prefixArgs: [], error: null };
 }
 
 /** Best-effort `cline version` probe; null when unavailable. */
-export function probeClineVersion(executable) {
-  const result = spawnSync(executable, ["version"], {
-    env: {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME,
-      USERPROFILE: process.env.USERPROFILE,
-      SystemRoot: process.env.SystemRoot,
+export function probeClineVersion(launch) {
+  const result = spawnSync(
+    launch.executable,
+    [...launch.prefixArgs, "version"],
+    {
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        USERPROFILE: process.env.USERPROFILE,
+        SystemRoot: process.env.SystemRoot,
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
     },
-    encoding: "utf8",
-    timeout: 10_000,
-    stdio: ["ignore", "pipe", "pipe"],
-    shell: false,
-  });
+  );
   if (result.status !== 0) return null;
   const text = (result.stdout ?? "").trim();
   const match = text.match(/\d+\.\d+\.\d+(?:[-+][\w.]+)?/);
