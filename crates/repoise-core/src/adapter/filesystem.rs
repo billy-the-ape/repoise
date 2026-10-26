@@ -137,9 +137,26 @@ fn scan(
     dir: &Path,
     entries: &mut Vec<SourceEntry>,
 ) -> Result<(), AdapterError> {
-    for result in fs::read_dir(dir)? {
-        let entry = result?;
-        let file_type = entry.file_type()?;
+    // A scan of a live tree can race with a concurrent writer (for example
+    // `status` inventories the root while `watch` publishes into the
+    // in-root cache). Entries that vanish between enumeration and read are
+    // skipped; any other I/O error is a real failure.
+    let read_dir = match fs::read_dir(dir) {
+        Ok(dir) => dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(AdapterError::Io(err)),
+    };
+    for result in read_dir {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(AdapterError::Io(err)),
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(AdapterError::Io(err)),
+        };
         if file_type.is_symlink() {
             // Never follow symlinks (security and determinism).
             continue;
@@ -148,7 +165,11 @@ fn scan(
         if file_type.is_dir() {
             scan(canonical_root, &path, entries)?;
         } else if file_type.is_file() {
-            let bytes = fs::read(&path)?;
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(AdapterError::Io(err)),
+            };
             let relative = path
                 .strip_prefix(canonical_root)
                 .map_err(|_| AdapterError::Containment(path.clone()))?
@@ -161,4 +182,50 @@ fn scan(
         }
     }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A concurrent writer churning a file must not fail a scan: entries that
+    /// vanish between enumeration and read are skipped, stable entries remain.
+    #[test]
+    fn scan_skips_entries_that_vanish_mid_scan() {
+        let dir = std::env::temp_dir().join(format!("repoise-scan-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let root = fs::canonicalize(&dir).unwrap();
+        fs::write(root.join("stable.txt"), "stable").unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let churn_stop = stop.clone();
+        let churn_root = root.clone();
+        let churner = std::thread::spawn(move || {
+            let mut writing = true;
+            while !churn_stop.load(Ordering::Relaxed) {
+                let path = churn_root.join("churning.txt");
+                if writing {
+                    let _ = fs::write(&path, "data");
+                } else {
+                    let _ = fs::remove_file(&path);
+                }
+                writing = !writing;
+            }
+        });
+        for _ in 0..200 {
+            let entries =
+                scan_directory(&root, &root).expect("scan must tolerate vanishing entries");
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.path.to_string_lossy() == "stable.txt"),
+                "stable entries must survive: {entries:?}"
+            );
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = churner.join();
+        let _ = fs::remove_dir_all(&root);
+    }
 }

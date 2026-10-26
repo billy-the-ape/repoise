@@ -168,9 +168,31 @@ Validation: unit tests for the envelope contract (fields, sequences, single
 terminal, heartbeat, throttled progress) and the ownership lifecycle
 (acquire/inspect/release, stale detection, foreign-marker preservation);
 integration tests for the capabilities handshake, `index --events` NDJSON
-purity and terminal outcome, `watch --events` SIGINT cancellation, and the
-owner marker appearing in `status` while watch runs and clearing after a
-clean SIGTERM exit. Existing `--json`/MCP suites pass unchanged.
+purity and terminal outcome, `watch --events` SIGINT cancellation, a
+`failed` terminal for `index --events` session-setup failure, and the owner
+marker appearing in `status` while watch runs and clearing after a clean
+SIGTERM exit. Existing `--json`/MCP suites pass unchanged.
+
+Post-review fixes (2026-10-26, PR #37 review):
+
+- `Store::open` sets the 5 s busy timeout before the `journal_mode=WAL`
+  pragma, so a concurrent first open of the same new database waits for the
+  creation lock instead of failing with "database is locked".
+- `index --events` session-setup failures (`embedding_client` /
+  `enrichment_session` errors after `stream.start`) now emit a `failed`
+  terminal event before exiting 1, so the stream always ends with exactly
+  one terminal event on controlled exit. Regression test:
+  `index_events_setup_failure_emits_a_failed_terminal` (an embedding profile
+  whose endpoint env var holds a non-http(s) URL).
+- The filesystem scan (`adapter::filesystem::scan`) now skips entries that
+  vanish between enumeration and read (NotFound only; other I/O errors still
+  fail). Previously a `status` inventory of a live root could fail with an
+  adapter I/O error while `watch` published into the in-root `.repoise`
+  cache — the race behind the macOS CI failure of the owner-lifecycle test.
+  Unit test: `scan_skips_entries_that_vanish_mid_scan`.
+- The owner-lifecycle test primes the scope with `index --json` before
+  starting `watch` (no first-open race) and surfaces the probe's stderr in
+  its failure message.
 
 Deferred / not shipped with this PR:
 

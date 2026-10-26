@@ -746,6 +746,47 @@ fn index_events_streams_ndjson_with_one_terminal() {
     }
 }
 
+/// A configured embedding whose endpoint env var holds a non-http(s) URL
+/// fails session setup; the stream must still end with a `failed` terminal
+/// (exit 1), never just stop after `started`.
+#[test]
+fn index_events_setup_failure_emits_a_failed_terminal() {
+    let root = temp_root("index-events-failed");
+    std::fs::write(root.join("README.md"), "hello\n").unwrap();
+    std::fs::write(
+        root.join("repoise.config.json"),
+        r#"{"embedding":{"provider":"openai-compatible","model":"test-model","dimensions":3,"endpoint":"env:REPOISE_TEST_EMBED_ENDPOINT","apiKeyEnv":"REPOISE_TEST_EMBED_KEY"}}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["index", "--events", root.to_str().unwrap()])
+        .env("REPOISE_TEST_EMBED_ENDPOINT", "not-a-url")
+        .env("REPOISE_TEST_EMBED_KEY", "test-key")
+        .output()
+        .expect("run index");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a session setup failure must exit 1"
+    );
+    let events = ndjson_events(&output.stdout);
+    assert_eq!(events[0]["type"], "started");
+    assert_eq!(
+        terminal_events(&events).len(),
+        1,
+        "exactly one terminal event: {events:?}"
+    );
+    let failed = events.last().unwrap();
+    assert_eq!(failed["type"], "failed");
+    assert_eq!(failed["payload"]["code"], "operational");
+    assert!(
+        failed["payload"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("http(s)")
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn watch_events_cancels_with_a_terminal_event_on_sigint() {
@@ -796,6 +837,10 @@ fn status_reports_the_active_watch_owner_and_clears_it_after_exit() {
     use std::process::Stdio;
 
     let root = temp_root("status-owner");
+    // Prime the scope so the status probes open an existing database rather
+    // than racing watch over the creation of a fresh one.
+    let primed = cli(&["index", "--json", root.to_str().unwrap()]);
+    assert!(primed.status.success());
     let mut child = Command::new(env!("CARGO_BIN_EXE_repoise"))
         .args(["watch", "--interval", "200", root.to_str().unwrap()])
         .stdout(Stdio::null())
@@ -809,7 +854,10 @@ fn status_reports_the_active_watch_owner_and_clears_it_after_exit() {
         let probe = cli(&["status", "--json", root.to_str().unwrap()]);
         match probe.status.code() {
             Some(0) | Some(3) => {}
-            other => panic!("unexpected status exit code: {other:?}"),
+            other => panic!(
+                "unexpected status exit code: {other:?}; stderr: {}",
+                String::from_utf8(probe.stderr).unwrap_or_default()
+            ),
         }
         let doc: serde_json::Value =
             serde_json::from_str(&String::from_utf8(probe.stdout).unwrap()).unwrap();

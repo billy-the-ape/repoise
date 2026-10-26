@@ -805,12 +805,28 @@ fn run_index_events(
     stream.start_heartbeat(events::heartbeat_interval());
     stream.start(&scope);
     // Sessions are built after the stream starts so their degradation notes
-    // (stderr) follow the start event in the run's logical order.
+    // (stderr) follow the start event in the run's logical order. A setup
+    // failure must still end the run with a `failed` terminal event.
+    let scope_value = serde_json::to_value(&scope).unwrap_or_default();
+    let report_setup_failure = |err: String| {
+        stream.terminal(
+            "failed",
+            json!({
+                "operation": "index",
+                "scope": scope_value.clone(),
+                "code": "operational",
+                "message": err,
+                "retryable": serde_json::Value::Null,
+            }),
+        );
+        err
+    };
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::indexing::IndexRequest::default();
-    let client = embedding_client(&ctx.effective, CancellationToken::new())?;
+    let client =
+        embedding_client(&ctx.effective, CancellationToken::new()).map_err(report_setup_failure)?;
     let session = client.as_ref();
-    let enrichment = enrichment_session(ctx)?;
+    let enrichment = enrichment_session(ctx).map_err(report_setup_failure)?;
     let enrichment_session = enrichment.as_ref();
     // Explicit degradation notes as machine-readable warning events.
     if ctx.effective.embedding.is_some() && session.is_none() {
@@ -838,7 +854,6 @@ fn run_index_events(
         enrichment_session,
         Some(&wrapped),
     );
-    let scope_value = serde_json::to_value(&scope).unwrap_or_default();
     match result {
         Ok(outcome) => {
             stream.terminal(

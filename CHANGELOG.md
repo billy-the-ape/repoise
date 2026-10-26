@@ -42,6 +42,13 @@ The CLI gained machine-automation surfaces without changing existing
   5-second refresh); `purge` removes it with the scope.
 - Watch publication events/reporting now include `configChange`
   (effective-configuration-driven publication; false on the first build).
+- Reliability follow-ups from PR review: `index --events` session-setup
+  failures emit a `failed` terminal event (the stream always ends with one
+  terminal on controlled exit); the filesystem scan skips entries that
+  vanish mid-scan so a `status` probe no longer fails while `watch`
+  publishes into the in-root cache; `Store::open` sets the busy timeout
+  before the WAL pragma so concurrent first opens of a new database wait
+  instead of failing.
 
 No new environment variables are required (`REPOISE_EVENTS_HEARTBEAT_MS`
 is an optional override); no migration or deployment actions. See
