@@ -11,8 +11,8 @@
 //! directory (`<cache>/repos/<repoId>/worktrees/<worktreeId>/owner.json`),
 //! not by a repository remote URL. A PID alone is never treated as proof
 //! of liveness (PIDs are reused); freshness of the last refresh is the
-//! health signal. `status` exposes the marker read-only
-//! (via [`inspect`](inspect)); `purge` removes it with the scope.
+//! health signal. `status` exposes the marker read-only via
+//! [`inspect`]; `purge` removes it with the scope.
 
 use std::fs;
 use std::path::{Path, PathBuf};
