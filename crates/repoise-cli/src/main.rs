@@ -802,8 +802,8 @@ fn run_index_events(
         snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
     };
     let stream = events::EventStream::stdout("index");
-    stream.start_heartbeat(events::heartbeat_interval());
     stream.start(&scope);
+    stream.start_heartbeat(events::heartbeat_interval());
     // Sessions are built after the stream starts so their degradation notes
     // (stderr) follow the start event in the run's logical order. A setup
     // failure must still end the run with a `failed` terminal event.
@@ -1308,8 +1308,8 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     );
     if opts.events {
         let stream = events::EventStream::stdout("watch");
-        stream.start_heartbeat(events::heartbeat_interval());
         stream.start(&scope);
+        stream.start_heartbeat(events::heartbeat_interval());
         eprintln!("{summary}; SIGINT/SIGTERM cancels");
         let mut last_generation: Option<i64> = None;
         loop {

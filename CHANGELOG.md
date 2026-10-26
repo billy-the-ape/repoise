@@ -49,7 +49,10 @@ The CLI gained machine-automation surfaces without changing existing
   publishes into the in-root cache; on Windows the scan also tolerates
   delete-pending `PermissionDenied` via a metadata re-check; owner marker
   writes are atomic (sibling temp file + rename) so concurrent readers never
-  observe a partial record; `Store::open` sets the busy timeout
+  observe a partial record; the scan's vanished-entry tolerance no longer
+  applies to the scan root itself (a vanished root fails rather than
+  publishing an empty inventory); `--events` streams always emit `started`
+  before the first heartbeat; `Store::open` sets the busy timeout
   before the WAL pragma so concurrent first opens of a new database wait
   instead of failing.
 

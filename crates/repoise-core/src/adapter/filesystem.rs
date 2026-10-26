@@ -126,8 +126,12 @@ pub fn read_within_root(canonical_root: &Path, relative: &Path) -> Result<Vec<u8
 
 /// Recursively scans `dir` (never following symlinks) into sorted entries.
 pub fn scan_directory(canonical_root: &Path, dir: &Path) -> Result<Vec<SourceEntry>, AdapterError> {
+    // A missing root is a real failure: scanning it as an empty inventory
+    // would let a `watch` publish a zero-file generation over a real index
+    // if the root is renamed, removed or unmounted. Only entries that vanish
+    // mid-recursion are skipped.
     let mut entries = Vec::new();
-    scan(canonical_root, dir, &mut entries)?;
+    scan(canonical_root, dir, true, &mut entries)?;
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
 }
@@ -156,21 +160,24 @@ fn entry_gone(path: &Path, err: &std::io::Error) -> bool {
 fn scan(
     canonical_root: &Path,
     dir: &Path,
+    is_root: bool,
     entries: &mut Vec<SourceEntry>,
 ) -> Result<(), AdapterError> {
     // A scan of a live tree can race with a concurrent writer (for example
     // `status` inventories the root while `watch` publishes into the
     // in-root cache). Entries that vanish between enumeration and read are
-    // skipped; any other I/O error is a real failure.
+    // skipped; any other I/O error is a real failure. The root itself stays
+    // fatal: a vanished root must fail the scan, not yield an empty
+    // inventory.
     let read_dir = match fs::read_dir(dir) {
         Ok(dir) => dir,
-        Err(err) if entry_gone(dir, &err) => return Ok(()),
+        Err(err) if !is_root && entry_gone(dir, &err) => return Ok(()),
         Err(err) => return Err(AdapterError::Io(err)),
     };
     for result in read_dir {
         let entry = match result {
             Ok(entry) => entry,
-            Err(err) if entry_gone(dir, &err) => continue,
+            Err(err) if !is_root && entry_gone(dir, &err) => continue,
             Err(err) => return Err(AdapterError::Io(err)),
         };
         let file_type = match entry.file_type() {
@@ -184,7 +191,7 @@ fn scan(
         }
         let path = entry.path();
         if file_type.is_dir() {
-            scan(canonical_root, &path, entries)?;
+            scan(canonical_root, &path, false, entries)?;
         } else if file_type.is_file() {
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
@@ -248,5 +255,35 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         let _ = churner.join();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A missing scan root is a real failure, not an empty inventory: a
+    /// `watch` must not publish a zero-file generation over a real index if
+    /// the root is renamed, removed or unmounted.
+    #[test]
+    fn scan_of_a_missing_root_is_an_error() {
+        let missing = std::env::temp_dir().join(format!(
+            "repoise-scan-missing-{}-{}",
+            std::process::id(),
+            now_id()
+        ));
+        let _ = fs::remove_dir_all(&missing);
+        let result = scan_directory(&missing, &missing);
+        let missing_root = matches!(
+            result.as_ref(),
+            Err(AdapterError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound
+        );
+        assert!(
+            missing_root,
+            "a missing root must fail, not scan empty: {result:?}"
+        );
+    }
+
+    /// Unique id suffix so parallel test binaries never share a path.
+    fn now_id() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
     }
 }

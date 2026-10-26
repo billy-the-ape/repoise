@@ -192,8 +192,11 @@ Post-review fixes (2026-10-26, PR #37 review):
   `status` inventory of a live root could fail with an adapter I/O error
   while `watch` published into the in-root `.repoise` cache — the race
   behind the macOS CI failure of the owner-lifecycle test, and the Windows
-  CI failure of the scan unit test. Unit test:
-  `scan_skips_entries_that_vanish_mid_scan`.
+  CI failure of the scan unit test. The scan root itself stays fatal
+  (a vanished root fails the scan rather than yielding the empty inventory
+  that a `watch` could publish as a zero-file generation). Unit tests:
+  `scan_skips_entries_that_vanish_mid_scan`,
+  `scan_of_a_missing_root_is_an_error`.
 - The owner-lifecycle test primes the scope with `index --json` before
   starting `watch` (no first-open race) and surfaces the probe's stderr in
   its failure message.
@@ -205,6 +208,15 @@ Post-review fixes (2026-10-26, PR #37 review):
   skipped the concurrent-writer warning. Tests:
   `marker_writes_are_atomic_under_concurrent_reads`,
   `truncated_marker_is_replaced_and_reported`.
+- `stream.start` now emits the `started` event before the heartbeat thread
+  is spawned (in both `index --events` and `watch --events`), so `started`
+  is always sequence 0 even under a short `REPOISE_EVENTS_HEARTBEAT_MS`
+  override; the heartbeat loop tick is capped at `min(interval, 25 ms)` so
+  short override intervals are honoured.
+- `heartbeat_emits_between_activity` polls with a bounded deadline (5 s)
+  instead of a fixed 80 ms sleep: the fixed sleep failed on a loaded macOS
+  runner where heartbeat-thread start latency exceeded the window (CI run
+  40285589778).
 
 Deferred / not shipped with this PR:
 

@@ -257,7 +257,9 @@ impl<W: Write + Send + 'static> EventStream<W> {
         *self.inner.heartbeat_stop.lock().unwrap() = Some(stop.clone());
         let stream = self.clone();
         std::thread::spawn(move || {
-            let tick = Duration::from_millis(25);
+            // Poll no more often than the interval itself, capped at 25 ms for
+            // the default long intervals.
+            let tick = interval.min(Duration::from_millis(25));
             let mut next = Instant::now() + interval;
             while !stop.load(Ordering::SeqCst) {
                 let now = Instant::now();
@@ -567,8 +569,15 @@ mod tests {
             snapshot_mode: "plain-directory".into(),
         });
         stream.start_heartbeat(Duration::from_millis(10));
-        // Let several heartbeats land.
-        std::thread::sleep(Duration::from_millis(80));
+        // Poll (bounded) until a heartbeat lands instead of assuming
+        // scheduling latency: on a loaded runner the heartbeat thread's
+        // first beat can be delayed well beyond a fixed sleep window.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline
+            && !lines(&buffer).iter().any(|e| e["type"] == "heartbeat")
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         drop(stream); // stops the heartbeat thread
         let events = lines(&buffer);
         let heartbeats: Vec<&Value> = events.iter().filter(|e| e["type"] == "heartbeat").collect();
