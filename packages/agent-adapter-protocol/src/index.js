@@ -4,8 +4,13 @@
 // external elapsed time, accounts usage without double counting, and cancels
 // only owned process trees (SIGINT, grace, SIGKILL).
 
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import {
   DEFAULT_CANCEL_GRACE_MS,
   DEFAULT_HELLO_TIMEOUT_MS,
@@ -426,6 +431,26 @@ export async function runAdapter(request, options = {}) {
     // SIGINT) must not outlive the trial. killTree resolves when the group is
     // already gone.
     await killTree(child.pid, "SIGKILL");
+    // Best-effort sweep of a child tree the adapter recorded in
+    // `child-pid.txt` under the artifact dir (see
+    // docs/agent-adapters.md): such a tree lives in its own process group,
+    // which this host's own sweep cannot reach. Protocol-violation kills
+    // SIGKILL the adapter before any of its own cleanup can run, so this
+    // backstop is what keeps those children from outliving the trial.
+    // Resolves when the recorded pid is already gone.
+    try {
+      const recorded = Number(
+        readFileSync(
+          join(request.outputs.artifactDir, "child-pid.txt"),
+          "utf8",
+        ).trim(),
+      );
+      if (Number.isInteger(recorded) && recorded > 0) {
+        await killTree(recorded, "SIGKILL");
+      }
+    } catch {
+      // No recorded child (or unreadable): nothing to sweep.
+    }
     try {
       child.stdin.end(); // Close the request/control channel.
     } catch {

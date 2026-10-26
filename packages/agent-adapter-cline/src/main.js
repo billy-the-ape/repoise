@@ -111,6 +111,13 @@ export async function main() {
   process.on("SIGTERM", () =>
     initiateStop("cancelled", "cancellation requested"),
   );
+  // If the host dies (crash, external kill) the stdout pipe closes: sweep
+  // the cline group so it cannot outlive a trial whose host is gone.
+  // Fires harmlessly on the normal exit path too (child already swept).
+  process.stdout.on("close", () => {
+    sweepChild();
+    process.exit(0);
+  });
 
   // One stdin reader for both the request (the first line) and the host's
   // control lines; see attachStdinLines for why one consumer matters.
@@ -363,6 +370,21 @@ export async function main() {
       // initiateStop alone controls the child's signalling.
       ...(process.platform === "win32" ? {} : { detached: true }),
     });
+    // Record the child tree's root pid where the host looks
+    // (docs/agent-adapters.md): the host's own group sweep cannot reach a
+    // detached child group, and a protocol-violation kill SIGKILLs this
+    // adapter before its own sweeps can run, so the host backstop sweeps
+    // this pid. Best-effort: a write failure only weakens the backstop.
+    if (child.pid) {
+      try {
+        writeFileSync(
+          join(request.outputs.artifactDir, "child-pid.txt"),
+          `${child.pid}\n`,
+        );
+      } catch {
+        // Best-effort backstop only.
+      }
+    }
     // Async stdin write failures (EPIPE / destroyed stream after a failed
     // spawn) surface as "error" events, not synchronous throws.
     child.stdin.on("error", (error) => {

@@ -14,12 +14,14 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import Ajv from "ajv";
 import { runAdapter } from "../../agent-adapter-protocol/src/index.js";
 import { resolveClineExecutable } from "../src/cline.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const adapterBin = join(here, "..", "bin", "agent-adapter-cline.js");
 const stub = join(here, "fixtures", "stub-cline.mjs");
+const schemasDir = join(here, "..", "..", "..", "schemas");
 chmodSync(stub, 0o755);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -418,4 +420,36 @@ test("missing explicit executable maps to adapter_error cline_not_found", async 
   });
   assert.equal(result.status, "adapter_error");
   assert.equal(result.reason, "cline_not_found");
+});
+
+test("checked-in schemas accept the adapter's own request and events", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { request, result } = await runAdapterTrial({ workspace, artifacts });
+  assert.equal(result.status, "completed");
+  const ajv = new Ajv({ validateSchema: false, strict: false });
+  const validateRequest = ajv.compile(
+    JSON.parse(
+      readFileSync(join(schemasDir, "adapter-request.v1.schema.json"), "utf8"),
+    ),
+  );
+  const validateEvent = ajv.compile(
+    JSON.parse(
+      readFileSync(join(schemasDir, "adapter-events.v1.schema.json"), "utf8"),
+    ),
+  );
+  assert.ok(
+    validateRequest(request),
+    `request: ${JSON.stringify(validateRequest.errors)}`,
+  );
+  for (const event of result.events) {
+    assert.ok(
+      validateEvent(event),
+      `${event.t}: ${JSON.stringify(validateEvent.errors)}`,
+    );
+  }
+  // The host's protocol-violation backstop reads this recorded child pid.
+  const recorded = Number(
+    readFileSync(join(artifacts, "child-pid.txt"), "utf8").trim(),
+  );
+  assert.ok(Number.isInteger(recorded) && recorded > 0);
 });

@@ -27,9 +27,15 @@ the artifact dir. Host-side enforcement includes the hello timeout,
 per-line byte and event-count limits, strict envelope validation, usage
 semantics (cumulative max vs delta sum), wall-clock escalation, and a
 best-effort process-group sweep after every path, so a leaked grandchild of
-the adapter's own process group can never outlive the trial. (An adapter
+the adapter's own process group can never outlive the trial. An adapter
 that deliberately moves its children into another process group is
-responsible for sweeping them itself - see the Cline adapter below.)
+responsible for sweeping them itself; to give the host a backstop, such an
+adapter MAY record the child tree's root pid in `child-pid.txt` under
+`outputs.artifactDir` (POSIX: the process-group leader, so the host's
+group kill reaches the whole tree; Windows: the root pid for the tree
+kill), and the host sweeps that recorded pid best-effort after every path
+— this is what covers protocol-violation kills, which SIGKILL the adapter
+before any of its own cleanup can run.
 
 **Cancellation is cooperative and cross-platform.** On cancellation (host
 request or wall clock) the host first sends a `cancel` control line on the
@@ -123,11 +129,13 @@ reference (2026-10-19); live behavior is not yet measured.
   same chunk as the request is never discarded, and a stop that lands
   before the spawn suppresses the spawn itself (cooperative `cancelled`
   final without starting the CLI). The adapter sweeps the child group
-  (SIGKILL, tolerating ESRCH) on every final and on process exit, and its
-  stop escalation (3 s) is shorter than the host's default grace (5 s), so
-  a host forced-kill cannot orphan the group. The one residual is a host
-  protocol-violation kill, which SIGKILLs the adapter before any cleanup
-  hook can run.
+  (SIGKILL, tolerating ESRCH) on every final, on process exit, and when
+  its own stdout closes (host death), records the child's root pid in
+  `child-pid.txt` under the artifact dir so the host can backstop it, and
+  its stop escalation (3 s) is shorter than the host's default grace
+  (5 s), so a host forced-kill cannot orphan the group. The sweeps are
+  best-effort; a host protocol-violation kill is covered by the host's
+  `child-pid.txt` backstop (above).
 - `CLONE_*`-prefixed environment variables are the documented
   adapter-specific passthrough namespace to the spawned CLI (used by the
   test stub); the rest of the environment is a minimal allowlist
@@ -151,7 +159,10 @@ cooperative cancellation over the stdin `cancel` control line with no signal
 delivered), grandchild-kill verification on hangs, grandchild sweep after a
 clean adapter exit, host timeout not replaced by a cooperative cancelled
 final, events after the final, spawn failure, blank first lines, a throwing
-`onEvent` callback, and schema-minimal requests. The adapter suite drives the
+`onEvent` callback, schema-minimal requests, the host's `child-pid.txt`
+sweep of a recorded child group after a protocol violation, and acceptance
+of the protocol's own happy path (request plus every event) by the
+checked-in schemas (validated with ajv). The adapter suite drives the
 real Cline adapter through the real host with a stub Cline CLI, asserting
 the exact argv/env the harness observed, per-trial MCP settings,
 effective-config redaction, status mapping for cancellation and failure,
@@ -159,8 +170,10 @@ rejection of non-`env:` credential references, credential scrubbing from
 forwarded CLI output (including a key straddling the unparsed-line
 truncation boundary), a `cancel` control line arriving in the same stdin
 chunk as the request, a leaked grandchild inside the Cline child group
-being swept with the trial, and cross-platform launching of explicit Node
-script executables.
+being swept with the trial, cross-platform launching of explicit Node
+script executables, and acceptance of the adapter's own request and every
+emitted event (including the totals-shaped final usage) by the checked-in
+schemas (validated with ajv).
 
 ## Status and boundaries
 

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://repoise.dev/schemas/adapter-request.v1.schema.json",
   "title": "Repoise agent adapter request (version 1)",
-  "description": "The versioned JSON request a coordinator writes to an agent adapter's stdin (then closes). Stdout is reserved for bounded NDJSON protocol events; stderr is for diagnostics. Credentials travel as environment variable references, never as values in this document. See docs/agent-adapters.md.",
+  "description": "The versioned JSON request a coordinator writes to an agent adapter's stdin as the first newline-terminated line; stdin stays open afterwards for `cancel` control lines. Stdout is reserved for bounded NDJSON protocol events; stderr is for diagnostics. Credentials travel as environment variable references, never as values in this document. See docs/agent-adapters.md.",
   "type": "object",
   "required": [
     "protocolVersion",
@@ -142,7 +142,7 @@
           "properties": { "mode": { "enum": ["agentic", "basic", "off"] } }
         },
         "sampling": {
-          "type": "object",
+          "type": ["object", "null"],
           "description": "Adapter-specific sampling knobs; free form by design."
         }
       }
@@ -168,7 +168,7 @@
         "eventsFile": { "type": ["string", "null"] },
         "resultFile": { "type": ["string", "null"] }
       },
-      "description": "Artifact directory is created if missing; eventsFile/resultFile are coordinator-owned destinations written by the host."
+      "description": "Artifact directory is created if missing; eventsFile/resultFile are coordinator-owned destinations written by the host. An adapter that spawns an out-of-reach child tree MAY record its root pid in `child-pid.txt` here (POSIX: the process-group leader, so the host's group sweep reaches the whole tree; Windows: the root pid for the tree kill); the host sweeps that pid best-effort after every path."
     }
   }
 }

@@ -7,7 +7,7 @@ Status: implemented (2026-10-26). Depends on [AP-01](01-workspace-and-ci.md) and
 
 Shipped as protocol v1 in `packages/agent-adapter-protocol/` (host plus the
 checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
-`packages/agent-adapter-cline/`, with 20 protocol conformance tests and 12
+`packages/agent-adapter-cline/`, with 22 protocol conformance tests and 13
 adapter tests (stub-CLI driven through the real host). Implemented decisions
 and deviations from the proposals below are documented in
 [docs/agent-adapters.md](../../agent-adapters.md):
@@ -31,11 +31,22 @@ and deviations from the proposals below are documented in
   result cannot race the adapter's own signal handler, and the adapter's
   SIGINT/SIGTERM handlers are registered before the request is read. The
   adapter additionally owns its child group: it sweeps it (SIGKILL) on
-  every final and on exit, its 3s stop escalation is shorter than the
-  host's default 5s grace, one stdin line consumer feeds both the request
-  and the control lines (a `cancel` in the same chunk as the request is
-  never discarded), and a stop that lands before the spawn suppresses the
-  spawn.
+  every final, on exit, and when its own stdout closes (host death), its
+  3s stop escalation is shorter than the host's default 5s grace, one
+  stdin line consumer feeds both the request and the control lines (a
+  `cancel` in the same chunk as the request is never discarded), and a
+  stop that lands before the spawn suppresses the spawn. The adapter also
+  records the child's root pid in `child-pid.txt` under the artifact dir,
+  and the host sweeps that recorded pid after every path - the backstop
+  that covers protocol-violation kills, which SIGKILL the adapter before
+  any of its own cleanup can run.
+- The checked-in schemas were corrected to match the implemented contract
+  (request description: stdin stays open for `cancel` control lines;
+  hello usage-semantics object scoped to `t: hello`; final usage carries
+  the normalized totals shape with an optional `estimated` flag;
+  `profile.sampling` accepts null), and both test suites validate their
+  own requests and event streams against the schemas with ajv so
+  schema/validator drift fails CI.
 - The conformance suite includes the fake adapters, framing and
   grandchild-kill tests; no live Cline run has been executed.
 

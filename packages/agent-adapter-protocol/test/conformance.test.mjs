@@ -7,10 +7,12 @@ import { mkdtempSync, statSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import Ajv from "ajv";
 import { runAdapter } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures");
+const schemasDir = join(here, "..", "..", "..", "schemas");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function makeRequest(root, overrides = {}) {
@@ -228,6 +230,53 @@ test("leaked grandchild is killed with the owned tree", async () => {
     first,
     "leaked grandchild kept writing after the owned tree was killed",
   );
+});
+
+test("host sweeps the recorded child group after a protocol violation", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ap03-proto-leak-"));
+  const heartbeatFile = join(root, "heartbeat.txt");
+  const request = makeRequest(root, { limits: { maxEventBytes: 1000 } });
+  const result = await runAdapter(request, {
+    executable: process.execPath,
+    args: [join(fixtures, "fake-protocol-leak.mjs")],
+    env: { PROTO_LEAK_HB_FILE: heartbeatFile },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "event_oversized");
+  const first = existsSync(heartbeatFile) ? statSync(heartbeatFile).size : 0;
+  assert.ok(first > 0, "heartbeat ran before the protocol-violation kill");
+  await sleep(600);
+  const second = statSync(heartbeatFile).size;
+  assert.equal(
+    second,
+    first,
+    "recorded child group survived the protocol-violation kill",
+  );
+});
+
+test("checked-in schemas accept the protocol's own happy path", async () => {
+  const ajv = new Ajv({ validateSchema: false, strict: false });
+  const validateRequest = ajv.compile(
+    JSON.parse(
+      readFileSync(join(schemasDir, "adapter-request.v1.schema.json"), "utf8"),
+    ),
+  );
+  const validateEvent = ajv.compile(
+    JSON.parse(
+      readFileSync(join(schemasDir, "adapter-events.v1.schema.json"), "utf8"),
+    ),
+  );
+  const { request, result } = await runFixture("fake-ok.mjs");
+  assert.ok(
+    validateRequest(request),
+    `request: ${JSON.stringify(validateRequest.errors)}`,
+  );
+  for (const event of result.events) {
+    assert.ok(
+      validateEvent(event),
+      `${event.t}: ${JSON.stringify(validateEvent.errors)}`,
+    );
+  }
 });
 
 test("event after the final is a protocol error", async () => {
