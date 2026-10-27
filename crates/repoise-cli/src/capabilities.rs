@@ -35,7 +35,7 @@ pub fn document(heartbeat_ms: u64) -> Value {
             "supported": true,
             "command": "bench",
             "docs": "docs/bench.md",
-            "note": "Suite-driven benchmark coordinator (AP-04): native orchestration; each trial's agent process runs through the optional AP-03 Node host bridge. Exit codes: 0 completed, 1 operational failure, 2 usage, 3 preflight/suite failure, 4 interrupted.",
+            "note": "Suite-driven benchmark coordinator (AP-04/AP-05): native orchestration; each trial's agent process runs through the optional AP-03 Node host bridge; completed trials are graded by the task's declared evaluator and the published report carries grading counts, predeclared paired comparisons and the predeclared quality gate; `bench report` rebuilds the report offline. Exit codes: 0 completed, 1 operational failure, 2 usage, 3 preflight/suite failure, 4 interrupted.",
         },
         "exitCodes": {
             "ok": 0,

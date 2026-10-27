@@ -1,4 +1,4 @@
-# Benchmark runner (`repoise bench`, AP-04)
+# Benchmark runner (`repoise bench`, AP-04/AP-05)
 
 `repoise bench` runs suite-driven agent benchmark experiments: repeated
 trials over one frozen repository snapshot, in isolated disposable worktrees,
@@ -12,9 +12,15 @@ orchestration (suite parsing, preflight, worktrees, MCP wiring, artifacts,
 reports) runs without Node; Node is the optional companion that is required
 only for actually launching adapter processes.
 
-Quality grading, metrics comparison and report publishing are AP-05. This
-runner records completion and resources only; the report carries a
-`qualityGate: not_evaluated` note.
+Independent post-trial grading, paired metric comparison and report
+publishing are part of the runner (AP-05): each completed trial is graded
+by its task's declared evaluator (`grading.json`), and the published report
+(`report.json` + rendered `report.md`) carries status/grading counts, per-task
+and per-condition grading summaries, the predeclared paired comparisons and
+the predeclared quality gate. `bench report` re-grades recorded trials and
+rebuilds the report offline. Grading is data-only: transcripts and repository
+content are never executed, and a trial's own assertions or exit code are
+never treated as correctness.
 
 ## Command surface
 
@@ -34,6 +40,19 @@ repoise bench --suite <PATH> [--json] [--dry-run]
 - `--repeat <N>` / `--seed <N>` — override the suite's repetition count and
   seed (the frozen plan records which overrides applied).
 - `--output <DIR>` — override the artifact root (default: `repoise-bench`).
+
+```sh
+repoise bench report --experiment <EXPERIMENT_ID> [--output <DIR>] [--json]
+```
+
+- `bench report` (AP-05) rebuilds a report from the frozen `manifest.json` and
+  the recorded trial artifacts under `<output>/<experimentId>/`: every trial
+  with a declared evaluator is re-graded (a valid operator-written manual
+  grading record is kept unchanged), and `report.json`/`report.md` are
+  rewritten. It reads and writes only artifacts — no worktrees, no agent
+  processes, no network. `--experiment` is required; the command exits `0`
+  on success and `1` when the experiment id is missing or the experiment
+  directory / artifacts are incomplete.
 
 Environment: `REPOISE_BENCH_HOST_BRIDGE` pins the host bridge path (default:
 the checked-in `bin/adapter-host-run.mjs` resolved from the source checkout
@@ -87,7 +106,11 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
 - `snapshot` — `commit` (default; clean tree required) or `patch`
   (`patchFile` with a git-apply-able patch over `revision`, recorded by hash).
 - `tasks` — exactly one of `prompt` / `promptFile` per task; neither may
-  contain grading answers (that is AP-05 territory).
+  contain grading answers. Optional AP-05 fields: `category` (the
+  assessment taxonomy), `heldOut` (development vs held-out split),
+  `allowedPaths` (write-scope change constraints, workspace-root relative),
+  `expectedArtifacts` (names of files the agent should leave in the trial's
+  `adapter/` directory) and `evaluator` (see below).
 - ids — experiment, task and condition ids must contain only
   `[A-Za-z0-9_-]`: the experiment id names the artifact directory (so `.`/`..`
   could escape the output root) and trial ids and artifact directories are
@@ -113,6 +136,29 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   trials (a trial already running still completes, bounded by its own
   `wallClockMs`); trials not started after it are recorded as `not_started`
   and the report is still published.
+- `tasks[].evaluator` — how the task is graded after the trial, outside agent
+  visibility. `method` is `deterministic` (default), `humanRubric` or
+  `modelJudge`; `answerField` names the field of the final event's `data`
+  object holding the answer text (default `answer`); `rubric` is required
+  for `humanRubric`; `checks` (required for `deterministic`, forbidden for
+  the declared-only methods) are literal-substring assertions: `type`
+  (`containsAny` / `containsAll` / `notContains`, case-sensitive), `values`
+  (non-empty literal substrings; `containsAny` accepts alternative correct
+  evidence — exact string equality is deliberately not the default) and an
+  optional `scope`/`artifact` pair that reads `adapter/<name>` from the
+  trial's artifact directory (names only, must be listed in the task's
+  `expectedArtifacts`). A task without an evaluator is never graded
+  (`not_graded`).
+- `gates` — predeclared quality gate (AP-05); thresholds are decided before
+  the experiment, not fitted to its results. `baseline` (condition id),
+  `minCorrectness` (default 1.0), `correctnessMargin` (default 0.0) and
+  `improvements` (declared paired comparisons: `candidate`, `metric`
+  (`agentMs` or `inputTokens`) and `threshold` in (0, 1]). Omitted: the report
+  is produced without a gate (`qualityGate.status: not_configured`) and
+  without paired analysis.
+- `report` — report analysis configuration: `bootstrapIterations` (default
+  1000) and `bootstrapSeed` (default 0) for the task-cluster bootstrap paired
+  interval estimate. Omitted: the defaults apply.
 
 The suite file, every `promptFile` and the `patchFile` of a recorded patch
 snapshot must live **outside** the benchmarked repository: a trial checkout
@@ -183,6 +229,63 @@ index, host-bridge or artifact failure — the workspace is always cleaned up
 and the experiment continues), `not_started` (budget, interruption or an
 unrecoverable coordinator failure; the report is always published).
 
+## Grading (AP-05)
+
+After each trial's `trial.json` is written, the coordinator grades the trial
+for its task (outside agent visibility, data-only — transcript text and
+repository content are matched as data and never executed) and writes
+`trials/<id>/grading.json` (schema v1, checked in at
+[schemas/bench-grading.v1.schema.json](../schemas/bench-grading.v1.schema.json)):
+
+| Status | Meaning |
+| ------ | ------- |
+| `pass` / `fail` | deterministic checks over the recorded answer (and declared artifact files) — a trial is `fail` when the answer field is missing entirely |
+| `not_graded` | no evaluator declared; a declared `humanRubric`/`modelJudge` result pending a manual record; a censored trial status (timeout, adapter failure, cancellation) — censored trials are never graded as wrong answers |
+| `evaluator_error` | the grading engine itself failed (missing/corrupt evidence, an invalid manual record) |
+
+Method handling:
+
+- `deterministic` — checks run in-process; all checks must pass for a `pass`.
+- `humanRubric` — declared-only in this build: the operator writes the
+  manual grading record (schema version, status `pass`/`fail`, the declared
+  method, a non-empty reason) to `trials/<id>/grading.json` and the engine
+  keeps it unchanged; an existing record with a mismatched method or missing
+  fields is an `evaluator_error`, never silently accepted. Engine-written
+  records carry `source: "engine"` and are replaced on the next grading pass.
+- `modelJudge` — declared-only: this build runs no model judge (grading must
+  stay independent of the tested model); the result must also be written as
+  a manual grading record.
+
+## Report (AP-05)
+
+`report.json` (schema v1) is written at experiment end and re-rendered to
+`report.md` from the same object so the two never diverge. Contents:
+
+- `counts` — planned / attempted / completed / timedOut / cancelled /
+  invalid / notStarted plus the grading outcomes (`graded`, `pass`, `fail`,
+  `notGraded`, `evaluatorError`); every planned slot lands in exactly one
+  status bucket, nothing is dropped.
+- `grading` — overall, per-condition and per-task grading summaries with the
+  correctness rate over graded trials (`heldOutTasks` / `developmentTasks`
+  split included).
+- `analysis` — present only when `gates` is declared: for each declared
+  improvement, the median per-task paired difference and reduction (candidate
+  minus baseline, over tasks with measured data on both sides; zero or
+  missing baselines yield an undefined reduction with an explicit note), a
+  task-cluster bootstrap percentile interval (recorded iterations and seed;
+  all repetitions of a resampled task stay together) and descriptive stats
+  (timeout rate, capped/lower-bound timing, labelled success-only medians).
+- `qualityGate` — the predeclared gate evaluated: per-condition correctness
+  vs `minCorrectness`, per-improvement median paired reduction vs
+  `threshold`, and the candidate-vs-baseline `correctnessMargin` floor.
+  Status is `pass`, `fail` or `insufficient_data` (with the reason per
+  check); `not_configured` when the suite declares no gate. A pass/fail
+  verdict is descriptive evidence against the predeclared thresholds, not a
+  product gate (the v1 section 11 gates remain the product targets).
+
+`bench report` re-runs grading and report assembly from the frozen manifest
+and trial artifacts (see the command surface above).
+
 ## Artifacts
 
 Under `<output.dir>/<experiment.id>/`:
@@ -190,8 +293,10 @@ Under `<output.dir>/<experiment.id>/`:
 | Path | Content |
 | ---- | ------- |
 | `manifest.json` | Immutable frozen experiment: suite hash, overrides, snapshot, conditions, plan, adapter/host, budgets, guidance, unknowns |
-| `report.json` | Final report: status, duration, per-trial records, `byStatus`, `qualityGate: not_evaluated` (AP-05) |
+| `report.json` | Final report (schema v1): status, duration, per-trial records, `counts`, `grading`, `analysis` (when gates declared) and `qualityGate` |
+| `report.md` | Human-readable rendering of `report.json` (derived from the same object) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
+| `trials/<id>/grading.json` | One trial's grading record (schema v1); engine records carry `source: "engine"`, operator manual records do not |
 | `trials/<id>/request.json` | The AP-03 request with `condition.mcp.env` values redacted (names kept; the live request with real values goes only to the host bridge over stdin; a local artifact) |
 | `trials/<id>/adapter/` | `events.ndjson`, `result.json`, `stderr.log` (adapter diagnostics) |
 | `trials/<id>/host.log` | Coordinator-side bridge stderr |
@@ -205,7 +310,11 @@ configured local output directory.
 - Worktrees are isolation, not security sandboxes: hidden-test integrity for
   coding tasks is a declared limitation until a host-enforced mechanism is
   defined (AP-05/AP-06).
-- No grading, metrics comparison or report export yet (AP-05).
+- `modelJudge` evaluators are declared-only (no model-judge runtime; no
+  self-grading with the tested model); `humanRubric` results and any model-judge
+  results must be written as manual grading records.
+- The replay-evidence v1 import path (`scripts/eval/`) is unchanged and cannot
+  represent per-repetition multi-axis experiments; no v1 export is offered.
 - No `--events` NDJSON stream for `bench` (progress lines only; AP-02 stream
   remains on `index`/`watch`).
 - Token/cost limits are forwarded to the adapter and enforced by the host

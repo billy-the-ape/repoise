@@ -29,7 +29,8 @@ The JSON document (`schemaVersion: 1`) carries:
 - `commands` — every command with its machine output modes
   (`json`, `events`, or `mcp-stdio`);
 - `benchmark` — `supported: true`; the `bench` coordinator (AP-04) with its
-  command, docs path and exit-code note (see [bench](bench.md));
+  command, docs path and exit-code note, including the offline `bench report`
+  rebuild (AP-05; see [bench](bench.md));
 - `exitCodes` — the stable exit-code table (below);
 - `compatibility` — the compatibility policy (below).
 

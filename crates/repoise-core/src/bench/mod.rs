@@ -9,7 +9,9 @@
 //! the explicit optional companion required to run agent adapters. See
 //! `docs/bench.md`.
 
+pub mod analysis;
 pub mod artifacts;
+pub mod grading;
 pub mod plan;
 pub mod preflight;
 pub mod runner;
@@ -234,7 +236,7 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
     for (index, trial) in trials.iter().enumerate() {
         // Interruption: stop scheduling; remaining trials are not_started.
         if interrupted.load(Ordering::SeqCst) {
-            push_not_started(&mut records, trial, "interrupted");
+            push_not_started(&layout, &mut records, trial, "interrupted");
             continue;
         }
         // Experiment wall-time cap: checked between trials (a running trial
@@ -242,14 +244,14 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         if let Some(deadline) = experiment_deadline
             && Instant::now() >= deadline
         {
-            push_not_started(&mut records, trial, "experiment_budget_exceeded");
+            push_not_started(&layout, &mut records, trial, "experiment_budget_exceeded");
             continue;
         }
         // Drift: the frozen inputs must still hold before every trial.
         if let Err(reason) = check_drift(suite_path, suite_hash, suite, preflight) {
-            push_not_started(&mut records, trial, &reason);
+            push_not_started(&layout, &mut records, trial, &reason);
             for remaining in &trials[index + 1..] {
-                push_not_started(&mut records, remaining, &reason);
+                push_not_started(&layout, &mut records, remaining, &reason);
             }
             report_status = "failed";
             failure_reason = Some(reason.clone());
@@ -266,9 +268,9 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
             Ok(outcome) => outcome,
             Err(err) => {
                 let reason = format!("runner_failure: {err}");
-                push_not_started(&mut records, trial, &reason);
+                push_not_started(&layout, &mut records, trial, &reason);
                 for remaining in &trials[index + 1..] {
-                    push_not_started(&mut records, remaining, &reason);
+                    push_not_started(&layout, &mut records, remaining, &reason);
                 }
                 report_status = "failed";
                 failure_reason = Some(reason);
@@ -285,16 +287,38 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         report_status = "interrupted";
     }
 
-    let report = build_report(
-        suite,
+    // The report reads the recorded trial + grading artifacts (the same
+    // sources a later `bench report` rebuild uses).
+    let trial_data = collect_trials(&layout)?;
+    let provenance: Vec<suite::TaskProvenance> = suite
+        .tasks
+        .iter()
+        .map(|task| task.provenance())
+        .collect::<Result<Vec<_>, _>>()?;
+    let input = ReportInput {
+        experiment_id: &suite.id,
         suite_hash,
-        started,
-        &started_at,
+        tasks: &provenance,
+        conditions: &suite.conditions,
+        gates: suite.gates.as_ref(),
+        report_spec: suite.report.as_ref(),
+        planned: trials.len(),
+        trials: &trial_data,
+    };
+    let ended_at = runner::now_utc();
+    let report = assemble_report(
+        &input,
         report_status,
         failure_reason,
-        &records,
+        &started_at,
+        &ended_at,
+        started.elapsed().as_millis(),
     );
     artifacts::write_json(&layout.report_path(), &report)?;
+    artifacts::write_text(
+        &layout.experiment_dir.join("report.md"),
+        &analysis::render_markdown(&report),
+    )?;
     let exit_code = match report_status {
         "interrupted" => EXIT_INTERRUPTED,
         "failed" => EXIT_OPERATIONAL,
@@ -410,15 +434,26 @@ fn patch_drift_error(patch_file: &Path, patch_hash: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn push_not_started(records: &mut Vec<Value>, trial: &plan::Trial, reason: &str) {
-    records.push(record_summary(
+fn push_not_started(
+    layout: &artifacts::Layout,
+    records: &mut Vec<Value>,
+    trial: &plan::Trial,
+    reason: &str,
+) {
+    let record = record_summary(
         trial,
         &runner::TrialOutcome {
             status: "not_started".into(),
             reason: Some(reason.to_string()),
             summary: format!("{reason}: not started"),
         },
-    ));
+    );
+    // Persist the slot so a later `bench report` rebuild sees the same
+    // counts; a failure here must not mask the real failure reason.
+    let dir = layout.trial_dir(&trial.trial_id);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = artifacts::write_json(&dir.join("trial.json"), &record);
+    records.push(record);
 }
 
 fn record_summary(trial: &plan::Trial, outcome: &runner::TrialOutcome) -> Value {
@@ -434,37 +469,278 @@ fn record_summary(trial: &plan::Trial, outcome: &runner::TrialOutcome) -> Value 
     })
 }
 
-/// The final experiment report (AP-05 owns grading; the quality gate stays
-/// null here).
-fn build_report(
-    suite: &suite::Suite,
-    suite_hash: &str,
-    started: Instant,
-    started_at: &str,
+/// Everything the report needs, decoupled from the live suite so a report
+/// rebuild can work from the frozen manifest alone.
+struct ReportInput<'a> {
+    experiment_id: &'a str,
+    suite_hash: &'a str,
+    tasks: &'a [suite::TaskProvenance],
+    conditions: &'a [suite::Condition],
+    gates: Option<&'a suite::Gates>,
+    report_spec: Option<&'a suite::ReportSpec>,
+    planned: usize,
+    trials: &'a [analysis::TrialData],
+}
+
+/// The final experiment report (AP-05): status/grading counts, per-task and
+/// per-condition grading summaries, the declared paired comparisons (when
+/// gates are predeclared) and the predeclared quality gate. The same value
+/// is written to `report.json`; `report.md` is rendered from it.
+fn assemble_report(
+    input: &ReportInput,
     status: &str,
     failure_reason: Option<String>,
-    records: &[Value],
+    started_at: &str,
+    ended_at: &str,
+    duration_ms: u128,
 ) -> Value {
-    let mut by_status: BTreeMap<String, u64> = BTreeMap::new();
-    for record in records {
-        let key = record["status"].as_str().unwrap_or("unknown").to_string();
-        *by_status.entry(key).or_insert(0) += 1;
-    }
+    let records: Vec<Value> = input
+        .trials
+        .iter()
+        .map(|data| {
+            serde_json::json!({
+                "trialId": data.trial["trialId"],
+                "taskId": data.trial["taskId"],
+                "conditionId": data.trial["conditionId"],
+                "repetition": data.trial["repetition"],
+                "status": data.trial["status"],
+                "reason": data.trial["reason"],
+                "grading": data
+                    .grading
+                    .as_ref()
+                    .and_then(|grading| grading.get("status").cloned())
+                    .unwrap_or(Value::Null),
+                "timings": data.trial.get("timings").cloned().unwrap_or(Value::Null),
+                "usage": data.trial.get("usage").cloned().unwrap_or(Value::Null)
+            })
+        })
+        .collect();
+    let counts = analysis::counts(input.trials, input.planned);
+    let grading = analysis::grading_summary(input.trials, input.tasks);
+    let paired = input.gates.map(|gates| {
+        let spec = input.report_spec.unwrap_or(&suite::ReportSpec {
+            bootstrap_iterations: 1000,
+            bootstrap_seed: 0,
+        });
+        analysis::paired_analysis(input.trials, input.tasks, gates, spec)
+    });
+    let gate = analysis::quality_gate(input.trials, input.conditions, input.gates, paired.as_ref());
     serde_json::json!({
         "schemaVersion": 1,
-        "experimentId": suite.id,
-        "suiteHash": suite_hash,
+        "experimentId": input.experiment_id,
+        "suiteHash": input.suite_hash,
         "status": status,
         "failureReason": failure_reason,
         "startedAtUtc": started_at,
-        "endedAtUtc": runner::now_utc(),
-        "durationMs": started.elapsed().as_millis(),
+        "endedAtUtc": ended_at,
+        "durationMs": duration_ms,
         "trials": records,
-        "byStatus": by_status,
-        "qualityGate": {
-            "status": "not_evaluated",
-            "note": "completion criteria and grading are defined by AP-05; this runner records completion and resources only"
+        "counts": counts,
+        "grading": grading,
+        "analysis": paired,
+        "qualityGate": gate
+    })
+}
+
+/// Collects every recorded trial (`trial.json` plus optional
+/// `grading.json`) from the experiment's trial directories, sorted by
+/// trial id. Directories without a `trial.json` are skipped: a partial
+/// write is the only way one can exist, and the status counts then reflect
+/// the records actually on disk.
+fn collect_trials(layout: &artifacts::Layout) -> Result<Vec<analysis::TrialData>, Error> {
+    let mut collected: Vec<analysis::TrialData> = Vec::new();
+    let entries = std::fs::read_dir(&layout.trials_dir).map_err(Error::Io)?;
+    for entry in entries {
+        let entry = entry.map_err(Error::Io)?;
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
         }
+        let trial_path = entry.path().join("trial.json");
+        let Some(trial) = artifacts::read_json(&trial_path).ok() else {
+            continue;
+        };
+        let grading = artifacts::read_json(&entry.path().join("grading.json")).ok();
+        collected.push(analysis::TrialData { trial, grading });
+    }
+    collected.sort_by(|a, b| {
+        a.trial["trialId"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b.trial["trialId"].as_str().unwrap_or(""))
+    });
+    Ok(collected)
+}
+
+/// `repoise bench report` (AP-05): re-grades recorded trials offline
+/// (deterministic checks re-run; manual grading records are picked up when
+/// written) and reassembles `report.json`/`report.md` from the frozen
+/// manifest and the trial artifacts. The run facts (start/end/duration,
+/// status) carry over from the previous report when present.
+pub struct RebuildRequest {
+    pub output: PathBuf,
+    pub experiment_id: String,
+    pub json: bool,
+}
+
+pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
+    let output_root = suite::resolve_path(&request.output.to_string_lossy())?;
+    let experiment_dir = output_root.join(&request.experiment_id);
+    let manifest = artifacts::read_json(&experiment_dir.join("manifest.json")).map_err(|_| {
+        Error::Config(format!(
+            "no experiment manifest for '{}' under {}; the experiment has not been run (or the \
+             output root is wrong)",
+            request.experiment_id,
+            output_root.display()
+        ))
+    })?;
+    let manifest_error = |field: &str| -> Error {
+        Error::Config(format!(
+            "manifest for experiment '{}' is missing or invalid field '{field}'",
+            request.experiment_id
+        ))
+    };
+    let tasks: Vec<suite::TaskProvenance> = manifest["tasks"]
+        .as_array()
+        .ok_or_else(|| manifest_error("tasks"))?
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| Error::Json(err.to_string()))?;
+    let conditions: Vec<suite::Condition> = manifest["conditions"]
+        .as_array()
+        .ok_or_else(|| manifest_error("conditions"))?
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| Error::Json(err.to_string()))?;
+    let gates: Option<suite::Gates> = if manifest["gates"].is_null() {
+        None
+    } else {
+        Some(
+            serde_json::from_value(manifest["gates"].clone())
+                .map_err(|err| Error::Json(err.to_string()))?,
+        )
+    };
+    let report_spec: Option<suite::ReportSpec> = if manifest["report"].is_null() {
+        None
+    } else {
+        Some(
+            serde_json::from_value(manifest["report"].clone())
+                .map_err(|err| Error::Json(err.to_string()))?,
+        )
+    };
+    let planned = manifest["trials"]
+        .as_array()
+        .map(|trials| trials.len())
+        .unwrap_or(0);
+
+    // Re-grade every recorded trial offline: deterministic checks re-run,
+    // valid manual grading records are picked up, engine failures are
+    // recorded as evaluator_error.
+    let layout = artifacts::Layout {
+        experiment_dir: experiment_dir.clone(),
+        cache_dir: experiment_dir.join("cache"),
+        workspaces_dir: experiment_dir.join("workspaces"),
+        trials_dir: experiment_dir.join("trials"),
+    };
+    let entries = std::fs::read_dir(&layout.trials_dir).map_err(Error::Io)?;
+    for entry in entries {
+        let entry = entry.map_err(Error::Io)?;
+        let trial_dir = entry.path();
+        if !trial_dir.join("trial.json").exists() {
+            continue;
+        }
+        let trial = artifacts::read_json(&trial_dir.join("trial.json")).ok();
+        let Some(trial) = trial else {
+            continue;
+        };
+        let task_id = trial["taskId"].as_str().unwrap_or("");
+        let task = match tasks.iter().find(|task| task.id == task_id) {
+            Some(task) => task,
+            None => continue,
+        };
+        let trial_id = trial["trialId"].as_str().unwrap_or(task_id);
+        let condition_id = trial["conditionId"].as_str().unwrap_or("");
+        let repetition = trial["repetition"].as_u64().unwrap_or(0) as u32;
+        let status = trial["status"].as_str().unwrap_or("");
+        let reason = trial["reason"].as_str().map(str::to_string);
+        let grading_task = task.grading_task();
+        if let Err(err) = grading::grade_and_write(
+            &grading_task,
+            &trial_dir,
+            trial_id,
+            condition_id,
+            repetition,
+            status,
+            reason.as_deref(),
+        ) {
+            let record = grading::evaluator_error_record(
+                trial_id,
+                task_id,
+                condition_id,
+                repetition,
+                task.evaluator
+                    .as_ref()
+                    .map(|evaluator| evaluator.method.as_str())
+                    .unwrap_or("none"),
+                &format!("evaluator failure: {err}"),
+            );
+            let _ = artifacts::write_json(&trial_dir.join("grading.json"), &record);
+        }
+    }
+
+    let trials = collect_trials(&layout)?;
+    // Run facts carry over from the previous report (it recorded the
+    // experiment run, not the analysis); the analysis itself is always
+    // recomputed.
+    let previous = artifacts::read_json(&layout.report_path()).ok();
+    let (started_at, ended_at, duration_ms, status) = match previous {
+        Some(report) => (
+            report["startedAtUtc"].as_str().unwrap_or("").to_string(),
+            report["endedAtUtc"].as_str().unwrap_or("").to_string(),
+            report["durationMs"].as_u64().unwrap_or(0) as u128,
+            report["status"].as_str().unwrap_or("unknown").to_string(),
+        ),
+        None => (
+            manifest["startedAtUtc"].as_str().unwrap_or("").to_string(),
+            runner::now_utc(),
+            0,
+            "unknown".into(),
+        ),
+    };
+    let suite_hash = manifest["suiteHash"].as_str().unwrap_or("");
+    let input = ReportInput {
+        experiment_id: &request.experiment_id,
+        suite_hash,
+        tasks: &tasks,
+        conditions: &conditions,
+        gates: gates.as_ref(),
+        report_spec: report_spec.as_ref(),
+        planned,
+        trials: &trials,
+    };
+    let report = assemble_report(&input, &status, None, &started_at, &ended_at, duration_ms);
+    artifacts::write_json(&layout.report_path(), &report)?;
+    artifacts::write_text(
+        &layout.experiment_dir.join("report.md"),
+        &analysis::render_markdown(&report),
+    )?;
+    let gate_status = report["qualityGate"]["status"]
+        .as_str()
+        .unwrap_or("?")
+        .to_string();
+    Ok(BenchOutcome {
+        exit_code: EXIT_OK,
+        payload: report,
+        summary: format!(
+            "report rebuilt for experiment '{}': {} trial(s), quality gate {}; report {}",
+            request.experiment_id,
+            trials.len(),
+            gate_status,
+            layout.report_path().display()
+        ),
     })
 }
 
@@ -485,6 +761,11 @@ mod tests {
                 prompt: Some("do it".into()),
                 prompt_file: None,
                 version: "1".into(),
+                category: None,
+                held_out: false,
+                allowed_paths: Vec::new(),
+                expected_artifacts: Vec::new(),
+                evaluator: None,
             }],
             conditions: vec![suite::Condition {
                 id: "baseline".into(),
@@ -516,6 +797,8 @@ mod tests {
             },
             limits: suite::Limits::default(),
             budgets: suite::Budgets::default(),
+            gates: None,
+            report: None,
             output: suite::OutputSpec::default(),
         }
     }

@@ -97,6 +97,28 @@ fn path_extension_suffix(path: &Path) -> String {
         .unwrap_or_else(|| "json".into())
 }
 
+/// Writes one text file atomically (write-then-rename in the same dir).
+pub fn write_text(path: &Path, contents: &str) -> crate::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(Error::Io)?;
+    }
+    let tmp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .map(|ext| ext.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "md".into())
+    ));
+    fs::write(&tmp, contents).map_err(Error::Io)?;
+    fs::rename(&tmp, path).map_err(Error::Io)?;
+    Ok(())
+}
+
+/// Reads one JSON document (missing or invalid file is an error).
+pub fn read_json(path: &Path) -> crate::Result<Value> {
+    let raw = read_to_string(path)?;
+    serde_json::from_str(&raw).map_err(|err| Error::Json(format!("{}: {err}", path.display())))
+}
+
 /// Appends one line (e.g. an adapter stderr chunk or host diagnostic).
 pub fn append_line(path: &Path, line: &str) -> crate::Result<()> {
     if let Some(parent) = path.parent() {
