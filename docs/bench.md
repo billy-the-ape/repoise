@@ -36,7 +36,11 @@ repoise bench --suite <PATH> [--json] [--dry-run]
 - `--output <DIR>` — override the artifact root (default: `repoise-bench`).
 
 Environment: `REPOISE_BENCH_HOST_BRIDGE` pins the host bridge path (default:
-the checked-in `bin/adapter-host-run.mjs` next to the running checkout);
+the checked-in `bin/adapter-host-run.mjs` resolved from the source checkout
+the running executable was built from — the current directory is never
+consulted, and a bridge inside the benchmarked repository is rejected, since
+repository content is untrusted data and must not be executed automatically;
+point the override at an explicit bridge file in that case);
 `REPOISE_CACHE_DIR` relocates the experiment cache like every other command.
 
 Exit codes (stable; also in `repoise capabilities`): `0` completed, `1`
@@ -119,7 +123,9 @@ Preflight freezes the experiment and refuses to approximate:
   Repoise's own state and never count as dirt — running from the repository
   root with the default in-repo `output.dir` works across invocations — and
   an output directory equal to the repository root is rejected;
-- `node`, the host bridge and the adapter executable resolve;
+- `node`, the host bridge (resolved from the executable's source checkout,
+  never from the current directory or the benchmarked repository) and the
+  adapter executable resolve;
 - `env:`/`credentialRef` references resolve (names only are recorded); the
   provider's `credentialRef` variable is forwarded to the adapter's process
   environment (it need not be re-declared under `adapter.env`), and the

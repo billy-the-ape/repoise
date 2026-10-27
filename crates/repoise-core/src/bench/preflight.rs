@@ -220,7 +220,7 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
         .stdout;
     let node_version = String::from_utf8_lossy(&node_version).trim().to_string();
 
-    let bridge = find_bridge()?;
+    let bridge = find_bridge(&root)?;
     let runner = find_executable(&suite.adapter.executable).ok_or_else(|| {
         Error::Config(format!(
             "adapter executable '{}' not found (absolute path or bare name on PATH)",
@@ -403,35 +403,68 @@ pub fn find_executable(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Resolves the AP-03 host bridge: the explicit env override wins, then a
-/// source checkout walked up from the current directory.
-pub fn find_bridge() -> Result<PathBuf, Error> {
-    if let Some(raw) = std::env::var(BRIDGE_ENV_VAR)
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
+/// Resolves the AP-03 host bridge: the explicit env override wins, then the
+/// source checkout the running executable was built from (walked up from
+/// `current_exe()`). The user's current directory is never consulted, and a
+/// resolved bridge inside the benchmarked repository is rejected:
+/// repository content is untrusted data, so a repo that ships its own
+/// `adapter-host-run.mjs` must never be executed automatically with adapter
+/// credentials.
+pub fn find_bridge(root: &Path) -> Result<PathBuf, Error> {
+    find_bridge_with(root, &|name| std::env::var(name).ok())
+}
+
+/// `find_bridge` with an injectable environment lookup (tests).
+fn find_bridge_with(
+    root: &Path,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<PathBuf, Error> {
+    if let Some(raw) = lookup(BRIDGE_ENV_VAR).filter(|value| !value.is_empty()) {
         let path = PathBuf::from(raw.as_str());
         if path.is_file() {
+            // An explicit override is an operator choice made outside the
+            // benchmarked repository's control.
             return Ok(path);
         }
         return Err(Error::Config(format!(
             "{BRIDGE_ENV_VAR} is set but {raw} is not a file"
         )));
     }
-    let mut directory = std::env::current_dir().map_err(Error::Io)?;
+    let exe = std::env::current_exe().map_err(Error::Io)?;
+    let start = exe
+        .parent()
+        .map(|parent| parent.to_path_buf())
+        .unwrap_or_default();
+    match bridge_candidates_from(&start) {
+        Some(candidate) if is_within(root, &candidate) => Err(Error::Config(format!(
+            "the host bridge {} resolved next to the running executable is inside \
+             the benchmarked repository {}; repository content is untrusted data \
+             and will not be executed automatically — set {BRIDGE_ENV_VAR} to the \
+             bridge file explicitly",
+            candidate.display(),
+            root.display()
+        ))),
+        Some(candidate) => Ok(candidate),
+        None => Err(Error::Config(format!(
+            "agent adapter protocol host bridge not found next to the running \
+             executable ({}); set {BRIDGE_ENV_VAR} to the adapter-host-run.mjs path",
+            BRIDGE_RELATIVE_PATH
+        ))),
+    }
+}
+
+/// Walks up from `start` returning the first checked-in host bridge.
+fn bridge_candidates_from(start: &Path) -> Option<PathBuf> {
+    let mut directory = start.to_path_buf();
     loop {
         let candidate = directory.join(BRIDGE_RELATIVE_PATH);
         if candidate.is_file() {
-            return Ok(candidate);
+            return Some(candidate);
         }
         if !directory.pop() {
-            break;
+            return None;
         }
     }
-    Err(Error::Config(format!(
-        "agent adapter protocol host bridge not found: set {BRIDGE_ENV_VAR} to the \
-         adapter-host-run.mjs path, or run from a source checkout containing {BRIDGE_RELATIVE_PATH}"
-    )))
 }
 
 /// Syntactically normalizes a path (folds `.`/`..` components) without
@@ -661,4 +694,52 @@ fn unknown_settings(suite: &Suite) -> Vec<String> {
     unknowns.push("hardware model and driver (not probed)".to_string());
     unknowns.push("provider prompt-cache state (cold versus warm is not measured)".to_string());
     unknowns
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The test binary is built from this source checkout, so walking up
+    /// from `current_exe()` locates the checked-in host bridge.
+    #[test]
+    fn find_bridge_never_auto_executes_a_repository_bridge() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let Some(start) = exe.parent() else {
+            return;
+        };
+        let Some(candidate) = bridge_candidates_from(start) else {
+            // The test binary was not built inside a checkout (e.g. a
+            // packed archive); the override branches still verify.
+            let no_env: &dyn Fn(&str) -> Option<String> = &|_| None;
+            let err = find_bridge_with(Path::new("/tmp"), no_env).unwrap_err();
+            assert!(err.to_string().contains("not found"), "{err}");
+            return;
+        };
+        let no_env: &dyn Fn(&str) -> Option<String> = &|_| None;
+        // A root that contains the candidate (the benchmarked repository
+        // ships the bridge) must refuse to auto-execute it.
+        let root = candidate
+            .ancestors()
+            .find(|ancestor| ancestor.join(BRIDGE_RELATIVE_PATH) == candidate)
+            .expect("candidate root");
+        let err = find_bridge_with(root, no_env).unwrap_err();
+        assert!(err.to_string().contains("untrusted"), "{err}");
+        // The same bridge next to the executable is accepted for an
+        // unrelated root.
+        let ok = find_bridge_with(Path::new("/definitely-not-a-checkout"), no_env).expect("bridge");
+        assert_eq!(ok, candidate);
+        // An explicit override is an operator choice and always wins, even
+        // when it points inside the repository root.
+        let with_env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == BRIDGE_ENV_VAR).then(|| candidate.to_string_lossy().into_owned());
+        assert_eq!(
+            find_bridge_with(root, with_env).expect("explicit override"),
+            candidate
+        );
+        // An override pointing at a missing file is a clear preflight error.
+        let bad_env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == BRIDGE_ENV_VAR).then(|| "/nonexistent-bridge-7f3a.mjs".into());
+        let err = find_bridge_with(root, bad_env).unwrap_err();
+        assert!(err.to_string().contains("not a file"), "{err}");
+    }
 }

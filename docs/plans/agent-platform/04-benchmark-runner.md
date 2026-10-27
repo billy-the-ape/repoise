@@ -90,7 +90,14 @@ rejected); the hybrid vector gate also fails on `embedding.failed > 0`
 trial-id collisions across the task/condition boundary (the `-` joiner:
 task `a` + condition `r0-x` versus task `a-r0` + condition `x`) are
 rejected in suite validation. `README.md` and `docs/architecture.md` now
-document `repoise bench` and the `repoise mcp --search-mode` pin.
+document `repoise bench` and the `repoise mcp --search-mode` pin. Sixth
+round: the host bridge is resolved from the source checkout the running
+executable was built from (walked up from `current_exe()`) instead of the
+user's current directory, and a resolved bridge inside the benchmarked
+repository root is rejected — repository content is untrusted data, so a
+repo that ships its own `adapter-host-run.mjs` must never be executed
+automatically with adapter credentials (the explicit
+`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice).
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

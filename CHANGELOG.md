@@ -203,7 +203,16 @@ rejected), the hybrid vector gate now also fails on `embedding.failed > 0`
 trial-id collisions across the task/condition boundary (e.g. task `a` +
 condition `r0-x` versus task `a-r0` + condition `x`) are rejected in suite
 validation. `README.md` and `docs/architecture.md` now document `repoise
-bench` and the `repoise mcp --search-mode` pin. See [docs/bench.md](docs/bench.md) and
+bench` and the `repoise mcp --search-mode` pin. A sixth review round closed
+an untrusted-content execution gap: the host bridge is now resolved from the
+source checkout the running executable was built from (walked up from
+`current_exe()`) instead of the user's current directory, so a benchmarked
+repository that commits its own
+`packages/agent-adapter-protocol/bin/adapter-host-run.mjs` is never executed
+automatically with adapter credentials; a resolved bridge inside the
+benchmarked repository root is rejected (the explicit
+`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice). See
+[docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 
