@@ -81,9 +81,12 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
 - ids — experiment, task and condition ids must contain only
   `[A-Za-z0-9_-]`: the experiment id names the artifact directory (so `.`/`..`
   could escape the output root) and trial ids and artifact directories are
-  derived from the other ids, so other characters could make two distinct
-  ids collide after sanitizing (validation rejects them before any worktree
-  is created).
+  derived from the other ids. Generated trial ids (`t-{task}-r{rep}-{condition}`)
+  are additionally checked for cross-id collisions — the `-` joiner can make task `a` +
+  condition `r0-x` generate the same trial id as task `a-r0` + condition
+  `x` — so validation rejects ambiguous suites before any worktree is
+  created (other characters could also make ids ambiguous or let an
+  artifact directory escape the output root).
 - `conditions` — `baseline` (no Repoise tools or managed guidance; the
   managed overlay is removed from the disposable worktree only) or `repoise`
   (`searchMode` required: `lexical` or `hybrid`).
@@ -112,7 +115,10 @@ Preflight freezes the experiment and refuses to approximate:
 - the suite/prompt files are outside the repository root;
 - the snapshot is reproducible (clean committed tree, or an explicitly
   recorded patch); the resolved Repoise cache directory (e.g. the default
-  `.repoise`) is Repoise's own state and never counts as dirt;
+  `.repoise`) and the output root (artifacts and trial worktrees) are
+  Repoise's own state and never count as dirt — running from the repository
+  root with the default in-repo `output.dir` works across invocations — and
+  an output directory equal to the repository root is rejected;
 - `node`, the host bridge and the adapter executable resolve;
 - `env:`/`credentialRef` references resolve (names only are recorded); the
   provider's `credentialRef` variable is forwarded to the adapter's process
@@ -144,8 +150,11 @@ randomized per task/repetition block with the recorded seed). Each trial:
    hybrid/vectors-only condition, so a hybrid run can never silently
    degrade to lexical; the effective mode and any degradation are recorded
    in `trial.json` `mode`);
-3. writes the full AP-03 request (`trials/<id>/request.json`) and spawns the
-   host bridge (`node adapter-host-run.mjs <adapter> [args]`);
+3. writes a redacted copy of the AP-03 request
+   (`trials/<id>/request.json`; `condition.mcp.env` values are replaced with
+   a placeholder so secrets stay out of shareable artifacts) and sends the
+   unredacted request only to the host bridge over stdin
+   (`node adapter-host-run.mjs <adapter> [args]`);
 4. on SIGINT/SIGTERM sends the cooperative `cancel` line to the bridge,
    escalates to signals after the grace period, force-kills the bridge and
    its recorded process tree at the outer wall-clock deadline, and marks
@@ -170,7 +179,7 @@ Under `<output.dir>/<experiment.id>/`:
 | `manifest.json` | Immutable frozen experiment: suite hash, overrides, snapshot, conditions, plan, adapter/host, budgets, guidance, unknowns |
 | `report.json` | Final report: status, duration, per-trial records, `byStatus`, `qualityGate: not_evaluated` (AP-05) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
-| `trials/<id>/request.json` | The exact AP-03 request sent (its `mcp.env` carries the trial cache and, when the root config declares them, the resolved embedding endpoint/API-key values; a local artifact) |
+| `trials/<id>/request.json` | The AP-03 request with `condition.mcp.env` values redacted (names kept; the live request with real values goes only to the host bridge over stdin; a local artifact) |
 | `trials/<id>/adapter/` | `events.ndjson`, `result.json`, `stderr.log` (adapter diagnostics) |
 | `trials/<id>/host.log` | Coordinator-side bridge stderr |
 | `cache/` | Trial index DBs and the shared family store (declared, content-addressed) |

@@ -17,10 +17,11 @@ guide is [docs/bench.md](../../bench.md). Shipped behavior:
 - Suite manifest (schema v1, `schemas/bench-suite.v1.schema.json`), strictly
   parsed; suite/prompt files must live outside the benchmarked repository.
 - Preflight (exit 3): reproducible snapshot (clean commit or recorded patch,
-  with the resolved Repoise cache directory excluded from dirt), node/bridge/
-  adapter resolution, `env:`/`credentialRef` resolution (names only), hybrid
-  vector-coverage gate, root status and guidance captured into the immutable
-  `manifest.json`.
+  with the resolved Repoise cache directory and the output root excluded
+  from dirt; an output directory equal to the repository root is rejected),
+  node/bridge/adapter resolution, `env:`/`credentialRef` resolution (names
+  only), hybrid vector-coverage gate, root status and guidance captured
+  into the immutable `manifest.json`.
 - One disposable linked git worktree per trial at the frozen detached
   revision; the user's checkout is never reset. `repoise` conditions get a
   trial-local index build (setup timed separately) plus a read-only
@@ -76,7 +77,20 @@ suite with `credentialRef: "env:FOO"` and `adapter.env: {}` no longer
 passes preflight and then runs without the credential); the host-bridge
 test file is prettier-formatted (CI check); and `docs/automation.md` now
 reports `benchmark: supported: true`, the bench exit-code rows and the
-bench signal behavior.
+bench signal behavior. Fifth round: `request.json` now stores a redacted
+copy of the AP-03 request (`condition.mcp.env` values replaced with a
+placeholder; the unredacted request goes only to the host bridge over
+stdin, and the recorded `requestHash` hashes the redacted form) so
+embedding endpoint/API-key values never land in plaintext in shareable
+artifacts; the snapshot dirtiness check excludes the output root, so the
+default in-repo `output.dir` no longer fails the second invocation with
+`working tree is dirty` (an output root equal to the repository root is
+rejected); the hybrid vector gate also fails on `embedding.failed > 0`
+(a partly failed embedding run is never recorded as hybrid); and generated
+trial-id collisions across the task/condition boundary (the `-` joiner:
+task `a` + condition `r0-x` versus task `a-r0` + condition `x`) are
+rejected in suite validation. `README.md` and `docs/architecture.md` now
+document `repoise bench` and the `repoise mcp --search-mode` pin.
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

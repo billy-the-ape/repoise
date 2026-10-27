@@ -6,11 +6,14 @@
 //! vector coverage on the root index, suite/prompt files must live outside
 //! the repository (a checkout would otherwise expose them to the agent),
 //! and credential references must resolve (names only ever reach artifacts).
+//! The output root (artifacts and trial worktrees) is Repoise's own state:
+//! like the cache directory it is excluded from the snapshot dirtiness
+//! check, and an output root equal to the repository root is rejected.
 //! Preflight failures are exit 3 — distinct from operational and usage
 //! failures.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
@@ -76,12 +79,29 @@ pub struct Preflight {
 }
 
 /// Runs all preflight checks for one suite.
-pub fn run(suite: &Suite, suite_path: &Path) -> Result<Preflight, Error> {
+pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Preflight, Error> {
     let root_raw = suite.root.trim();
     let root = super::suite::resolve_path(root_raw)?;
     let root = std::fs::canonicalize(&root)
         .map_err(|err| Error::Config(format!("root {} does not exist: {err}", root.display())))?;
     let adapter = GitAdapter::new(&root).map_err(Error::Adapter)?;
+
+    // The output root holds artifacts and trial worktrees (Repose's own
+    // state, like the cache directory) and is excluded from the snapshot
+    // dirtiness check, so an in-repo output directory (the default when
+    // running from the repository root) never fails a later invocation.
+    // An output root equal to the repository root would exempt everything,
+    // so it is rejected outright.
+    let output_root = normalize_abs_path(output_root);
+    if output_root == root {
+        return Err(Error::Config(format!(
+            "the output directory {} is the benchmarked repository root itself; \
+             choose a different directory (e.g. the default `repoise-bench` \
+             subdirectory or a path outside the repository)",
+            output_root.display()
+        )));
+    }
+    let output_within_root = is_within(&root, &output_root);
 
     // The resolved config/cache decide which tree entries are Repoise's own
     // (the cache directory), which the snapshot dirtiness check excludes.
@@ -156,7 +176,11 @@ pub fn run(suite: &Suite, suite_path: &Path) -> Result<Preflight, Error> {
                     } else {
                         root.join(entry)
                     };
+                    // The resolved cache root and (when inside the repository)
+                    // the output root are Repoise's own state, not source
+                    // input: neither makes the tree dirty.
                     !absolute.starts_with(&cache.root)
+                        && !(output_within_root && absolute.starts_with(&output_root))
                 })
                 .count();
             if dirty > 0 {
@@ -408,6 +432,23 @@ pub fn find_bridge() -> Result<PathBuf, Error> {
         "agent adapter protocol host bridge not found: set {BRIDGE_ENV_VAR} to the \
          adapter-host-run.mjs path, or run from a source checkout containing {BRIDGE_RELATIVE_PATH}"
     )))
+}
+
+/// Syntactically normalizes a path (folds `.`/`..` components) without
+/// requiring the path to exist, so it can be compared against the canonical
+/// repository root before the output directories are created.
+fn normalize_abs_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn hash_optional_file(path: &Path) -> Option<String> {

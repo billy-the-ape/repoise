@@ -159,17 +159,20 @@ impl RunContext {
                 Ok(index) => {
                     setup.insert("indexMs".into(), Value::from(index.elapsed_ms as u64));
                     setup.insert("indexGeneration".into(), Value::from(index.generation_id));
-                    setup.insert("indexManifestHash".into(), Value::from(index.manifest_hash));
+                    setup.insert(
+                        "indexManifestHash".into(),
+                        Value::from(index.manifest_hash.clone()),
+                    );
                     setup.insert("vectors".into(), Value::from(index.vectors_total));
-                    // A hybrid/vectors-only condition must actually have
-                    // published vectors: `repoise index` exits 0 even when
-                    // embeddings fail or stay pending, and the pinned MCP
-                    // server degrades to lexical for a vectorless index.
+                    // A hybrid/vectors-only condition must actually have a
+                    // fully published vector set: `repoise index` exits 0 even
+                    // when embeddings fail or stay pending, and the pinned
+                    // MCP server degrades to lexical for a vectorless index.
                     // Fail setup instead of counting a lexical run as hybrid.
                     if matches!(
                         condition.search_mode.as_deref(),
                         Some("hybrid") | Some("vectors-only")
-                    ) && (index.vectors_total == 0 || index.vectors_pending > 0)
+                    ) && !index_viable_for_vectors(&index)
                     {
                         return self.record_infra(
                             trial,
@@ -186,11 +189,13 @@ impl RunContext {
                             "index_missing_vectors",
                             &format!(
                                 "condition '{}' requires published vectors, but the trial \
-                                 index published {} vector(s) with {} pending; the pinned \
-                                 MCP server would silently degrade to lexical",
+                                 index published {} vector(s) with {} pending and {} \
+                                 failed; the pinned MCP server would silently degrade \
+                                 to lexical",
                                 condition.search_mode.as_deref().unwrap_or(""),
                                 index.vectors_total,
-                                index.vectors_pending
+                                index.vectors_pending,
+                                index.vectors_failed
                             ),
                         );
                     }
@@ -237,7 +242,8 @@ impl RunContext {
                 );
             }
         };
-        if let Err(err) = artifacts::write_json(&trial_dir.join("request.json"), &request) {
+        let redacted = redact_request(&request);
+        if let Err(err) = artifacts::write_json(&trial_dir.join("request.json"), &redacted) {
             return self.record_infra(
                 trial,
                 TrialTimings {
@@ -255,7 +261,7 @@ impl RunContext {
             );
         }
         let request_hash = crate::hash::sha256_hex(
-            serde_json::to_vec(&request).map_err(|err| Error::Json(err.to_string()))?,
+            serde_json::to_vec(&redacted).map_err(|err| Error::Json(err.to_string()))?,
         );
         let agent_started = Instant::now();
         // A host failure (spawn, request write, wait) still records the trial
@@ -600,6 +606,27 @@ fn build_request(
     }))
 }
 
+/// Artifact-safe copy of the trial request: the live request carries the
+/// resolved `condition.mcp.env` values (e.g. the embedding endpoint/API-key),
+/// but the names-only artifact contract means `request.json` stores them as
+/// a placeholder. The unredacted request goes only to the host bridge over
+/// stdin, and the recorded `requestHash` hashes this redacted form so it
+/// matches the artifact on disk.
+fn redact_request(request: &Value) -> Value {
+    let mut redacted = request.clone();
+    if let Some(env) = redacted
+        .get_mut("condition")
+        .and_then(|condition| condition.get_mut("mcp"))
+        .and_then(|mcp| mcp.get_mut("env"))
+        .and_then(Value::as_object_mut)
+    {
+        for value in env.values_mut() {
+            *value = Value::from("[REDACTED]");
+        }
+    }
+    redacted
+}
+
 /// Trial MCP server environment: the trial cache directory plus the
 /// embedding endpoint/API-key variables declared in the root config. The
 /// MCP server resolves those from its own process env for hybrid search,
@@ -740,7 +767,16 @@ struct IndexInfo {
     manifest_hash: String,
     vectors_total: u64,
     vectors_pending: u64,
+    vectors_failed: u64,
     elapsed_ms: u128,
+}
+
+/// A hybrid/vectors-only condition needs a fully published vector set: at
+/// least one vector, nothing left pending (budget/cancel) and nothing
+/// failed (batch failures after retries). A partially embedded index must
+/// not be recorded as hybrid.
+fn index_viable_for_vectors(index: &IndexInfo) -> bool {
+    index.vectors_total > 0 && index.vectors_pending == 0 && index.vectors_failed == 0
 }
 
 /// Builds the trial worktree index through the same `repoise index`
@@ -784,6 +820,7 @@ fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, St
             .to_string(),
         vectors_total: value["vectors_total"].as_u64().unwrap_or(0),
         vectors_pending: value["embedding"]["pending"].as_u64().unwrap_or(0),
+        vectors_failed: value["embedding"]["failed"].as_u64().unwrap_or(0),
         elapsed_ms: started.elapsed().as_millis(),
     })
 }
@@ -1036,6 +1073,70 @@ fn civil_from_days(secs: u64) -> (u64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn index_info(total: u64, pending: u64, failed: u64) -> IndexInfo {
+        IndexInfo {
+            generation_id: 1,
+            manifest_hash: "hash".into(),
+            vectors_total: total,
+            vectors_pending: pending,
+            vectors_failed: failed,
+            elapsed_ms: 0,
+        }
+    }
+
+    #[test]
+    fn hybrid_gate_requires_a_fully_published_vector_set() {
+        assert!(index_viable_for_vectors(&index_info(42, 0, 0)));
+        // No vectors at all.
+        assert!(!index_viable_for_vectors(&index_info(0, 0, 0)));
+        // Budget/cancel left inputs pending.
+        assert!(!index_viable_for_vectors(&index_info(42, 3, 0)));
+        // A partly failed embedding run (some batches failed after retries)
+        // must not be recorded as hybrid.
+        assert!(!index_viable_for_vectors(&index_info(42, 0, 2)));
+    }
+
+    #[test]
+    fn redact_request_replaces_mcp_env_values_only() {
+        let request = serde_json::json!({
+            "schemaVersion": 1,
+            "task": { "id": "task-1", "version": "1" },
+            "scope": "read",
+            "condition": {
+                "retrieval": "repoise",
+                "mcp": {
+                    "argv": ["repoise", "mcp"],
+                    "env": {
+                        "REPOISE_CACHE_DIR": "/tmp/bench-cache",
+                        "OPENAI_API_KEY": "sk-secret"
+                    }
+                }
+            },
+            "limits": { "wallClockMs": 900000 }
+        });
+        let redacted = redact_request(&request);
+        // Names are kept, every env value is replaced.
+        assert_eq!(
+            redacted["condition"]["mcp"]["env"]["REPOISE_CACHE_DIR"],
+            "[REDACTED]"
+        );
+        assert_eq!(
+            redacted["condition"]["mcp"]["env"]["OPENAI_API_KEY"],
+            "[REDACTED]"
+        );
+        // The live request stays untouched, everything else is preserved.
+        assert_eq!(
+            request["condition"]["mcp"]["env"]["OPENAI_API_KEY"],
+            "sk-secret"
+        );
+        assert_eq!(redacted["limits"]["wallClockMs"], 900000);
+        assert_eq!(redacted["task"]["id"], "task-1");
+
+        // A baseline request has no mcp section: unchanged.
+        let baseline = serde_json::json!({ "condition": { "retrieval": "baseline" } });
+        assert_eq!(redact_request(&baseline), baseline);
+    }
 
     #[test]
     fn mcp_env_carries_cache_and_embedding_variables() {

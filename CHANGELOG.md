@@ -190,7 +190,20 @@ the credential); both are covered by unit tests and documented in
 `docs/bench.md`. The host-bridge test file is now prettier-formatted
 (CI's prettier check), and `docs/automation.md` now reports
 `benchmark: supported: true`, the bench exit-code rows and the bench
-signal behavior. See [docs/bench.md](docs/bench.md) and
+signal behavior. A fifth review round fixed a plaintext-secret leak in
+`request.json` (the `mcp.env` values are now redacted in the artifact — names
+kept, values replaced with a placeholder — and the unredacted request goes
+only to the host bridge over stdin; the recorded `requestHash` hashes the
+redacted form), the snapshot dirtiness check now also excludes the output
+root (running `repoise bench` from the repository root with the default
+in-repo `output.dir` no longer fails the second invocation with
+`working tree is dirty`; an output directory equal to the repository root is
+rejected), the hybrid vector gate now also fails on `embedding.failed > 0`
+(a partly failed embedding run is never recorded as hybrid), and generated
+trial-id collisions across the task/condition boundary (e.g. task `a` +
+condition `r0-x` versus task `a-r0` + condition `x`) are rejected in suite
+validation. `README.md` and `docs/architecture.md` now document `repoise
+bench` and the `repoise mcp --search-mode` pin. See [docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 

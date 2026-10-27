@@ -67,6 +67,19 @@ fn sanitize(id: &str) -> String {
         .collect()
 }
 
+/// The trial id for one (task, condition, repetition) triple. Sanitized
+/// task/condition ids joined with `-` can collide across the boundary
+/// (task `a` + condition `r0-x` and task `a-r0` + condition `x` both yield
+/// `t-a-r0-r0-x`), so `Suite::validate` rejects duplicate generated ids.
+pub fn trial_id(task_id: &str, repetition: u32, condition_id: &str) -> String {
+    format!(
+        "t-{}-r{}-{}",
+        sanitize(task_id),
+        repetition,
+        sanitize(condition_id)
+    )
+}
+
 impl TrialPlan {
     /// Builds the frozen schedule for one suite.
     pub fn new(suite: &Suite) -> Self {
@@ -102,12 +115,7 @@ impl TrialPlan {
                 let task: &Task = &suite.tasks[block.task_index];
                 let condition: &Condition = &suite.conditions[condition_index];
                 trials.push(Trial {
-                    trial_id: format!(
-                        "t-{}-r{}-{}",
-                        sanitize(&task.id),
-                        block.repetition,
-                        sanitize(&condition.id)
-                    ),
+                    trial_id: trial_id(&task.id, block.repetition, &condition.id),
                     task_index: block.task_index,
                     task_id: task.id.clone(),
                     condition_index,

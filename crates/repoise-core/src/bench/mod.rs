@@ -114,10 +114,6 @@ fn prepare(request: &BenchRequest) -> Result<Prepared, Error> {
     }
     suite.validate()?;
 
-    let plan = plan::TrialPlan::new(&suite);
-    let trials = plan.trials(&suite);
-    let preflight = preflight::run(&suite, &suite_path)?;
-
     let output_root = match &request.output {
         Some(path) => suite::resolve_path(&path.to_string_lossy())?,
         None => suite::resolve_path(&suite.output.dir)?,
@@ -128,6 +124,10 @@ fn prepare(request: &BenchRequest) -> Result<Prepared, Error> {
             Value::from(output_root.to_string_lossy().into_owned()),
         );
     }
+
+    let plan = plan::TrialPlan::new(&suite);
+    let trials = plan.trials(&suite);
+    let preflight = preflight::run(&suite, &suite_path, &output_root)?;
     Ok(Prepared {
         suite_path,
         suite,
