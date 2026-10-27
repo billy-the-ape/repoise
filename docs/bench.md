@@ -8,7 +8,7 @@ loop: every trial's agent process is driven through the versioned agent
 adapter protocol (AP-03, see [agent adapters](agent-adapters.md)) via the
 checked-in Node host bridge
 (`packages/agent-adapter-protocol/bin/adapter-host-run.mjs`). Native
-orchration (suite parsing, preflight, worktrees, MCP wiring, artifacts,
+orchestration (suite parsing, preflight, worktrees, MCP wiring, artifacts,
 reports) runs without Node; Node is the optional companion that is required
 only for actually launching adapter processes.
 
@@ -114,7 +114,12 @@ Preflight freezes the experiment and refuses to approximate:
   recorded patch); the resolved Repoise cache directory (e.g. the default
   `.repoise`) is Repoise's own state and never counts as dirt;
 - `node`, the host bridge and the adapter executable resolve;
-- `env:`/`credentialRef` references resolve (names only are recorded);
+- `env:`/`credentialRef` references resolve (names only are recorded); the
+  provider's `credentialRef` variable is forwarded to the adapter's process
+  environment (it need not be re-declared under `adapter.env`), and the
+  embedding endpoint/API-key variables declared in the root config are
+  forwarded to each trial's MCP server env, so the trial server serves the
+  same embedding session the coordinator's index child built;
 - `hybrid` conditions require verified vector coverage on the root index —
   a degraded lexical fallback is never counted as hybrid;
 - root config/cache resolution, scope status and guidance state are captured
@@ -130,7 +135,9 @@ randomized per task/repetition block with the recorded seed). Each trial:
    frozen revision (the user's checkout is never reset or cleaned);
 2. for `repoise` conditions, builds a trial-local index in the experiment
    cache (setup time is recorded separately from the agent interval) and
-   launches a read-only `repoise mcp` server bound to the trial worktree,
+   launches a read-only `repoise mcp` server bound to the trial worktree
+   (its env carries the trial cache plus the root config's embedding
+   endpoint/API-key variables, so the server can serve hybrid search),
    pinned to the condition's declared `searchMode` with `--search-mode`
    (the server refuses requests naming a different mode, and setup fails
    with `infra_error` if the trial index has no published vectors for a
@@ -163,7 +170,7 @@ Under `<output.dir>/<experiment.id>/`:
 | `manifest.json` | Immutable frozen experiment: suite hash, overrides, snapshot, conditions, plan, adapter/host, budgets, guidance, unknowns |
 | `report.json` | Final report: status, duration, per-trial records, `byStatus`, `qualityGate: not_evaluated` (AP-05) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
-| `trials/<id>/request.json` | The exact AP-03 request sent |
+| `trials/<id>/request.json` | The exact AP-03 request sent (its `mcp.env` carries the trial cache and, when the root config declares them, the resolved embedding endpoint/API-key values; a local artifact) |
 | `trials/<id>/adapter/` | `events.ndjson`, `result.json`, `stderr.log` (adapter diagnostics) |
 | `trials/<id>/host.log` | Coordinator-side bridge stderr |
 | `cache/` | Trial index DBs and the shared family store (declared, content-addressed) |

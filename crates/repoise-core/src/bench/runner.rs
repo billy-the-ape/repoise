@@ -498,9 +498,11 @@ fn build_request(
                 serde_json::json!({
                     "serverName": "repoise",
                     "argv": argv,
-                    "env": {
-                        "REPOISE_CACHE_DIR": ctx.layout.cache_dir.to_string_lossy().into_owned()
-                    }
+                    "env": mcp_server_env(
+                        &ctx.layout.cache_dir,
+                        ctx.preflight.embedding_endpoint_env.as_deref(),
+                        ctx.preflight.embedding_api_key_env.as_deref(),
+                    )
                 }),
             )
         }
@@ -596,6 +598,49 @@ fn build_request(
                 .into_owned()
         }
     }))
+}
+
+/// Trial MCP server environment: the trial cache directory plus the
+/// embedding endpoint/API-key variables declared in the root config. The
+/// MCP server resolves those from its own process env for hybrid search,
+/// exactly like the coordinator's index child does; without them a hybrid
+/// query would silently degrade to lexical. Unset variables are omitted:
+/// lexical conditions need no embedding, and a hybrid trial whose index has
+/// no published vectors already fails setup (vector gate).
+fn mcp_server_env(
+    cache_dir: &Path,
+    embedding_endpoint_env: Option<&str>,
+    embedding_api_key_env: Option<&str>,
+) -> Value {
+    mcp_server_env_with(
+        cache_dir,
+        embedding_endpoint_env,
+        embedding_api_key_env,
+        &|name| std::env::var(name).ok(),
+    )
+}
+
+/// `mcp_server_env` with an injectable environment lookup (tests).
+fn mcp_server_env_with(
+    cache_dir: &Path,
+    embedding_endpoint_env: Option<&str>,
+    embedding_api_key_env: Option<&str>,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Value {
+    let mut env = serde_json::Map::new();
+    env.insert(
+        crate::CACHE_ENV_VAR.to_string(),
+        Value::from(cache_dir.to_string_lossy().into_owned()),
+    );
+    for name in [embedding_endpoint_env, embedding_api_key_env]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(value) = lookup(name) {
+            env.insert(name.to_string(), Value::from(value));
+        }
+    }
+    Value::Object(env)
 }
 
 /// Removes only the managed Repoise guidance from a baseline trial
@@ -991,6 +1036,41 @@ fn civil_from_days(secs: u64) -> (u64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_env_carries_cache_and_embedding_variables() {
+        // Simulated environment: the declared embedding variables are set.
+        let lookup = |name: &str| match name {
+            "REPOISE_BENCH_MCP_ENV_TEST_ENDPOINT_7F3A" => Some("https://embed.test/v1".to_string()),
+            "REPOISE_BENCH_MCP_ENV_TEST_KEY_7F3A" => Some("sk-test".to_string()),
+            _ => None,
+        };
+        let env = mcp_server_env_with(
+            Path::new("/tmp/bench-cache"),
+            Some("REPOISE_BENCH_MCP_ENV_TEST_ENDPOINT_7F3A"),
+            Some("REPOISE_BENCH_MCP_ENV_TEST_KEY_7F3A"),
+            &lookup,
+        );
+        assert_eq!(env[crate::CACHE_ENV_VAR], "/tmp/bench-cache");
+        // The trial's MCP server must see the same embedding credentials the
+        // coordinator's index child saw, or a hybrid query degrades to
+        // lexical.
+        assert_eq!(
+            env["REPOISE_BENCH_MCP_ENV_TEST_ENDPOINT_7F3A"],
+            "https://embed.test/v1"
+        );
+        assert_eq!(env["REPOISE_BENCH_MCP_ENV_TEST_KEY_7F3A"], "sk-test");
+
+        // Unset variables are omitted (lexical conditions need none, and a
+        // hybrid trial with no vectors fails setup instead).
+        let env = mcp_server_env_with(
+            Path::new("/tmp/bench-cache"),
+            Some("REPOISE_BENCH_MCP_ENV_TEST_UNSET_7F3A"),
+            None,
+            &lookup,
+        );
+        assert!(env.get("REPOISE_BENCH_MCP_ENV_TEST_UNSET_7F3A").is_none());
+    }
 
     #[test]
     fn mcp_argv_pins_search_mode_and_snapshot_mode() {

@@ -61,6 +61,13 @@ pub struct Preflight {
     pub adapter_env_names: Vec<String>,
     /// Resolved credential variable names (names only, never values).
     pub credential_names: Vec<String>,
+    /// Embedding endpoint variable name from the root config (the
+    /// `embedding.endpoint` `env:` reference without its prefix). The value
+    /// is forwarded to each trial's MCP server env at request time.
+    pub embedding_endpoint_env: Option<String>,
+    /// Embedding API-key variable name from the root config
+    /// (`embedding.apiKeyEnv`), forwarded like the endpoint variable.
+    pub embedding_api_key_env: Option<String>,
     pub status: StatusView,
     /// SHA-256 of the root `repoise.config.json` when present.
     pub config_hash: Option<String>,
@@ -93,6 +100,17 @@ pub fn run(suite: &Suite, suite_path: &Path) -> Result<Preflight, Error> {
         &effective.cache_dir,
         std::env::var(CACHE_ENV_VAR).ok().as_deref(),
     )?;
+    // Embedding credential variable names declared in the root config: the
+    // trial's MCP server must see them in its own process env to serve the
+    // same embedding session the coordinator's index child built (names only
+    // are recorded; values are forwarded at request time).
+    let embedding_settings = effective.embedding.as_ref();
+    let embedding_endpoint_env = embedding_settings
+        .and_then(|settings| settings.endpoint.as_deref())
+        .and_then(|ref_name| ref_name.strip_prefix("env:"))
+        .map(str::to_string);
+    let embedding_api_key_env =
+        embedding_settings.and_then(|settings| settings.api_key_env.clone());
 
     // Snapshot: resolve the revision; reject dirty inputs unless a recorded
     // patch snapshot is explicitly selected.
@@ -325,6 +343,8 @@ pub fn run(suite: &Suite, suite_path: &Path) -> Result<Preflight, Error> {
         runner,
         adapter_env_names,
         credential_names,
+        embedding_endpoint_env,
+        embedding_api_key_env,
         status,
         config_hash: hash_optional_file(&config_file),
         guidance,

@@ -114,9 +114,13 @@ test("bridge honors a cancel line arriving in the same chunk as the request", as
   // must not be dropped.
   const root = mkdtempSync(join(tmpdir(), "ap04-bridge-"));
   const requestJson = JSON.stringify(makeRequest(root));
-  const child = spawn(process.execPath, [bridge, join(fixtures, "fake-cancel.mjs")], {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const child = spawn(
+    process.execPath,
+    [bridge, join(fixtures, "fake-cancel.mjs")],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
   child.stdin.write(`${requestJson}\ncancel\n`);
   const code = await new Promise((resolve) => child.on("close", resolve));
   assert.equal(code, 0);

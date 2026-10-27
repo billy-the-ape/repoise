@@ -66,7 +66,17 @@ remainder of the first stdin chunk for `cancel` (a request and a cancel
 line arriving together no longer lose the cancellation); the coordinator
 applies a 15-minute default when the suite omits `limits.wallClockMs`
 (always enforced), and `experimentWallClockMs` is documented as checked
-between trials rather than a hard cap.
+between trials rather than a hard cap. Fourth round: the trial's MCP
+server env now carries the embedding endpoint/API-key variables declared
+in the root config (resolved from the coordinator's process environment,
+so a hybrid query on the pinned server can no longer silently degrade to
+lexical); the provider's `credentialRef` variable is forwarded to the
+adapter's process environment (adapters read `process.env[<name>]`, so a
+suite with `credentialRef: "env:FOO"` and `adapter.env: {}` no longer
+passes preflight and then runs without the credential); the host-bridge
+test file is prettier-formatted (CI check); and `docs/automation.md` now
+reports `benchmark: supported: true`, the bench exit-code rows and the
+bench signal behavior.
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

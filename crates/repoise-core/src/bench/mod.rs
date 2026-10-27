@@ -314,12 +314,23 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
 }
 
 /// Resolves adapter environment values (`env:` references included) —
-/// process environment material only, never serialized.
+/// process environment material only, never serialized. The provider's
+/// `credentialRef` variable is included as well: adapters read
+/// `process.env[<name>]` in their own environment, so the value must reach
+/// the adapter process (preflight already verified it is set).
 fn resolve_adapter_env(suite: &suite::Suite) -> Result<Vec<(String, String)>, Error> {
+    resolve_adapter_env_with(suite, &|name| std::env::var(name).ok())
+}
+
+/// `resolve_adapter_env` with an injectable environment lookup (tests).
+fn resolve_adapter_env_with(
+    suite: &suite::Suite,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<(String, String)>, Error> {
     let mut resolved: Vec<(String, String)> = Vec::new();
     for (name, value) in &suite.adapter.env {
         let value = if let Some(ref_name) = value.strip_prefix("env:") {
-            std::env::var(ref_name).map_err(|_| {
+            lookup(ref_name).ok_or_else(|| {
                 Error::Config(format!(
                     "adapter env '{name}' references env:{ref_name}, which is not set"
                 ))
@@ -328,6 +339,19 @@ fn resolve_adapter_env(suite: &suite::Suite) -> Result<Vec<(String, String)>, Er
             value.clone()
         };
         resolved.push((name.clone(), value));
+    }
+    if let Some(ref_name) = suite
+        .profile
+        .provider
+        .as_ref()
+        .and_then(|provider| provider.credential_ref.as_deref())
+        .and_then(|value| value.strip_prefix("env:"))
+        && !resolved.iter().any(|(name, _)| name == ref_name)
+    {
+        let value = lookup(ref_name).ok_or_else(|| {
+            Error::Config(format!("provider credentialRef env:{ref_name} is not set"))
+        })?;
+        resolved.push((ref_name.to_string(), value));
     }
     Ok(resolved)
 }
@@ -419,4 +443,88 @@ fn build_report(
             "note": "completion criteria and grading are defined by AP-05; this runner records completion and resources only"
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CRED_VAR: &str = "REPOISE_BENCH_TEST_CRED_9C4F";
+
+    fn suite_with_credential_ref() -> suite::Suite {
+        suite::Suite {
+            schema_version: suite::SUITE_SCHEMA_VERSION,
+            id: "exp-test".into(),
+            root: "/tmp/repoise-bench-test-root".into(),
+            snapshot: suite::Snapshot::default(),
+            tasks: vec![suite::Task {
+                id: "task-1".into(),
+                prompt: Some("do it".into()),
+                prompt_file: None,
+                version: "1".into(),
+            }],
+            conditions: vec![suite::Condition {
+                id: "baseline".into(),
+                retrieval_mode: "baseline".into(),
+                search_mode: None,
+                required_capabilities: Vec::new(),
+            }],
+            scope: "read".into(),
+            repeat: 1,
+            seed: 0,
+            adapter: suite::AdapterSpec {
+                executable: "node".into(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+            },
+            profile: suite::ProfileSpec {
+                harness: suite::HarnessSpec {
+                    name: "fake".into(),
+                    revision: None,
+                },
+                provider: Some(suite::ProviderSpec {
+                    id: "fake-provider".into(),
+                    credential_ref: Some(format!("env:{CRED_VAR}")),
+                }),
+                model: None,
+                reasoning: None,
+                compaction: None,
+                sampling: None,
+            },
+            limits: suite::Limits::default(),
+            budgets: suite::Budgets::default(),
+            output: suite::OutputSpec::default(),
+        }
+    }
+
+    #[test]
+    fn adapter_env_includes_provider_credential_variable() {
+        // Simulated environment: the credential variable is set.
+        let lookup = |name: &str| (name == CRED_VAR).then(|| "sk-test-value".to_string());
+        let suite = suite_with_credential_ref();
+        let resolved = resolve_adapter_env_with(&suite, &lookup).expect("credential is set");
+        assert!(
+            resolved
+                .iter()
+                .any(|(name, value)| name == CRED_VAR && value == "sk-test-value"),
+            "the credentialRef variable must reach the adapter process env"
+        );
+
+        // An explicit adapter.env entry for the same name must not duplicate
+        // the credential variable.
+        let mut suite = suite_with_credential_ref();
+        suite
+            .adapter
+            .env
+            .insert(CRED_VAR.to_string(), "sk-test-value".into());
+        let resolved = resolve_adapter_env_with(&suite, &lookup).expect("credential is set");
+        assert_eq!(
+            resolved.iter().filter(|(name, _)| name == CRED_VAR).count(),
+            1
+        );
+
+        // An unset credential variable is a config error, not a silent drop.
+        let suite = suite_with_credential_ref();
+        assert!(resolve_adapter_env_with(&suite, &|_| None).is_err());
+    }
 }

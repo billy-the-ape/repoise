@@ -177,11 +177,20 @@ cancellation; and the coordinator now applies a 15-minute default
 (900000 ms) when the suite omits `limits.wallClockMs` — the per-trial
 wall bound is always in effect (forwarded to the adapter and enforced by
 the coordinator's outer watchdog), and `experimentWallClockMs` is
-documented as checked between trials rather than a hard cap. The
-`--search-mode` pin is
-exercised by integration tests that parse the exact argv the bench
-coordinator generates with the real CLI parser (lexical- and
-hybrid-pinned servers). See [docs/bench.md](docs/bench.md) and
+documented as checked between trials rather than a hard cap. A fourth
+review round closed two credential-forwarding gaps and a CI failure: the
+trial's MCP server env now carries the embedding endpoint/API-key
+variables declared in the root config (resolved from the coordinator's
+process environment; without them a hybrid query on the pinned server
+would silently degrade to lexical), and the provider's `credentialRef`
+variable is now forwarded to the adapter's process environment (adapters
+read `process.env[<name>]`, so a suite with `credentialRef: "env:FOO"`
+and `adapter.env: {}` no longer passes preflight and then runs without
+the credential); both are covered by unit tests and documented in
+`docs/bench.md`. The host-bridge test file is now prettier-formatted
+(CI's prettier check), and `docs/automation.md` now reports
+`benchmark: supported: true`, the bench exit-code rows and the bench
+signal behavior. See [docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 
