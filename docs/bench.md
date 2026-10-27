@@ -78,6 +78,10 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   (`patchFile` with a git-apply-able patch over `revision`, recorded by hash).
 - `tasks` — exactly one of `prompt` / `promptFile` per task; neither may
   contain grading answers (that is AP-05 territory).
+- ids — task and condition ids must contain only `[A-Za-z0-9_-]`: trial ids
+  and artifact directories are derived from them, so other characters could
+  make two distinct ids collide after sanitizing (validation rejects them
+  before any worktree is created).
 - `conditions` — `baseline` (no Repoise tools or managed guidance; the
   managed overlay is removed from the disposable worktree only) or `repoise`
   (`searchMode` required: `lexical` or `hybrid`).
@@ -122,9 +126,11 @@ randomized per task/repetition block with the recorded seed). Each trial:
    frozen revision (the user's checkout is never reset or cleaned);
 2. for `repoise` conditions, builds a trial-local index in the experiment
    cache (setup time is recorded separately from the agent interval) and
-   launches a read-only `repoise mcp` server bound to the trial worktree
-   (lexically enforced `--mode` for hybrid conditions; the effective mode
-   and any degradation are recorded in `trial.json` `mode`);
+   launches a read-only `repoise mcp` server bound to the trial worktree,
+   pinned to the condition's declared `searchMode` with `--search-mode`
+   (the server refuses requests naming a different mode, so a hybrid run can
+   never silently degrade to lexical; the effective mode and any degradation
+   are recorded in `trial.json` `mode`);
 3. writes the full AP-03 request (`trials/<id>/request.json`) and spawns the
    host bridge (`node adapter-host-run.mjs <adapter> [args]`);
 4. on SIGINT/SIGTERM sends the cooperative `cancel` line to the bridge,
@@ -137,8 +143,10 @@ randomized per task/repetition block with the recorded seed). Each trial:
    and continues — one failed trial never aborts the experiment.
 
 Trial statuses: `completed`, `error` (adapter/protocol failure or wall-clock
-timeout), `cancelled` (cooperative cancellation), `infra_error` (worktree or
-index setup failure), `not_started` (budget or interruption).
+timeout), `cancelled` (cooperative cancellation), `infra_error` (worktree,
+index, host-bridge or artifact failure — the workspace is always cleaned up
+and the experiment continues), `not_started` (budget, interruption or an
+unrecoverable coordinator failure; the report is always published).
 
 ## Artifacts
 

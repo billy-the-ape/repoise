@@ -54,7 +54,12 @@
         "additionalProperties": false,
         "required": ["id"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Unique task id; [A-Za-z0-9_-] only (trial ids and artifact directories are derived from it)."
+          },
           "prompt": {
             "type": "string",
             "minLength": 1,
@@ -81,7 +86,12 @@
         "additionalProperties": false,
         "required": ["id", "retrievalMode"],
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "description": "Unique condition id; [A-Za-z0-9_-] only (trial ids and artifact directories are derived from it)."
+          },
           "retrievalMode": {
             "type": "string",
             "enum": ["baseline", "repoise"],

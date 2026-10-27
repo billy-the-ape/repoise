@@ -24,8 +24,11 @@ guide is [docs/bench.md](../../bench.md). Shipped behavior:
 - One disposable linked git worktree per trial at the frozen detached
   revision; the user's checkout is never reset. `repoise` conditions get a
   trial-local index build (setup timed separately) plus a read-only
-  `repoise mcp` server bound to the trial worktree; the effective mode and
-  any degradation are recorded. Baseline trials remove only the managed
+  `repoise mcp` server bound to the trial worktree and pinned to the
+  condition's declared `searchMode` with `--search-mode` (a tool request
+  naming a different mode is refused, so a hybrid run cannot silently
+  degrade); the effective mode and any degradation are recorded. Baseline
+  trials remove only the managed
   overlay from the disposable worktree.
 - Trials run through the AP-03 host (bridge) only; the coordinator sends the
   cooperative `cancel` line on SIGINT/SIGTERM, escalates after grace, and
@@ -43,7 +46,13 @@ Design deltas from this plan document: the actual surface is
 `--conditions/--repeat` flags; `--dry-run`/`--json`/`--runner`/`--repeat`/
 `--seed`/`--output` flags exist as documented in `docs/bench.md`), and the
 "native or optional companion" question resolved as native orchestration
-with the AP-03 host as the only Node piece.
+with the AP-03 host as the only Node piece. Post-review hardening (2026-10-27):
+task/condition ids are restricted to `[A-Za-z0-9_-]` (trial ids and artifact
+directories derive from them), a failed patch snapshot removes the partially
+created worktree, post-workspace failures (request write, host bridge,
+trial-record write) record an `infra_error` trial with cleanup so the report
+is always published, and `report.json` `startedAtUtc` is captured at
+experiment start.
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced
@@ -85,7 +94,9 @@ ordinary `repoise index`, startup, package installation and project test hooks.
 MCP enabled/disabled alone does not identify embedding impact. Existing MCP
 defaults lexical. Controlled conditions require an explicit validated mechanism
 (adapter policy or an instrumented benchmark MCP boundary) selecting allowed
-search mode. Log requested/effective mode, degradation, vector coverage, profile
+search mode — shipped as the server-side `--search-mode` pin (added during
+AP-04 review), exercised by a CLI integration test that parses the exact
+argv the coordinator generates. Log requested/effective mode, degradation, vector coverage, profile
 fingerprint, embedding request timings and whether Repoise was used at all.
 Do not silently count degraded lexical calls as successful hybrid execution.
 

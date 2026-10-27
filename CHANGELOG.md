@@ -126,8 +126,9 @@ record.
 `repoise bench` runs suite-driven agent benchmark experiments: repeated
 trials over one frozen Git snapshot in disposable linked worktrees, against
 declared retrieval conditions (`baseline`, `repoise` with enforced
-`lexical`/`hybrid` via a read-only `repoise mcp` server bound to each trial
-worktree). The coordinator owns scheduling, isolation, budgets, interruption
+`lexical`/`hybrid` through a read-only `repoise mcp` server bound to each
+trial worktree, pinned to the declared `searchMode` with the new
+`repoise mcp --search-mode` flag). The coordinator owns scheduling, isolation, budgets, interruption
 and artifacts; it never implements an agent loop — every trial's agent
 process is driven through the AP-03 protocol via the checked-in host bridge
 (`packages/agent-adapter-protocol/bin/adapter-host-run.mjs`), with the
@@ -151,7 +152,16 @@ overrides. Node is required only to launch adapter processes; orchestration
 is native. Declared limitations: worktrees are isolation, not security
 sandboxes (hidden-test integrity awaits a host-enforced mechanism, AP-05/
 AP-06), no grading/metrics/report export (AP-05), and no `--events` stream
-for `bench` yet. See [docs/bench.md](docs/bench.md) and
+for `bench` yet. Post-review hardening: task/condition ids are restricted
+to `[A-Za-z0-9_-]` (trial ids and artifact directories derive from them,
+so other characters could make sanitized ids collide); a failed patch
+snapshot removes the partially created worktree before surfacing the
+error; failures after workspace creation (request write, host bridge,
+trial-record write) record an `infra_error` trial with the workspace
+cleaned up so the report is always published; and `report.json`
+`startedAtUtc` is captured at experiment start. The `--search-mode` pin is
+exercised by an integration test that parses the exact argv the bench
+coordinator generates with the real CLI parser. See [docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 

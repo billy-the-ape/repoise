@@ -274,6 +274,8 @@ impl Suite {
         for task in &self.tasks {
             if task.id.trim().is_empty() {
                 problems.push("task id must not be empty".into());
+            } else if id_charset_problem(&task.id).is_some() {
+                problems.push(id_charset_problem(&task.id).unwrap());
             } else if task_ids.contains(&task.id.as_str()) {
                 problems.push(format!("duplicate task id '{}'", task.id));
             } else {
@@ -292,6 +294,8 @@ impl Suite {
         for condition in &self.conditions {
             if condition.id.trim().is_empty() {
                 problems.push("condition id must not be empty".into());
+            } else if id_charset_problem(&condition.id).is_some() {
+                problems.push(id_charset_problem(&condition.id).unwrap());
             } else if condition_ids.contains(&condition.id.as_str()) {
                 problems.push(format!("duplicate condition id '{}'", condition.id));
             } else {
@@ -379,6 +383,24 @@ impl Suite {
     }
 }
 
+/// Task/condition ids must be filesystem-safe and stable under `sanitize`
+/// (trial ids and artifact directories are derived from them): any other
+/// character would let two distinct ids collide after sanitizing.
+fn id_charset_problem(id: &str) -> Option<String> {
+    if id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        None
+    } else {
+        Some(format!(
+            "id '{id}' must contain only [A-Za-z0-9_-]: trial ids and artifact \
+             directories are derived from it, so other characters could make \
+             two ids collide"
+        ))
+    }
+}
+
 /// Loads and validates one suite file; the raw bytes are hashed by the
 /// caller for the frozen manifest and drift checks.
 pub fn load(path: &Path) -> Result<Suite, Error> {
@@ -396,5 +418,52 @@ pub fn resolve_path(raw: &str) -> Result<PathBuf, Error> {
         Ok(path)
     } else {
         Ok(std::env::current_dir().map_err(Error::Io)?.join(path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_suite_json() -> Value {
+        serde_json::json!({
+            "id": "exp",
+            "root": "/tmp/repo",
+            "tasks": [{ "id": "task-a", "prompt": "do it" }],
+            "conditions": [{ "id": "baseline", "retrievalMode": "baseline" }],
+            "adapter": { "executable": "node" },
+            "profile": { "harness": { "name": "fake" } }
+        })
+    }
+
+    fn suite_with(overrides: Value) -> Suite {
+        let mut value = valid_suite_json();
+        if let (Some(array), Some(items)) = (value["tasks"].as_array_mut(), overrides.as_array()) {
+            array.clear();
+            array.extend(items.iter().cloned());
+        }
+        let suite: Suite = serde_json::from_value(value).unwrap();
+        suite
+    }
+
+    #[test]
+    fn valid_ids_pass_validation() {
+        let suite: Suite = serde_json::from_value(valid_suite_json()).unwrap();
+        assert!(suite.validate().is_ok());
+    }
+
+    #[test]
+    fn ids_with_other_characters_are_rejected() {
+        let suite = suite_with(serde_json::json!([
+            { "id": "a.b", "prompt": "x" }
+        ]));
+        let err = suite.validate().unwrap_err();
+        assert!(err.to_string().contains("[A-Za-z0-9_-]"), "{}", err);
+
+        let mut value = valid_suite_json();
+        value["conditions"] = serde_json::json!([{ "id": "x y", "retrievalMode": "baseline" }]);
+        let suite: Suite = serde_json::from_value(value).unwrap();
+        let err = suite.validate().unwrap_err();
+        assert!(err.to_string().contains("[A-Za-z0-9_-]"), "{}", err);
     }
 }

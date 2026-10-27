@@ -219,6 +219,9 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
     };
 
     let started = Instant::now();
+    // Captured once at start: a multi-hour experiment must report its real
+    // start, not the report-build time for both ends.
+    let started_at = runner::now_utc();
     let experiment_deadline = suite
         .budgets
         .experiment_wall_clock_ms
@@ -255,7 +258,22 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         let queue_ms = Instant::now()
             .saturating_duration_since(previous_end)
             .as_millis();
-        let outcome = ctx.run_trial(trial, queue_ms, &interrupted)?;
+        // A coordinator-level failure still records this trial and every
+        // remaining trial, so the report is published and the experiment
+        // state stays complete.
+        let outcome = match ctx.run_trial(trial, queue_ms, &interrupted) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                let reason = format!("runner_failure: {err}");
+                push_not_started(&mut records, trial, &reason);
+                for remaining in &trials[index + 1..] {
+                    push_not_started(&mut records, remaining, &reason);
+                }
+                report_status = "failed";
+                failure_reason = Some(reason);
+                break;
+            }
+        };
         previous_end = Instant::now();
         records.push(record_summary(trial, &outcome));
         runner::progress(ctx.json, &outcome.summary);
@@ -270,6 +288,7 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         suite,
         suite_hash,
         started,
+        &started_at,
         report_status,
         failure_reason,
         &records,
@@ -373,6 +392,7 @@ fn build_report(
     suite: &suite::Suite,
     suite_hash: &str,
     started: Instant,
+    started_at: &str,
     status: &str,
     failure_reason: Option<String>,
     records: &[Value],
@@ -388,7 +408,7 @@ fn build_report(
         "suiteHash": suite_hash,
         "status": status,
         "failureReason": failure_reason,
-        "startedAtUtc": runner::now_utc(),
+        "startedAtUtc": started_at,
         "endedAtUtc": runner::now_utc(),
         "durationMs": started.elapsed().as_millis(),
         "trials": records,

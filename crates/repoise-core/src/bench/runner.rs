@@ -204,12 +204,50 @@ impl RunContext {
                 );
             }
         };
-        artifacts::write_json(&trial_dir.join("request.json"), &request)?;
+        if let Err(err) = artifacts::write_json(&trial_dir.join("request.json"), &request) {
+            return self.record_infra(
+                trial,
+                TrialTimings {
+                    queue_ms,
+                    setup_started,
+                    started,
+                },
+                InfraSetup {
+                    workspace: Some(workspace),
+                    setup: Value::Object(setup),
+                    guidance,
+                },
+                "request_write_failed",
+                &err.to_string(),
+            );
+        }
         let request_hash = crate::hash::sha256_hex(
             serde_json::to_vec(&request).map_err(|err| Error::Json(err.to_string()))?,
         );
         let agent_started = Instant::now();
-        let host = run_host(self, trial, &request, &trial_dir, interrupted)?;
+        // A host failure (spawn, request write, wait) still records the trial
+        // as infra_error and removes the workspace, so the run continues and
+        // the report is always published.
+        let host = match run_host(self, trial, &request, &trial_dir, interrupted) {
+            Ok(host) => host,
+            Err(err) => {
+                return self.record_infra(
+                    trial,
+                    TrialTimings {
+                        queue_ms,
+                        setup_started,
+                        started,
+                    },
+                    InfraSetup {
+                        workspace: Some(workspace),
+                        setup: Value::Object(setup),
+                        guidance,
+                    },
+                    "host_run_failed",
+                    &err.to_string(),
+                );
+            }
+        };
         let agent_ms = host
             .result
             .get("elapsedMs")
@@ -257,7 +295,25 @@ impl RunContext {
             },
             "completeness": if host.result.is_null() { "partial" } else { "complete" }
         });
-        artifacts::write_json(&trial_dir.join("trial.json"), &record)?;
+        if let Err(err) = artifacts::write_json(&trial_dir.join("trial.json"), &record) {
+            // setup/guidance were moved into the record above; the record is
+            // only the final artifact missing here.
+            return self.record_infra(
+                trial,
+                TrialTimings {
+                    queue_ms,
+                    setup_started,
+                    started,
+                },
+                InfraSetup {
+                    workspace: Some(workspace),
+                    setup: Value::Null,
+                    guidance: Value::Null,
+                },
+                "trial_record_write_failed",
+                &err.to_string(),
+            );
+        }
 
         // --- Cleanup ------------------------------------------------------------
         if !self.keep_workspaces
@@ -348,6 +404,23 @@ fn null_value() -> Value {
     Value::Null
 }
 
+/// Builds the exact argv for one trial's read-only MCP server. The shape
+/// (`mcp [ROOT] --search-mode <MODE> [--committed]`) is accepted by the real
+/// CLI parser; the CLI integration test starts a server with this argv.
+pub fn mcp_argv(exe: &Path, root: &Path, search_mode: &str, committed: bool) -> Vec<String> {
+    let mut argv = vec![
+        exe.to_string_lossy().into_owned(),
+        "mcp".into(),
+        root.to_string_lossy().into_owned(),
+        "--search-mode".into(),
+        search_mode.to_string(),
+    ];
+    if committed {
+        argv.push("--committed".into());
+    }
+    argv
+}
+
 /// Builds the AP-03 adapter request for one trial. The MCP server argv
 /// pins the enforced retrieval mode (`--search-mode`) and, for committed
 /// snapshots, the immutable snapshot mode; the server is bound to the exact
@@ -381,16 +454,12 @@ fn build_request(
                 .search_mode
                 .as_deref()
                 .expect("validated searchMode for repoise conditions");
-            let mut argv: Vec<String> = vec![
-                ctx.self_exe.to_string_lossy().into_owned(),
-                "mcp".into(),
-                workspace.path.to_string_lossy().into_owned(),
-                "--search-mode".into(),
-                mode.into(),
-            ];
-            if ctx.preflight.snapshot_kind == "commit" {
-                argv.push("--committed".into());
-            }
+            let argv = mcp_argv(
+                &ctx.self_exe,
+                &workspace.path,
+                mode,
+                ctx.preflight.snapshot_kind == "commit",
+            );
             (
                 "repoise",
                 serde_json::json!({
@@ -694,9 +763,14 @@ fn run_host(
         })?;
 
     let mut stdin = child.stdin.take().expect("piped stdin");
-    stdin
+    if let Err(err) = stdin
         .write_all(format!("{request_line}\n").as_bytes())
-        .map_err(Error::Io)?;
+        .map_err(Error::Io)
+    {
+        // The bridge is running; never leave it behind on a request failure.
+        force_kill(&mut child, &adapter_dir);
+        return Err(err);
+    }
     // Stdin stays open: a later `cancel` control line is the graceful
     // cross-platform cancellation channel (no signal needed on Windows).
 
@@ -743,7 +817,10 @@ fn run_host(
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
-            Err(err) => return Err(Error::Init(format!("{}: {err}", trial.trial_id))),
+            Err(err) => {
+                force_kill(&mut child, &adapter_dir);
+                return Err(Error::Init(format!("{}: {err}", trial.trial_id)));
+            }
         }
     }
     let stdout_bytes = stdout_handle.join().unwrap_or_default();
@@ -870,4 +947,41 @@ fn civil_from_days(secs: u64) -> (u64, u32, u32) {
     let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     ((if month <= 2 { y + 1 } else { y }) as u64, month, day)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_argv_pins_search_mode_and_snapshot_mode() {
+        let argv = mcp_argv(
+            Path::new("/opt/repoise"),
+            Path::new("/tmp/trial-worktree"),
+            "lexical",
+            true,
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "/opt/repoise".to_string(),
+                "mcp".to_string(),
+                "/tmp/trial-worktree".to_string(),
+                "--search-mode".to_string(),
+                "lexical".to_string(),
+                "--committed".to_string()
+            ]
+        );
+        let argv = mcp_argv(Path::new("repoise"), Path::new("wt"), "hybrid", false);
+        assert_eq!(
+            argv,
+            vec![
+                "repoise".to_string(),
+                "mcp".to_string(),
+                "wt".to_string(),
+                "--search-mode".to_string(),
+                "hybrid".to_string()
+            ]
+        );
+    }
 }

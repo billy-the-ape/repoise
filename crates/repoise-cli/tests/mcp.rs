@@ -666,3 +666,103 @@ fn mcp_refresh_requires_matching_scope() {
     assert!(after["index"].is_object());
     mcp.close();
 }
+
+/// AP-04: the exact argv the bench coordinator generates for a repoise
+/// condition must be accepted by the real CLI parser (an unknown option
+/// exits 2 before the server starts), and the pinned search mode must be
+/// enforced: a tool request naming a different mode is refused.
+#[test]
+fn bench_generated_mcp_argv_is_accepted_and_pins_search_mode() {
+    let root = temp_root("bench-argv");
+    let argv = repoise_core::bench::runner::mcp_argv(
+        std::path::Path::new("repoise"),
+        &root,
+        "lexical",
+        false,
+    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
+    for arg in &argv[1..] {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("mcp server should start");
+    let mut stdin = child.stdin.take().expect("stdin pipe");
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout pipe"));
+    let send = |line: &str, stdin: &mut std::process::ChildStdin| {
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .expect("stdin write should succeed");
+    };
+    send(
+        &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }).to_string(),
+        &mut stdin,
+    );
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("stdout read should succeed");
+    let init: Value = serde_json::from_str(&line).expect("valid JSON-RPC response: {line}");
+    assert!(
+        init.get("error").is_none(),
+        "server rejected the bench argv: {init}"
+    );
+    assert_eq!(init["result"]["serverInfo"]["name"], "repoise");
+    // The pinned lexical mode refuses a hybrid request (enforced before any
+    // index work, so this works on an empty directory).
+    send(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "search_project_knowledge", "arguments": { "query": "anything", "mode": "hybrid" } }
+        })
+        .to_string(),
+        &mut stdin,
+    );
+    line.clear();
+    reader
+        .read_line(&mut line)
+        .expect("stdout read should succeed");
+    let call: Value = serde_json::from_str(&line).expect("valid JSON-RPC response: {line}");
+    assert_eq!(call["result"].get("isError"), Some(&json!(true)), "{call}");
+    let message = call["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(message.contains("scope mismatch"), "{message}");
+    // Matching mode passes the scope check (and only fails, if at all, on
+    // the missing index — not on the pinned mode).
+    send(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": { "name": "search_project_knowledge", "arguments": { "query": "anything" } }
+        })
+        .to_string(),
+        &mut stdin,
+    );
+    line.clear();
+    reader
+        .read_line(&mut line)
+        .expect("stdout read should succeed");
+    let matching: Value = serde_json::from_str(&line).expect("valid JSON-RPC response: {line}");
+    if let Some(message) = matching["result"]
+        .get("isError")
+        .and_then(|flag| flag.as_bool())
+        .unwrap_or(false)
+        .then(|| {
+            matching["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+        })
+    {
+        assert!(!message.contains("scope mismatch"), "{message}");
+    }
+    drop(stdin);
+    child.wait().expect("server should exit");
+}

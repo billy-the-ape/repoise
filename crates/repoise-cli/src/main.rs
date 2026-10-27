@@ -91,6 +91,8 @@ struct CliOptions {
     repo_id: Option<String>,
     worktree_id: Option<String>,
     allow_refresh: bool,
+    /// Pinned retrieval mode for `repoise mcp` (`--search-mode`).
+    mcp_search_mode: Option<String>,
     events: bool,
     suite_path: Option<PathBuf>,
     bench_runner: Option<PathBuf>,
@@ -195,6 +197,9 @@ WATCH OPTIONS:
 
 MCP OPTIONS:
     --allow-refresh             Expose the opt-in refresh tool (read-only by default)
+    --search-mode <MODE>        Pin the retrieval mode for this server:
+                                lexical (default), hybrid, vectors-only. Tool
+                                requests naming a different mode are refused.
 
 OVERLAY OPTIONS:
     uninstall | update          Overlay action (uninstall removes; update migrates)
@@ -254,6 +259,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         repo_id: None,
         worktree_id: None,
         allow_refresh: false,
+        mcp_search_mode: None,
         events: false,
         suite_path: None,
         bench_runner: None,
@@ -399,6 +405,20 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             }
             "--all" => opts.purge_all = true,
             "--allow-refresh" => opts.allow_refresh = true,
+            "--search-mode" => {
+                i += 1;
+                let value = require_value(args, i, "--search-mode")?;
+                match value.as_str() {
+                    "lexical" | "hybrid" | "vectors-only" => {
+                        opts.mcp_search_mode = Some(value);
+                    }
+                    _ => {
+                        return Err(format!(
+                            "--search-mode must be one of: lexical, hybrid, vectors-only (got {value})"
+                        ));
+                    }
+                }
+            }
             "--repo-id" => {
                 i += 1;
                 opts.repo_id = Some(require_value(args, i, "--repo-id")?);

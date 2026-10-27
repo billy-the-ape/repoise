@@ -46,13 +46,20 @@ impl Workspace {
                 return Err(Error::Adapter(err));
             }
         }
-        if let Some(patch) = patch {
-            adapter
-                .run_git_in(
-                    path,
-                    &["apply", "--whitespace=nowarn", &patch.to_string_lossy()],
-                )
-                .map_err(Error::Adapter)?;
+        if let Some(patch) = patch
+            && let Err(err) = adapter.run_git_in(
+                path,
+                &["apply", "--whitespace=nowarn", &patch.to_string_lossy()],
+            )
+        {
+            // The worktree registration already exists; remove it before
+            // surfacing the error so a bad patchFile never leaks one.
+            let workspace = Self {
+                path: path.to_path_buf(),
+                git_root: git_root.to_path_buf(),
+            };
+            let _ = workspace.remove();
+            return Err(Error::Adapter(err));
         }
         Ok(Self {
             path: path.to_path_buf(),
