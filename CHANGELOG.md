@@ -230,8 +230,10 @@ now actually uses the host-measured `elapsedMs` (the bridge reports it as a
 fractional millisecond value, which `as_u64` silently rejected, forcing
 the coordinator's own span — including Node/bridge startup — to be
 recorded instead), and the pre-trial drift check now re-hashes the
-recorded `patchFile` (a mid-experiment patch edit would otherwise apply a
-record. A ninth review round fixed two more encoding/parsing bugs: the host
+recorded `patchFile` (a mid-experiment patch edit would otherwise
+silently change the snapshot for later trials), and preflight now also
+enforces that `patchFile` lives outside the benchmarked repository. A
+ninth review round fixed two more encoding/parsing bugs: the host
 bridge now puts its stdin in stream-level UTF-8 mode, so a multi-byte
 character straddling a pipe read boundary in a large non-ASCII request no
 longer decodes to U+FFFD (before, the adapter could silently receive a

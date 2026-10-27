@@ -48,7 +48,7 @@ Design deltas from this plan document: the actual surface is
 `--seed`/`--output` flags exist as documented in `docs/bench.md`), and the
 "native or optional companion" question resolved as native orchestration
 with the AP-03 host as the only Node piece. Post-review hardening
-(2026-10-27, two rounds): task/condition ids are restricted to
+(2026-10-27, nine rounds): task/condition ids are restricted to
 `[A-Za-z0-9_-]` (trial ids and artifact directories derive from them), a
 failed patch snapshot removes the partially created worktree,
 post-workspace failures (request write, host bridge, trial-record write)
