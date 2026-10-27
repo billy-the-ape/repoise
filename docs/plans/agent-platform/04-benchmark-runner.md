@@ -97,7 +97,16 @@ user's current directory, and a resolved bridge inside the benchmarked
 repository root is rejected — repository content is untrusted data, so a
 repo that ships its own `adapter-host-run.mjs` must never be executed
 automatically with adapter credentials (the explicit
-`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice).
+`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice). Seventh
+round: the snapshot dirtiness check now runs `git status --porcelain
+--untracked-files=all` so each untracked file is listed individually —
+under the default `normal` mode git collapses an untracked parent into one
+ancestor entry (e.g. `?? .bench/`) that is not a descendant of a nested
+in-repo output/cache root, so every run after the first (including
+`--dry-run`) failed as dirty; sibling untracked files still count; the
+environment wording now states that installed npm/native packages need
+`REPOISE_BENCH_HOST_BRIDGE` (they do not ship the host bridge); and the
+stale `request.json` layout comment was corrected.
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

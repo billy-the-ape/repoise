@@ -146,10 +146,13 @@ only), and the hybrid vector-coverage gate. Artifacts under
 (`qualityGate: not_evaluated` — grading is AP-05), per-trial `trial.json`,
 `request.json`, adapter `events.ndjson`/`result.json`/`stderr.log` and
 `host.log`. Exit codes: 0 completed, 1 operational, 2 usage, 3
-preflight/suite, 4 interrupted. No environment variables are required;
-`REPOISE_BENCH_RUNNER` and `REPOISE_BENCH_HOST_BRIDGE` are optional
-overrides. Node is required only to launch adapter processes; orchestration
-is native. Declared limitations: worktrees are isolation, not security
+preflight/suite, 4 interrupted. A source-checkout build needs no
+environment variables; installed npm/native packages do not ship the host
+bridge and need `REPOISE_BENCH_HOST_BRIDGE` (pointing at the bridge file in
+a source checkout), and `REPOISE_BENCH_RUNNER` optionally overrides the
+suite's adapter executable. Node is required only to launch adapter
+processes; orchestration is native. Declared limitations: worktrees are
+isolation, not security
 sandboxes (hidden-test integrity awaits a host-enforced mechanism, AP-05/
 AP-06), no grading/metrics/report export (AP-05), and no `--events` stream
 for `bench` yet. Post-review hardening: task/condition ids are restricted
@@ -211,7 +214,17 @@ repository that commits its own
 `packages/agent-adapter-protocol/bin/adapter-host-run.mjs` is never executed
 automatically with adapter credentials; a resolved bridge inside the
 benchmarked repository root is rejected (the explicit
-`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice). See
+`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice). A seventh
+review round fixed a dirtiness-check bug: the snapshot check now runs `git
+status --porcelain --untracked-files=all`, so each untracked file is listed
+individually — under the default `normal` mode git collapses an untracked
+parent directory into one ancestor entry (e.g. `?? .bench/`), which is not a
+descendant of a nested in-repo output root (or cache root), so every run
+after the first (including `--dry-run`) failed with `working tree is
+dirty`; sibling untracked files beside the output/cache root still count as
+dirt. It also corrected the environment wording (installed npm/native
+packages do not ship the host bridge and need `REPOISE_BENCH_HOST_BRIDGE`)
+and a stale `request.json` comment in the artifact layout. See
 [docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.

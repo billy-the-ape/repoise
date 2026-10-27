@@ -153,36 +153,21 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
         "commit" => {
             // The cache directory (e.g. the default `.repoise`) is Repoise's
             // own state, not source input: it never makes the tree dirty.
+            // `--untracked-files=all` lists each untracked file individually:
+            // the default `normal` mode collapses an untracked directory into
+            // one ancestor entry (e.g. `?? .bench/`), and that ancestor is not
+            // a descendant of the nested output root excluded below, so an
+            // in-repo output root under an untracked parent would make every
+            // run after the first fail as dirty.
             let porcelain = adapter
-                .run_git(&["status", "--porcelain"])
+                .run_git(&["status", "--porcelain", "--untracked-files=all"])
                 .map_err(Error::Adapter)?;
-            let dirty = porcelain
-                .lines()
-                .filter(|line| {
-                    if line.trim().is_empty() {
-                        return false;
-                    }
-                    // Porcelain format: two status chars, a space, then the path
-                    // (renames carry ` -> ` inside the path segment).
-                    let path = line
-                        .get(3..)
-                        .unwrap_or("")
-                        .rsplit(" -> ")
-                        .next()
-                        .unwrap_or("");
-                    let entry = Path::new(path);
-                    let absolute = if entry.is_absolute() {
-                        entry.to_path_buf()
-                    } else {
-                        root.join(entry)
-                    };
-                    // The resolved cache root and (when inside the repository)
-                    // the output root are Repoise's own state, not source
-                    // input: neither makes the tree dirty.
-                    !absolute.starts_with(&cache.root)
-                        && !(output_within_root && absolute.starts_with(&output_root))
-                })
-                .count();
+            let dirty = count_dirty_entries(
+                &porcelain,
+                &root,
+                &cache.root,
+                output_within_root.then_some(&output_root),
+            );
             if dirty > 0 {
                 return Err(Error::Config(format!(
                     "working tree is dirty ({dirty} entries); commit the changes or select a \
@@ -467,6 +452,44 @@ fn bridge_candidates_from(start: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Counts `git status --porcelain --untracked-files=all` entries that are
+/// not Repoise's own state: the resolved cache root, or the in-repository
+/// output root (artifacts and trial worktrees). Porcelain format: two
+/// status chars, a space, then the path (renames carry ` -> ` inside the
+/// path segment); only the destination side of a rename is considered.
+fn count_dirty_entries(
+    porcelain: &str,
+    root: &Path,
+    cache_root: &Path,
+    output_root: Option<&Path>,
+) -> usize {
+    porcelain
+        .lines()
+        .filter(|line| {
+            if line.trim().is_empty() {
+                return false;
+            }
+            let path = line
+                .get(3..)
+                .unwrap_or("")
+                .rsplit(" -> ")
+                .next()
+                .unwrap_or("");
+            let entry = Path::new(path);
+            let absolute = if entry.is_absolute() {
+                entry.to_path_buf()
+            } else {
+                root.join(entry)
+            };
+            // The resolved cache root and (when inside the repository) the
+            // output root are Repoise's own state, not source input: neither
+            // makes the tree dirty.
+            !absolute.starts_with(cache_root)
+                && !output_root.is_some_and(|output| absolute.starts_with(output))
+        })
+        .count()
+}
+
 /// Syntactically normalizes a path (folds `.`/`..` components) without
 /// requiring the path to exist, so it can be compared against the canonical
 /// repository root before the output directories are created.
@@ -741,5 +764,37 @@ mod tests {
             &|name| (name == BRIDGE_ENV_VAR).then(|| "/nonexistent-bridge-7f3a.mjs".into());
         let err = find_bridge_with(root, bad_env).unwrap_err();
         assert!(err.to_string().contains("not a file"), "{err}");
+    }
+
+    /// `--untracked-files=all` lists each untracked file individually, so a
+    /// nested in-repo output root (or cache root) under an untracked parent
+    /// no longer surfaces as a collapsed ancestor entry counted as dirty,
+    /// while sibling untracked files beside it still count.
+    #[test]
+    fn nested_untracked_output_and_cache_roots_are_not_dirty() {
+        let root = Path::new("/repo");
+        let cache_root = Path::new("/repo/.cache/repoise");
+        let output_root = Path::new("/repo/.bench/results");
+        let porcelain = [
+            "?? .bench/results/keep.txt",
+            "?? .cache/repoise/db.sqlite",
+            "?? .bench/sibling.txt",
+            " M src/main.rs",
+            "R  old.txt -> new.txt",
+        ]
+        .join("\n");
+        assert_eq!(
+            count_dirty_entries(&porcelain, root, cache_root, Some(output_root)),
+            3
+        );
+        // Without the in-repo output root, the untracked output state is
+        // dirt too.
+        assert_eq!(count_dirty_entries(&porcelain, root, cache_root, None), 4);
+        // Tracked-only changes are unaffected by the untracked exclusions.
+        assert_eq!(
+            count_dirty_entries(" D gone.txt", root, cache_root, Some(output_root)),
+            1
+        );
+        assert_eq!(count_dirty_entries("", root, cache_root, None), 0);
     }
 }

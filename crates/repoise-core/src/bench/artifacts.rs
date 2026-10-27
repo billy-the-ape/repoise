@@ -11,7 +11,9 @@
 //!                       content-addressed, immutable — declared in manifest)
 //!   workspaces/<trialId> disposable per-trial Git worktree
 //!   trials/<trialId>/    append-only per-trial record
-//!     request.json       the exact AP-03 adapter request sent
+//!     request.json       redacted copy of the AP-03 adapter request
+//!                        (mcp.env values replaced; the live request goes
+//!                        only to the host bridge over stdin)
 //!     trial.json         coordinator trial record (written once per trial)
 //!     adapter/
 //!       events.ndjson    host event stream (written by the host)

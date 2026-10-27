@@ -40,7 +40,11 @@ the checked-in `bin/adapter-host-run.mjs` resolved from the source checkout
 the running executable was built from — the current directory is never
 consulted, and a bridge inside the benchmarked repository is rejected, since
 repository content is untrusted data and must not be executed automatically;
-point the override at an explicit bridge file in that case);
+point the override at an explicit bridge file in that case). A
+source-checkout build needs no environment variables; installed npm/native
+packages do not ship the host bridge and need `REPOISE_BENCH_HOST_BRIDGE`
+(pointing at the bridge file in a source checkout), and
+`REPOISE_BENCH_RUNNER` optionally overrides the suite's adapter executable;
 `REPOISE_CACHE_DIR` relocates the experiment cache like every other command.
 
 Exit codes (stable; also in `repoise capabilities`): `0` completed, `1`
