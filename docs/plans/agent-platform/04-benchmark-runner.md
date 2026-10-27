@@ -106,7 +106,14 @@ in-repo output/cache root, so every run after the first (including
 `--dry-run`) failed as dirty; sibling untracked files still count; the
 environment wording now states that installed npm/native packages need
 `REPOISE_BENCH_HOST_BRIDGE` (they do not ship the host bridge); and the
-stale `request.json` layout comment was corrected.
+stale `request.json` layout comment was corrected. Eighth round: the
+coordinator now reads the host-measured `elapsedMs` as a fractional
+millisecond value (rounded) instead of always falling back to its own
+span around the host run (`as_u64` rejected the bridge's fractional value),
+and the pre-trial drift check now re-hashes the recorded `patchFile`
+against the preflight hash (a mid-experiment patch edit would otherwise
+silently change the snapshot for later trials); preflight also enforces
+the schema rule that `patchFile` lives outside the benchmarked repository.
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

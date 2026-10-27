@@ -224,7 +224,16 @@ after the first (including `--dry-run`) failed with `working tree is
 dirty`; sibling untracked files beside the output/cache root still count as
 dirt. It also corrected the environment wording (installed npm/native
 packages do not ship the host bridge and need `REPOISE_BENCH_HOST_BRIDGE`)
-and a stale `request.json` comment in the artifact layout. See
+and a stale `request.json` comment in the artifact layout. An eighth
+review round fixed two coordinator correctness gaps: `timings.agentMs`
+now actually uses the host-measured `elapsedMs` (the bridge reports it as a
+fractional millisecond value, which `as_u64` silently rejected, forcing
+the coordinator's own span — including Node/bridge startup — to be
+recorded instead), and the pre-trial drift check now re-hashes the
+recorded `patchFile` (a mid-experiment patch edit would otherwise apply a
+different snapshot to later trials without a `config_drift`); preflight
+also enforces the schema rule that `patchFile` lives outside the
+benchmarked repository. See
 [docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.

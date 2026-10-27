@@ -44,8 +44,10 @@ point the override at an explicit bridge file in that case). A
 source-checkout build needs no environment variables; installed npm/native
 packages do not ship the host bridge and need `REPOISE_BENCH_HOST_BRIDGE`
 (pointing at the bridge file in a source checkout), and
-`REPOISE_BENCH_RUNNER` optionally overrides the suite's adapter executable;
-`REPOISE_CACHE_DIR` relocates the experiment cache like every other command.
+`REPOISE_BENCH_RUNNER` optionally overrides the suite's adapter executable.
+The experiment cache is always `<output>/<experimentId>/cache` (relocate it
+with `--output`); the coordinator's own `REPOISE_CACHE_DIR` only identifies
+the root repository's cache for the snapshot dirtiness check.
 
 Exit codes (stable; also in `repoise capabilities`): `0` completed, `1`
 operational failure, `2` usage, `3` preflight/suite failure, `4` interrupted
@@ -112,15 +114,16 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   `wallClockMs`); trials not started after it are recorded as `not_started`
   and the report is still published.
 
-The suite file and every `promptFile` must live **outside** the benchmarked
-repository: a trial checkout would otherwise expose gold answers and
+The suite file, every `promptFile` and the `patchFile` of a recorded patch
+snapshot must live **outside** the benchmarked repository: a trial checkout
+would otherwise expose gold answers and
 evaluators to the agent.
 
 ## Preflight (exit 3)
 
 Preflight freezes the experiment and refuses to approximate:
 
-- the suite/prompt files are outside the repository root;
+- the suite, prompt and patch files are outside the repository root;
 - the snapshot is reproducible (clean committed tree, or an explicitly
   recorded patch); the resolved Repoise cache directory (e.g. the default
   `.repoise`) and the output root (artifacts and trial worktrees) are

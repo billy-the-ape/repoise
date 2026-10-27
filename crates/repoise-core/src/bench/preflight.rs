@@ -184,6 +184,17 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
             let patch = super::suite::resolve_path(&patch.to_string_lossy())?;
             let patch = std::fs::canonicalize(&patch)
                 .map_err(|err| Error::Config(format!("patch file does not exist: {err}")))?;
+            // The patch is experiment input, like the suite and prompt
+            // files: a trial checkout would otherwise expose it to the
+            // agent (the schema requires it to live outside the repo).
+            if is_within(&root, &patch) {
+                return Err(Error::Config(format!(
+                    "snapshot patchFile {} is inside the benchmarked repository root {}; \
+                     experiment patch input must live outside the searchable workspace",
+                    patch.display(),
+                    root.display()
+                )));
+            }
             let bytes = std::fs::read(&patch).map_err(Error::Io)?;
             (Some(patch.clone()), Some(crate::hash::sha256_hex(bytes)))
         }

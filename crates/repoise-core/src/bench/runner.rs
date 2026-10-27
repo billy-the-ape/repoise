@@ -287,12 +287,8 @@ impl RunContext {
                 );
             }
         };
-        let agent_ms = host
-            .result
-            .get("elapsedMs")
-            .and_then(Value::as_u64)
-            .map(u128::from)
-            .unwrap_or_else(|| agent_started.elapsed().as_millis());
+        let agent_ms =
+            host_elapsed_ms(&host.result).unwrap_or_else(|| agent_started.elapsed().as_millis());
 
         // --- Record -----------------------------------------------------------
         let total_ms = started.elapsed().as_millis();
@@ -719,6 +715,13 @@ fn hash_optional(path: PathBuf) -> Option<String> {
 /// effective mode is only verifiable through adapter tool telemetry, and is
 /// declared unverified otherwise (a degraded lexical call is never counted
 /// as hybrid execution).
+fn host_elapsed_ms(host_result: &Value) -> Option<u128> {
+    host_result
+        .get("elapsedMs")
+        .and_then(Value::as_f64)
+        .and_then(|value| (value >= 0.0).then_some(value.round() as u128))
+}
+
 fn mode_record(condition: &Condition, host_result: &Value) -> Value {
     let requested = if condition.retrieval_mode == "repoise" {
         condition.search_mode.clone()
@@ -1136,6 +1139,35 @@ mod tests {
         // A baseline request has no mcp section: unchanged.
         let baseline = serde_json::json!({ "condition": { "retrieval": "baseline" } });
         assert_eq!(redact_request(&baseline), baseline);
+    }
+
+    /// The bridge reports `elapsedMs` as a fractional millisecond value
+    /// (`hrtime`-derived), so it must be read as a float and rounded —
+    /// `as_u64` rejects every non-integer and would force the coordinator
+    /// fallback for every trial.
+    #[test]
+    fn host_elapsed_ms_reads_fractional_values() {
+        assert_eq!(
+            host_elapsed_ms(&serde_json::json!({ "elapsedMs": 1234.567 })),
+            Some(1235)
+        );
+        assert_eq!(
+            host_elapsed_ms(&serde_json::json!({ "elapsedMs": 0.4 })),
+            Some(0)
+        );
+        assert_eq!(
+            host_elapsed_ms(&serde_json::json!({ "elapsedMs": 1000 })),
+            Some(1000)
+        );
+        assert_eq!(
+            host_elapsed_ms(&serde_json::json!({ "elapsedMs": -5.2 })),
+            None
+        );
+        assert_eq!(
+            host_elapsed_ms(&serde_json::json!({ "elapsedMs": "fast" })),
+            None
+        );
+        assert_eq!(host_elapsed_ms(&serde_json::json!({})), None);
     }
 
     #[test]

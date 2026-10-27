@@ -52,7 +52,8 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * Result: `{ status, reason, errors, warnings, unknownEventTypes, events,
  * hello, adapter, harness, usage, elapsedMs, adapterDurationMs, exitCode,
- * exitSignal }`. `elapsedMs` is coordinator-measured wall time;
+ * exitSignal }`. `elapsedMs` is host-measured wall time in fractional
+ * milliseconds;
  * `adapterDurationMs` is the harness-reported duration and a separate value. */
 export async function runAdapter(request, options = {}) {
   const startedHr = process.hrtime.bigint();

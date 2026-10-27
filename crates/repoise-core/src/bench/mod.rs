@@ -357,7 +357,8 @@ fn resolve_adapter_env_with(
 }
 
 /// Re-checks that the frozen inputs still hold: suite bytes unchanged,
-/// snapshot revision unchanged. Returns a stable drift reason.
+/// snapshot revision unchanged, and (for a recorded patch snapshot) the
+/// patch file bytes unchanged. Returns a stable drift reason.
 fn check_drift(
     suite_path: &Path,
     suite_hash: &str,
@@ -382,6 +383,28 @@ fn check_drift(
         return Err(
             "config_drift: the repository snapshot revision changed after the experiment was frozen"
                 .into(),
+        );
+    }
+    // A recorded patch snapshot re-applies the patch file for every trial,
+    // so a mid-experiment edit would silently change the snapshot. Re-hash
+    // it against the value frozen at preflight.
+    if let Some(patch_file) = &preflight.patch_file {
+        let patch_hash = preflight.patch_hash.as_deref().ok_or_else(|| {
+            "config_drift: patch snapshot is missing its recorded hash".to_string()
+        })?;
+        patch_drift_error(patch_file, patch_hash)?;
+    }
+    Ok(())
+}
+
+/// Compares the recorded patch file against the hash frozen at preflight;
+/// a changed (or unreadable) patch would otherwise apply a different
+/// snapshot to later trials without any drift signal.
+fn patch_drift_error(patch_file: &Path, patch_hash: &str) -> Result<(), String> {
+    let patch_bytes = std::fs::read(patch_file).map_err(|err| err.to_string())?;
+    if crate::hash::sha256_hex(&patch_bytes) != patch_hash {
+        return Err(
+            "config_drift: the recorded patch file changed after the experiment was frozen".into(),
         );
     }
     Ok(())
@@ -526,5 +549,28 @@ mod tests {
         // An unset credential variable is a config error, not a silent drop.
         let suite = suite_with_credential_ref();
         assert!(resolve_adapter_env_with(&suite, &|_| None).is_err());
+    }
+
+    /// A recorded patch snapshot must not drift mid-experiment: an edited or
+    /// missing patch file is a config_drift, an unchanged one passes.
+    #[test]
+    fn patch_drift_error_tracks_the_recorded_patch_bytes() {
+        let dir =
+            std::env::temp_dir().join(format!("repoise-bench-patch-drift-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let patch = dir.join("recorded.patch");
+        std::fs::write(&patch, "diff --git a/x b/x\n").unwrap();
+        let hash = crate::hash::sha256_hex(std::fs::read(&patch).unwrap().as_slice());
+
+        assert!(patch_drift_error(&patch, &hash).is_ok());
+
+        std::fs::write(&patch, "diff --git a/y b/y\n").unwrap();
+        let err = patch_drift_error(&patch, &hash).unwrap_err();
+        assert!(err.starts_with("config_drift"), "{err}");
+
+        std::fs::remove_file(&patch).unwrap();
+        assert!(patch_drift_error(&patch, &hash).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
