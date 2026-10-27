@@ -55,6 +55,12 @@ const abortController = new AbortController();
 
 // Read the request line, then keep stdin open for the cooperative `cancel`
 // channel (the only graceful path on Windows).
+// Stream-level UTF-8 decoding: the request is one raw UTF-8 line, and a
+// multi-byte character straddling a pipe read boundary would otherwise
+// decode to U+FFFD per chunk (silently changing the prompt the adapter
+// receives versus the recorded requestHash). In string mode the
+// `chunk.toString("utf8")` calls below are harmless no-ops.
+process.stdin.setEncoding("utf8");
 let requestRest = "";
 const requestLine = await new Promise((resolve, reject) => {
   let buffer = "";

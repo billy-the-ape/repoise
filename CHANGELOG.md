@@ -231,9 +231,16 @@ fractional millisecond value, which `as_u64` silently rejected, forcing
 the coordinator's own span — including Node/bridge startup — to be
 recorded instead), and the pre-trial drift check now re-hashes the
 recorded `patchFile` (a mid-experiment patch edit would otherwise apply a
-different snapshot to later trials without a `config_drift`); preflight
-also enforces the schema rule that `patchFile` lives outside the
-benchmarked repository. See
+record. A ninth review round fixed two more encoding/parsing bugs: the host
+bridge now puts its stdin in stream-level UTF-8 mode, so a multi-byte
+character straddling a pipe read boundary in a large non-ASCII request no
+longer decodes to U+FFFD (before, the adapter could silently receive a
+prompt that differed from the recorded `requestHash`), and the snapshot
+dirtiness check now runs `git status --porcelain -z`, so paths with spaces,
+tabs, quotes, backslashes or (default `core.quotePath`) non-ASCII bytes are
+no longer C-quoted into unrecognizable entries that made the runner's own
+artifacts count as dirt on every run after the first (renames are parsed
+from the NUL-separated origin field). See
 [docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.

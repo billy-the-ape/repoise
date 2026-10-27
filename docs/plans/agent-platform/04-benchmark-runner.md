@@ -114,6 +114,16 @@ and the pre-trial drift check now re-hashes the recorded `patchFile`
 against the preflight hash (a mid-experiment patch edit would otherwise
 silently change the snapshot for later trials); preflight also enforces
 the schema rule that `patchFile` lives outside the benchmarked repository.
+Ninth round: the host bridge now decodes its stdin with stream-level UTF-8
+(`setEncoding("utf8")`) so a multi-byte character straddling a pipe read
+boundary in a large non-ASCII request no longer becomes U+FFFD (the adapter
+would otherwise silently run a prompt different from the recorded
+`requestHash`); and the snapshot dirtiness check now uses `git status
+--porcelain -z`, so C-quoted paths (spaces, tabs, quotes, backslashes,
+non-ASCII under default `core.quotePath`) no longer defeat the
+output/cache-root exclusion — a spaced or non-ASCII in-repo output
+directory would otherwise make every run after the first fail as dirty
+(rename entries are parsed from the NUL-separated origin field).
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

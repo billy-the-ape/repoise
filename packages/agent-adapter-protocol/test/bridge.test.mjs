@@ -145,3 +145,37 @@ test("bridge fails when the request line never arrives", async () => {
   assert.notEqual(code, 0, "a missing request line must not succeed");
   assert.ok(!existsSync(join(root, "result.json")));
 });
+
+test("bridge delivers a large non-ASCII prompt intact across stdin chunk boundaries", async () => {
+  // The coordinator writes the request as one raw UTF-8 line. Decoding each
+  // stdin Buffer independently would turn a multi-byte character straddling
+  // a pipe read boundary into U+FFFD, so the adapter would silently receive
+  // a prompt that differs from the one request.json/requestHash were
+  // computed from. The echo fixture writes the received prompt back so the
+  // test can compare it byte-for-byte.
+  const root = mkdtempSync(join(tmpdir(), "ap04-bridge-"));
+  const prompt =
+    "\u6570".repeat(60_000) + "\u{1F600}".repeat(10_000) + "\u672b\u5c3e";
+  const request = makeRequest(root);
+  request.task.prompt = prompt;
+  const line = Buffer.from(`${JSON.stringify(request)}\n`, "utf8");
+  const child = spawn(
+    process.execPath,
+    [bridge, join(fixtures, "fake-echo-prompt.mjs")],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  // Small writes: 4001-byte chunks split 3-byte (and 4-byte) characters.
+  for (let offset = 0; offset < line.length; offset += 4001) {
+    child.stdin.write(line.subarray(offset, offset + 4001));
+  }
+  child.stdin.end();
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  assert.equal(code, 0);
+  const echoed = readFileSync(
+    join(root, "artifacts", "echo-prompt.txt"),
+    "utf8",
+  );
+  assert.equal(echoed, prompt);
+});

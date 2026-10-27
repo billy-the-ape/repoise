@@ -160,7 +160,18 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
             // in-repo output root under an untracked parent would make every
             // run after the first fail as dirty.
             let porcelain = adapter
-                .run_git(&["status", "--porcelain", "--untracked-files=all"])
+                .run_git(&[
+                    "status",
+                    "--porcelain",
+                    // NUL-separated: without -z git C-quotes paths containing
+                    // spaces, tabs, quotes, backslashes or (default
+                    // `core.quotePath`) non-ASCII bytes, and the raw text no
+                    // longer matches the output/cache roots below, so the
+                    // runner's own artifacts would count as dirt on every
+                    // run after the first.
+                    "-z",
+                    "--untracked-files=all",
+                ])
                 .map_err(Error::Adapter)?;
             let dirty = count_dirty_entries(
                 &porcelain,
@@ -463,42 +474,53 @@ fn bridge_candidates_from(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Counts `git status --porcelain --untracked-files=all` entries that are
+/// Counts `git status --porcelain -z --untracked-files=all` entries that are
 /// not Repoise's own state: the resolved cache root, or the in-repository
-/// output root (artifacts and trial worktrees). Porcelain format: two
-/// status chars, a space, then the path (renames carry ` -> ` inside the
-/// path segment); only the destination side of a rename is considered.
+/// output root (artifacts and trial worktrees). NUL-separated fields carry
+/// raw, unquoted paths; each entry is two status chars, a space, then the
+/// path, and a rename/copy entry is followed by its origin path as an extra
+/// NUL field — only the destination side is considered.
 fn count_dirty_entries(
     porcelain: &str,
     root: &Path,
     cache_root: &Path,
     output_root: Option<&Path>,
 ) -> usize {
-    porcelain
-        .lines()
-        .filter(|line| {
-            if line.trim().is_empty() {
-                return false;
-            }
-            let path = line
-                .get(3..)
-                .unwrap_or("")
-                .rsplit(" -> ")
-                .next()
-                .unwrap_or("");
-            let entry = Path::new(path);
-            let absolute = if entry.is_absolute() {
-                entry.to_path_buf()
-            } else {
-                root.join(entry)
-            };
-            // The resolved cache root and (when inside the repository) the
-            // output root are Repoise's own state, not source input: neither
-            // makes the tree dirty.
-            !absolute.starts_with(cache_root)
-                && !output_root.is_some_and(|output| absolute.starts_with(output))
-        })
-        .count()
+    let mut dirty = 0;
+    let mut skipping_rename_origin = false;
+    for field in porcelain.split('\0') {
+        if field.is_empty() {
+            continue;
+        }
+        if skipping_rename_origin {
+            // Origin path of a rename/copy entry: the entry was already
+            // counted against its destination side.
+            skipping_rename_origin = false;
+            continue;
+        }
+        if field.len() < 3 {
+            continue;
+        }
+        let (status, path) = field.split_at(3);
+        if status.starts_with(['R', 'C']) {
+            skipping_rename_origin = true;
+        }
+        let entry = Path::new(path);
+        let absolute = if entry.is_absolute() {
+            entry.to_path_buf()
+        } else {
+            root.join(entry)
+        };
+        // The resolved cache root and (when inside the repository) the
+        // output root are Repoise's own state, not source input: neither
+        // makes the tree dirty.
+        if !absolute.starts_with(cache_root)
+            && !output_root.is_some_and(|output| absolute.starts_with(output))
+        {
+            dirty += 1;
+        }
+    }
+    dirty
 }
 
 /// Syntactically normalizes a path (folds `.`/`..` components) without
@@ -777,30 +799,35 @@ mod tests {
         assert!(err.to_string().contains("not a file"), "{err}");
     }
 
-    /// `--untracked-files=all` lists each untracked file individually, so a
-    /// nested in-repo output root (or cache root) under an untracked parent
-    /// no longer surfaces as a collapsed ancestor entry counted as dirty,
-    /// while sibling untracked files beside it still count.
+    /// `-z` porcelain is NUL-separated with raw (unquoted) paths, so output
+    /// roots with spaces or non-ASCII names are still recognized, each
+    /// untracked file under them is excluded individually, and sibling
+    /// untracked files beside them still count. Rename entries count their
+    /// destination side only (the origin arrives as an extra NUL field).
     #[test]
     fn nested_untracked_output_and_cache_roots_are_not_dirty() {
         let root = Path::new("/repo");
         let cache_root = Path::new("/repo/.cache/repoise");
-        let output_root = Path::new("/repo/.bench/results");
+        let output_root = Path::new("/repo/bench results/results");
         let porcelain = [
-            "?? .bench/results/keep.txt",
+            "?? bench results/results/keep.txt",
             "?? .cache/repoise/db.sqlite",
-            "?? .bench/sibling.txt",
+            "?? bench results/sibling.txt",
             " M src/main.rs",
-            "R  old.txt -> new.txt",
+            "R  bench results/results/renamed.txt",
+            "src/old.txt",
+            "R  new name.txt",
+            "old name.txt",
+            "?? \u{6587}\u{6869}/prompt.txt",
         ]
-        .join("\n");
+        .join("\u{0}");
         assert_eq!(
             count_dirty_entries(&porcelain, root, cache_root, Some(output_root)),
-            3
+            4
         );
         // Without the in-repo output root, the untracked output state is
-        // dirt too.
-        assert_eq!(count_dirty_entries(&porcelain, root, cache_root, None), 4);
+        // dirt too (keep.txt and the renamed.txt destination both count).
+        assert_eq!(count_dirty_entries(&porcelain, root, cache_root, None), 6);
         // Tracked-only changes are unaffected by the untracked exclusions.
         assert_eq!(
             count_dirty_entries(" D gone.txt", root, cache_root, Some(output_root)),
