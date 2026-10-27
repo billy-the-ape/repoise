@@ -766,3 +766,98 @@ fn bench_generated_mcp_argv_is_accepted_and_pins_search_mode() {
     drop(stdin);
     child.wait().expect("server should exit");
 }
+
+/// A hybrid-pinned server must accept searches that omit `mode` (the pin is
+/// the effective mode, not a mismatch trigger); only an explicitly
+/// different mode is refused.
+#[test]
+fn hybrid_pinned_server_accepts_modeless_searches() {
+    let root = temp_root("bench-argv-hybrid");
+    let argv = repoise_core::bench::runner::mcp_argv(
+        std::path::Path::new("repoise"),
+        &root,
+        "hybrid",
+        false,
+    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
+    for arg in &argv[1..] {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("mcp server should start");
+    let mut stdin = child.stdin.take().expect("stdin pipe");
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout pipe"));
+    let send = |line: &str, stdin: &mut std::process::ChildStdin| {
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .expect("stdin write should succeed");
+    };
+    let call_search = |id: u32,
+                       args: Value,
+                       stdin: &mut std::process::ChildStdin,
+                       reader: &mut BufReader<std::process::ChildStdout>|
+     -> Value {
+        send(
+            &json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": "search_project_knowledge", "arguments": args } })
+                .to_string(),
+            stdin,
+        );
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("stdout read should succeed");
+        serde_json::from_str(&line).expect("valid JSON-RPC response: {line}")
+    };
+    send(
+        &json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} }).to_string(),
+        &mut stdin,
+    );
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("stdout read should succeed");
+    let init: Value = serde_json::from_str(&line).expect("valid JSON-RPC response: {line}");
+    assert!(
+        init.get("error").is_none(),
+        "server rejected the bench argv: {init}"
+    );
+    // Omitting `mode` on a hybrid-pinned server uses the pinned mode: no
+    // scope mismatch (any failure here is the missing embedding profile,
+    // which is the correct behavior for an unconfigured empty directory).
+    let modeless = call_search(2, json!({ "query": "anything" }), &mut stdin, &mut reader);
+    if let Some(message) = modeless["result"]
+        .get("isError")
+        .and_then(|flag| flag.as_bool())
+        .unwrap_or(false)
+        .then(|| {
+            modeless["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+        })
+    {
+        assert!(!message.contains("scope mismatch"), "{message}");
+    }
+    // An explicitly different mode is still refused.
+    let different = call_search(
+        3,
+        json!({ "query": "anything", "mode": "lexical" }),
+        &mut stdin,
+        &mut reader,
+    );
+    assert_eq!(
+        different["result"].get("isError"),
+        Some(&json!(true)),
+        "{different}"
+    );
+    let message = different["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(message.contains("scope mismatch"), "{message}");
+    drop(stdin);
+    child.wait().expect("server should exit");
+}

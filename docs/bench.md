@@ -78,10 +78,12 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   (`patchFile` with a git-apply-able patch over `revision`, recorded by hash).
 - `tasks` — exactly one of `prompt` / `promptFile` per task; neither may
   contain grading answers (that is AP-05 territory).
-- ids — task and condition ids must contain only `[A-Za-z0-9_-]`: trial ids
-  and artifact directories are derived from them, so other characters could
-  make two distinct ids collide after sanitizing (validation rejects them
-  before any worktree is created).
+- ids — experiment, task and condition ids must contain only
+  `[A-Za-z0-9_-]`: the experiment id names the artifact directory (so `.`/`..`
+  could escape the output root) and trial ids and artifact directories are
+  derived from the other ids, so other characters could make two distinct
+  ids collide after sanitizing (validation rejects them before any worktree
+  is created).
 - `conditions` — `baseline` (no Repoise tools or managed guidance; the
   managed overlay is removed from the disposable worktree only) or `repoise`
   (`searchMode` required: `lexical` or `hybrid`).

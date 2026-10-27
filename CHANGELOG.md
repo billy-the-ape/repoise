@@ -159,9 +159,17 @@ snapshot removes the partially created worktree before surfacing the
 error; failures after workspace creation (request write, host bridge,
 trial-record write) record an `infra_error` trial with the workspace
 cleaned up so the report is always published; and `report.json`
-`startedAtUtc` is captured at experiment start. The `--search-mode` pin is
-exercised by an integration test that parses the exact argv the bench
-coordinator generates with the real CLI parser. See [docs/bench.md](docs/bench.md) and
+`startedAtUtc` is captured at experiment start. A second review round
+fixed three more correctness issues: searches that omit `mode` on a
+hybrid/vectors-only pinned server now use the pinned mode instead of
+being refused (only explicitly different modes are rejected); the seeded
+condition-order shuffle now advances its splitmix64 stream (one draw per
+swap, so orders are no longer correlated); and the experiment `id` is
+restricted to `[A-Za-z0-9_-]` so it cannot escape the artifact output
+root (`.`, `..`). The `--search-mode` pin is
+exercised by integration tests that parse the exact argv the bench
+coordinator generates with the real CLI parser (lexical- and
+hybrid-pinned servers). See [docs/bench.md](docs/bench.md) and
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 

@@ -249,10 +249,10 @@ impl Suite {
                 self.schema_version
             ));
         }
-        if self.id.is_empty() {
+        if self.id.trim().is_empty() {
             problems.push("id must not be empty".into());
-        } else if self.id.contains('/') || self.id.trim() != self.id {
-            problems.push("id must not contain '/' or surrounding whitespace".into());
+        } else if id_charset_problem(&self.id).is_some() {
+            problems.push(id_charset_problem(&self.id).unwrap());
         }
         if self.root.trim().is_empty() {
             problems.push("root must not be empty".into());
@@ -383,9 +383,10 @@ impl Suite {
     }
 }
 
-/// Task/condition ids must be filesystem-safe and stable under `sanitize`
-/// (trial ids and artifact directories are derived from them): any other
-/// character would let two distinct ids collide after sanitizing.
+/// Experiment/task/condition ids must be filesystem-safe and stable under
+/// `sanitize` (artifact directories and trial ids are derived from them):
+/// any other character would let two distinct ids collide after sanitizing
+/// or let an artifact directory escape its root (`..`, `.`).
 fn id_charset_problem(id: &str) -> Option<String> {
     if id
         .chars()
@@ -394,9 +395,9 @@ fn id_charset_problem(id: &str) -> Option<String> {
         None
     } else {
         Some(format!(
-            "id '{id}' must contain only [A-Za-z0-9_-]: trial ids and artifact \
-             directories are derived from it, so other characters could make \
-             two ids collide"
+            "id '{id}' must contain only [A-Za-z0-9_-]: artifact directories \
+             and trial ids are derived from it, so other characters could \
+             make two ids collide or escape the artifact root"
         ))
     }
 }
@@ -465,5 +466,18 @@ mod tests {
         let suite: Suite = serde_json::from_value(value).unwrap();
         let err = suite.validate().unwrap_err();
         assert!(err.to_string().contains("[A-Za-z0-9_-]"), "{}", err);
+    }
+
+    #[test]
+    fn experiment_ids_cannot_escape_the_artifact_root() {
+        // The experiment id is the first artifact path component; `..` and
+        // `.` would place artifacts in (or on) the output root's parent.
+        for id in ["..", ".", "..hidden", "a/b", "a\\b"] {
+            let mut value = valid_suite_json();
+            value["id"] = serde_json::json!(id);
+            let suite: Suite = serde_json::from_value(value).unwrap();
+            let err = suite.validate().unwrap_err();
+            assert!(err.to_string().contains("[A-Za-z0-9_-]"), "{id}: {err}");
+        }
     }
 }

@@ -16,8 +16,8 @@
     "id": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^[^/]+$",
-      "description": "Stable experiment id (also the artifact directory name; no '/')."
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Stable experiment id (also the artifact directory name; [A-Za-z0-9_-] only so it cannot escape the artifact root)."
     },
     "root": {
       "type": "string",

@@ -476,15 +476,18 @@ impl Server {
         let max_output_tokens = u64_value(args, "maxOutputTokens");
         let cursor = string_arg(args, "cursor");
         let requested = match string_arg(args, "mode").as_deref() {
-            Some("hybrid") => repoise_core::search::SearchMode::Hybrid,
-            Some("vectors-only") => repoise_core::search::SearchMode::VectorsOnly,
-            _ => repoise_core::search::SearchMode::Lexical,
+            Some("hybrid") => Some(repoise_core::search::SearchMode::Hybrid),
+            Some("vectors-only") => Some(repoise_core::search::SearchMode::VectorsOnly),
+            Some("lexical") => Some(repoise_core::search::SearchMode::Lexical),
+            None => None,
+            // Unreachable: the `mode` enum is validated upstream.
+            Some(_) => None,
         };
         // A pinned server mode (--search-mode) is the enforced retrieval
         // mode: omitting `mode` uses it; requesting a different one is a
         // scope mismatch, never a silent downgrade or upgrade.
         let mode = match (self.search_mode, requested) {
-            (Some(pinned), requested) if requested != pinned => {
+            (Some(pinned), Some(requested)) if requested != pinned => {
                 let (pinned, requested) = (
                     match pinned {
                         repoise_core::search::SearchMode::Lexical => "lexical",
@@ -502,7 +505,7 @@ impl Server {
                 ));
             }
             (Some(pinned), _) => pinned,
-            (None, requested) => requested,
+            (None, requested) => requested.unwrap_or(repoise_core::search::SearchMode::Lexical),
         };
         let rrf_k = u32_value(args, "rrfK");
         let query_embedder = if mode != repoise_core::search::SearchMode::Lexical {

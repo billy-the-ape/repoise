@@ -46,13 +46,18 @@ Design deltas from this plan document: the actual surface is
 `--conditions/--repeat` flags; `--dry-run`/`--json`/`--runner`/`--repeat`/
 `--seed`/`--output` flags exist as documented in `docs/bench.md`), and the
 "native or optional companion" question resolved as native orchestration
-with the AP-03 host as the only Node piece. Post-review hardening (2026-10-27):
-task/condition ids are restricted to `[A-Za-z0-9_-]` (trial ids and artifact
-directories derive from them), a failed patch snapshot removes the partially
-created worktree, post-workspace failures (request write, host bridge,
-trial-record write) record an `infra_error` trial with cleanup so the report
-is always published, and `report.json` `startedAtUtc` is captured at
-experiment start.
+with the AP-03 host as the only Node piece. Post-review hardening
+(2026-10-27, two rounds): task/condition ids are restricted to
+`[A-Za-z0-9_-]` (trial ids and artifact directories derive from them), a
+failed patch snapshot removes the partially created worktree,
+post-workspace failures (request write, host bridge, trial-record write)
+record an `infra_error` trial with cleanup so the report is always
+published, and `report.json` `startedAtUtc` is captured at experiment
+start. Second round: searches omitting `mode` on a hybrid/vectors-only
+pinned MCP server use the pinned mode (only explicitly different modes
+are refused); the seeded condition shuffle advances its splitmix64
+stream (one draw per swap); and the experiment `id` is restricted to
+`[A-Za-z0-9_-]` so it cannot escape the artifact output root.
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

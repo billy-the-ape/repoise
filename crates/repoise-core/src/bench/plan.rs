@@ -74,9 +74,10 @@ impl TrialPlan {
         for (task_index, task) in suite.tasks.iter().enumerate() {
             for repetition in 0..suite.repeat {
                 let mut order: Vec<usize> = (0..suite.conditions.len()).collect();
-                let state = block_seed(suite.seed, task_index, repetition);
+                let mut state = block_seed(suite.seed, task_index, repetition);
                 for i in (1..order.len()).rev() {
-                    let j = splitmix64(state) % (u64::from(i as u32) + 1);
+                    state = splitmix64(state);
+                    let j = state % (u64::from(i as u32) + 1);
                     order.swap(i, j as usize);
                 }
                 blocks.push(Block {
@@ -117,5 +118,48 @@ impl TrialPlan {
             }
         }
         trials
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn suite_with_seed(seed: u64) -> Suite {
+        let value = serde_json::json!({
+            "id": "exp",
+            "root": "/tmp/repo",
+            "tasks": [{ "id": "t", "prompt": "x" }],
+            "conditions": [
+                { "id": "a", "retrievalMode": "baseline" },
+                { "id": "b", "retrievalMode": "baseline" },
+                { "id": "c", "retrievalMode": "baseline" }
+            ],
+            "repeat": 2,
+            "seed": seed,
+            "adapter": { "executable": "node" },
+            "profile": { "harness": { "name": "fake" } }
+        });
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn seeded_shuffle_advances_the_stream() {
+        // Hand-computed from the splitmix64 stream with one draw per swap;
+        // the correlated-draws bug (reusing one draw for every swap) yields
+        // [2, 1, 0] for BOTH seeds, so these orders pin the real stream.
+        let plan = TrialPlan::new(&suite_with_seed(7));
+        assert_eq!(plan.blocks[0].order, vec![2, 1, 0]);
+        let plan = TrialPlan::new(&suite_with_seed(42));
+        assert_eq!(plan.blocks[0].order, vec![1, 2, 0]);
+        // A later repetition re-seeds its block.
+        assert_eq!(plan.blocks[1].order, vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn same_seed_replays_the_same_plan() {
+        let a = TrialPlan::new(&suite_with_seed(1234));
+        let b = TrialPlan::new(&suite_with_seed(1234));
+        assert_eq!(a, b);
     }
 }
