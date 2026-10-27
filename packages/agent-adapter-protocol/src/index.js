@@ -164,8 +164,15 @@ export async function runAdapter(request, options = {}) {
     spawnError = spawnError ?? error;
   });
   // Drain stderr so a chatty adapter cannot block on a full pipe buffer;
-  // diagnostics are not part of the protocol.
-  child.stderr.on("data", () => {});
+  // diagnostics are not part of the protocol, but consumers may mirror them
+  // through `options.onStderr(chunk)` (e.g. to a stderr log).
+  child.stderr.on("data", (chunk) => {
+    try {
+      options.onStderr?.(chunk);
+    } catch {
+      // Diagnostics only; never fail the trial on a logging problem.
+    }
+  });
 
   // The versioned JSON request travels on stdin as the first line. stdin
   // stays open: on cancellation the host sends a `cancel` control line

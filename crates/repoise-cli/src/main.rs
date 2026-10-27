@@ -92,6 +92,11 @@ struct CliOptions {
     worktree_id: Option<String>,
     allow_refresh: bool,
     events: bool,
+    suite_path: Option<PathBuf>,
+    bench_runner: Option<PathBuf>,
+    repeat: Option<u32>,
+    seed: Option<u64>,
+    output_dir: Option<PathBuf>,
 }
 
 const USAGE: &str = "\
@@ -119,7 +124,7 @@ COMMANDS:
     purge                         Remove generated cache data (--all or one scope)
     capabilities                  Report version, event-stream protocol, features,
                                   commands, benchmark status and exit codes
-    bench                         Not available in this build (see capabilities)
+    bench [SUITE]                 Run a suite-driven agent benchmark (AP-04; docs/bench.md)
     help                          Show this help
     version                       Print version information
 
@@ -198,6 +203,19 @@ OVERLAY OPTIONS:
 PURGE OPTIONS:
     --all                       Remove the entire cache root
     --repo-id <ID> --worktree-id <ID>   Remove one scope directory
+
+BENCH OPTIONS:
+    SUITE (positional or --suite)   Benchmark suite manifest (JSON, schema v1);
+                                    relative to the current directory
+    --runner <PATH>         Override the suite's adapter executable
+                            (env REPOISE_BENCH_RUNNER is the second fallback)
+    --repeat <N>            Override the suite's repetition count
+    --seed <N>              Override the suite's seed (deterministic plan)
+    --output <DIR>          Override the artifact root (default: repoise-bench)
+    --dry-run               Show the frozen plan and prerequisites only
+                            (no worktrees, no agent processes)
+                            Exit codes: 0 completed, 1 operational failure,
+                            2 usage, 3 preflight/suite failure, 4 interrupted
 ";
 
 fn parse_args(args: &[String]) -> Result<CliOptions, String> {
@@ -237,6 +255,11 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         worktree_id: None,
         allow_refresh: false,
         events: false,
+        suite_path: None,
+        bench_runner: None,
+        repeat: None,
+        seed: None,
+        output_dir: None,
     };
     let mut positional = Vec::new();
     let mut i = 0;
@@ -384,6 +407,36 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                 i += 1;
                 opts.worktree_id = Some(require_value(args, i, "--worktree-id")?);
             }
+            "--suite" => {
+                i += 1;
+                opts.suite_path = Some(PathBuf::from(require_value(args, i, "--suite")?));
+            }
+            "--runner" => {
+                i += 1;
+                opts.bench_runner = Some(PathBuf::from(require_value(args, i, "--runner")?));
+            }
+            "--repeat" => {
+                i += 1;
+                let value = require_value(args, i, "--repeat")?;
+                opts.repeat = Some(
+                    value
+                        .parse::<u32>()
+                        .map_err(|_| format!("--repeat must be a positive integer: {value}"))?,
+                );
+            }
+            "--seed" => {
+                i += 1;
+                let value = require_value(args, i, "--seed")?;
+                opts.seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("--seed must be a non-negative integer: {value}"))?,
+                );
+            }
+            "--output" => {
+                i += 1;
+                opts.output_dir = Some(PathBuf::from(require_value(args, i, "--output")?));
+            }
             value if value.starts_with('-') && value.len() > 1 => {
                 return Err(format!("unknown option: {value}"));
             }
@@ -404,6 +457,14 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             | Command::Check
             | Command::Watch
             | Command::Mcp => opts.root = PathBuf::from(first),
+            Command::Bench => {
+                if opts.suite_path.is_some() {
+                    return Err(
+                        "bench takes the suite positionally or via --suite (not both)".into(),
+                    );
+                }
+                opts.suite_path = Some(PathBuf::from(first));
+            }
             Command::Overlay => match first.as_str() {
                 "uninstall" | "update" => {
                     opts.overlay_action = Some(first.to_string());
@@ -421,8 +482,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             | Command::Help
             | Command::Version
             | Command::Purge
-            | Command::Capabilities
-            | Command::Bench => {
+            | Command::Capabilities => {
                 return Err(format!("unexpected argument: {first}"));
             }
         }
@@ -514,7 +574,7 @@ fn run(opts: CliOptions) -> Result<ExitCode, String> {
         Command::Overlay => run_overlay(&opts),
         Command::Purge => run_purge(&opts),
         Command::Capabilities => run_capabilities(&opts),
-        Command::Bench => run_bench(),
+        Command::Bench => run_bench(&opts),
     }
 }
 
@@ -528,13 +588,46 @@ fn run_capabilities(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_bench() -> Result<ExitCode, String> {
-    // Discoverable but not available: the benchmark coordinator is planned in
-    // the agent platform program (AP-04).
-    eprintln!(
-        "bench is not available in this build: the benchmark coordinator is planned in the agent platform program (AP-04); run `repoise capabilities --json` for the current benchmark status"
-    );
-    Ok(ExitCode::from(1))
+fn run_bench(opts: &CliOptions) -> Result<ExitCode, String> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let suite_path = opts.suite_path.clone().ok_or_else(|| {
+        "bench requires a suite manifest: bench <SUITE> or bench --suite <PATH>".to_string()
+    })?;
+    // Runner resolution: explicit --runner, then the REPOISE_BENCH_RUNNER env
+    // override, then the suite's adapter.executable.
+    let runner = opts.bench_runner.clone().or_else(|| {
+        env::var("REPOISE_BENCH_RUNNER")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+    });
+    let self_exe = env::current_exe().map_err(|err| err.to_string())?;
+    let request = repoise_core::bench::BenchRequest {
+        suite_path,
+        dry_run: opts.dry_run,
+        json: opts.json,
+        runner,
+        repeat: opts.repeat,
+        seed: opts.seed,
+        output: opts.output_dir.clone(),
+        self_exe,
+    };
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let handler = interrupted.clone();
+    if let Err(err) = ctrlc::set_handler(move || {
+        handler.store(true, Ordering::SeqCst);
+    }) {
+        return Err(format!("could not install the signal handler: {err}"));
+    }
+    let outcome = repoise_core::bench::run(&request, interrupted).map_err(|err| err.to_string())?;
+    if opts.json {
+        println!("{}", json(&outcome.payload)?);
+    } else {
+        println!("{}", outcome.summary);
+    }
+    Ok(ExitCode::from(outcome.exit_code))
 }
 
 fn cli_overrides(opts: &CliOptions) -> Result<CliOverrides, String> {

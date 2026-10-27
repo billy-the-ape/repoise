@@ -17,10 +17,10 @@ The CLI gained machine-automation surfaces without changing existing
 
 - `repoise capabilities` (and `--json`) — version/capabilities handshake:
   event-stream protocol version and checked-in schema, build features,
-  command/machine-output matrix, benchmark availability (planned `bench`,
-  not shipped), the stable exit-code table (0 ok, 1 operational, 2 usage,
-  3 index missing/stale, 4 coverage not met) and the additive
-  compatibility policy. Schema: `schemas/capabilities.v1.schema.json`.
+  command/machine-output matrix, benchmark availability (`bench`, shipped in
+  this cycle alongside AP-04), the stable exit-code table (0 ok, 1
+  operational, 2 usage, 3 index missing/stale, 4 coverage not met) and the
+  additive compatibility policy. Schema: `schemas/capabilities.v1.schema.json`.
 - `repoise index --events` and `repoise watch --events` — NDJSON event
   streams on stdout (started, phase-scoped progress, warning, 15 s
   heartbeat overridable via `REPOISE_EVENTS_HEARTBEAT_MS`, and exactly one
@@ -119,6 +119,40 @@ are required for the protocol host itself; the Cline adapter honors
 `CLINE_EXECUTABLE` and the documented `CLONE_*` passthrough namespace. See
 [docs/agent-adapters.md](docs/agent-adapters.md) and
 `docs/plans/agent-platform/03-agent-adapters.md` for the implementation
+record.
+
+### Benchmark runner (AP-04)
+
+`repoise bench` runs suite-driven agent benchmark experiments: repeated
+trials over one frozen Git snapshot in disposable linked worktrees, against
+declared retrieval conditions (`baseline`, `repoise` with enforced
+`lexical`/`hybrid` via a read-only `repoise mcp` server bound to each trial
+worktree). The coordinator owns scheduling, isolation, budgets, interruption
+and artifacts; it never implements an agent loop — every trial's agent
+process is driven through the AP-03 protocol via the checked-in host bridge
+(`packages/agent-adapter-protocol/bin/adapter-host-run.mjs`), with the
+coordinator sending the cooperative `cancel` line on SIGINT/SIGTERM,
+escalating after a grace window and force-killing the bridge and its
+recorded process tree at the outer wall-clock deadline (exit 4, remaining
+trials `not_started`). Preflight (exit 3) freezes the experiment: the
+strictly parsed suite manifest (schema v1,
+`schemas/bench-suite.v1.schema.json`; suite/prompt files must live outside
+the benchmarked repository), a reproducible snapshot (clean commit or
+recorded patch; the resolved Repoise cache directory never counts as dirt),
+node/bridge/adapter resolution, `env:`/`credentialRef` resolution (names
+only), and the hybrid vector-coverage gate. Artifacts under
+`<output>/<experiment>/`: immutable `manifest.json`, final `report.json`
+(`qualityGate: not_evaluated` — grading is AP-05), per-trial `trial.json`,
+`request.json`, adapter `events.ndjson`/`result.json`/`stderr.log` and
+`host.log`. Exit codes: 0 completed, 1 operational, 2 usage, 3
+preflight/suite, 4 interrupted. No environment variables are required;
+`REPOISE_BENCH_RUNNER` and `REPOISE_BENCH_HOST_BRIDGE` are optional
+overrides. Node is required only to launch adapter processes; orchestration
+is native. Declared limitations: worktrees are isolation, not security
+sandboxes (hidden-test integrity awaits a host-enforced mechanism, AP-05/
+AP-06), no grading/metrics/report export (AP-05), and no `--events` stream
+for `bench` yet. See [docs/bench.md](docs/bench.md) and
+`docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 
 ### Cross-worktree cache reuse

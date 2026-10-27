@@ -1,8 +1,53 @@
 # AP-04: benchmark orchestration and trial isolation
 
-Status: proposed. Depends on [CLI contracts](02-cli-contracts.md) and
+Status: implemented (2026-10-27); see the [implementation
+status](#implementation-status) below for the shipped design, validation and
+deferred items. Depends on [CLI contracts](02-cli-contracts.md) and
 [agent adapters](03-agent-adapters.md); coordinate schemas with
 [grading/reporting](05-suites-metrics-reports.md).
+
+## Implementation status
+
+Shipped as the `repoise bench` command in `crates/repoise-core/src/bench/`
+with the Node host bridge
+`packages/agent-adapter-protocol/bin/adapter-host-run.mjs` (tested by
+`packages/agent-adapter-protocol/test/bridge.test.mjs`). The current-state
+guide is [docs/bench.md](../../bench.md). Shipped behavior:
+
+- Suite manifest (schema v1, `schemas/bench-suite.v1.schema.json`), strictly
+  parsed; suite/prompt files must live outside the benchmarked repository.
+- Preflight (exit 3): reproducible snapshot (clean commit or recorded patch,
+  with the resolved Repoise cache directory excluded from dirt), node/bridge/
+  adapter resolution, `env:`/`credentialRef` resolution (names only), hybrid
+  vector-coverage gate, root status and guidance captured into the immutable
+  `manifest.json`.
+- One disposable linked git worktree per trial at the frozen detached
+  revision; the user's checkout is never reset. `repoise` conditions get a
+  trial-local index build (setup timed separately) plus a read-only
+  `repoise mcp` server bound to the trial worktree; the effective mode and
+  any degradation are recorded. Baseline trials remove only the managed
+  overlay from the disposable worktree.
+- Trials run through the AP-03 host (bridge) only; the coordinator sends the
+  cooperative `cancel` line on SIGINT/SIGTERM, escalates after grace, and
+  force-kills the bridge and its recorded process tree at the outer
+  wall-clock deadline. Remaining trials are recorded `not_started`; exit 4.
+- Sequential scheduling with per-block seeded condition order; per-trial
+  limits forwarded to the adapter (wall clock always enforced by the
+  coordinator); `experimentWallClockMs` budget with published report.
+- Artifacts: `manifest.json`, `report.json` (`qualityGate: not_evaluated`),
+  per-trial `trial.json`/`request.json`/`adapter/` (`events.ndjson`,
+  `result.json`, `stderr.log`) and `host.log`.
+
+Design deltas from this plan document: the actual surface is
+`repoise bench [SUITE]` (the suite manifest file replaces the proposed
+`--conditions/--repeat` flags; `--dry-run`/`--json`/`--runner`/`--repeat`/
+`--seed`/`--output` flags exist as documented in `docs/bench.md`), and the
+"native or optional companion" question resolved as native orchestration
+with the AP-03 host as the only Node piece.
+
+Deferred to AP-05/AP-06: grading, metrics comparison, report export,
+CLI-transport conditions, natural-agent-choice experiments, host-enforced
+isolation for hidden-test integrity, CPU/RAM/VRAM/power sampling.
 
 ## Product behavior
 

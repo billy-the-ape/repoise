@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repoise.dev/schemas/bench-suite.v1.schema.json",
+  "title": "Repoise benchmark suite manifest (version 1)",
+  "description": "The declarative, data-only benchmark suite that `repoise bench` executes: tasks, conditions, snapshot, adapter, profile, limits and budgets. Secrets stay in the environment; the suite file and any prompt files must live outside the benchmarked repository.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "root", "tasks", "conditions", "adapter", "profile"],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "default": 1,
+      "description": "Suite manifest schema version (this build supports 1)."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/]+$",
+      "description": "Stable experiment id (also the artifact directory name; no '/')."
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Git repository root to benchmark (absolute, or relative to the current directory)."
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["commit", "patch"],
+          "default": "commit",
+          "description": "commit requires a clean tree and forbids patchFile; patch applies a recorded patch over revision."
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "default": "HEAD",
+          "description": "Revision spec for `git rev-parse --verify <revision>^{commit}`."
+        },
+        "patchFile": {
+          "type": "string",
+          "description": "git-apply-able patch over revision; required for kind 'patch'; must live outside the repository."
+        }
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Agent task prompt (exactly one of prompt/promptFile)."
+          },
+          "promptFile": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Prompt file path outside the repository (exactly one of prompt/promptFile)."
+          },
+          "version": {
+            "type": "string",
+            "default": "1",
+            "description": "Task content version for provenance."
+          }
+        }
+      }
+    },
+    "conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "retrievalMode"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "retrievalMode": {
+            "type": "string",
+            "enum": ["baseline", "repoise"],
+            "description": "baseline: no retrieval tooling or guidance; repoise: the MCP server is configured (searchMode required)."
+          },
+          "searchMode": {
+            "type": "string",
+            "enum": ["lexical", "hybrid"],
+            "description": "Required for repoise conditions; must be omitted for baseline."
+          },
+          "requiredCapabilities": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Explicit AP-03 adapter capabilities; missing ones fail the adapter handshake preflight and are never approximated."
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["read", "write"],
+      "default": "read",
+      "description": "Workspace scope handed to the adapter; write tasks are scored conservatively."
+    },
+    "repeat": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "Repetitions per task (the replication unit)."
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Deterministic seed for the in-block condition ordering."
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable"],
+      "properties": {
+        "executable": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AP-03 adapter executable (absolute path or bare name on PATH)."
+        },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": {
+          "type": "object",
+          "description": "Adapter process environment; values may be 'env:VAR_NAME' references (resolved at preflight, never serialized).",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness"],
+      "properties": {
+        "harness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string" },
+            "revision": { "type": "string" }
+          }
+        },
+        "provider": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string" },
+            "credentialRef": {
+              "type": "string",
+              "description": "Opt-in credential reference of the form 'env:VAR_NAME'."
+            }
+          }
+        },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id"],
+          "properties": {
+            "id": { "type": "string" },
+            "revision": {
+              "type": "string",
+              "description": "Model/weights revision pin (unknown without it)."
+            }
+          }
+        },
+        "reasoning": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["level"],
+          "properties": { "level": { "type": "string" } }
+        },
+        "compaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": { "mode": { "type": "string" } }
+        },
+        "sampling": {
+          "description": "Adapter-specific sampling knobs; free form by design."
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wallClockMs": { "type": "integer", "minimum": 1 },
+        "maxIterations": { "type": "integer", "minimum": 1 },
+        "maxToolCalls": { "type": "integer", "minimum": 1 },
+        "tokenBudget": { "type": "integer", "minimum": 1 },
+        "costBudgetUsd": { "type": "number", "minimum": 0 },
+        "maxEvents": { "type": "integer", "minimum": 1 },
+        "maxEventBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "experimentWallClockMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Hard cap on total experiment wall time; remaining trials are then recorded as not_started."
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string",
+          "default": "repoise-bench",
+          "description": "Artifact root (absolute, or relative to the current directory)."
+        },
+        "keepWorkspaces": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

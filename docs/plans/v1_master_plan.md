@@ -26,7 +26,11 @@ Follow-on program (proposed October 19, 2026): the
 [agent platform roadmap](agent-platform/README.md) records the workspace/CI
 transition, CLI lifecycle contracts, consumer-owned agent adapters, live benchmark
 execution/grading/reporting, staged cross-repository/model/harness experiments,
-and VS Code extension. The workspace foundation is its first implementation PR.
+and VS Code extension. AP-01 through AP-04 are implemented: the workspace/CI
+foundation, the CLI automation contracts, the versioned agent adapter protocol
+with its host, conformance fixtures and first Cline adapter, and the benchmark
+runner (`repoise bench`: isolated trials, verified retrieval conditions,
+budgets, interruption and artifacts — [bench guide](../bench.md)).
 These plans extend this document without changing section 11 adoption gates or
 claiming shipped commands, completed benchmarks, or an implemented extension.
 

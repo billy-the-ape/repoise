@@ -61,6 +61,7 @@
       "properties": {
         "supported": { "type": "boolean" },
         "command": { "type": "string" },
+        "docs": { "type": "string" },
         "note": { "type": "string" }
       }
     },
@@ -72,7 +73,9 @@
         "operational": { "const": 1 },
         "usage": { "const": 2 },
         "indexMissingOrStale": { "const": 3 },
-        "coverageNotMet": { "const": 4 }
+        "coverageNotMet": { "const": 4 },
+        "benchPreflight": { "const": 3 },
+        "benchInterrupted": { "const": 4 }
       }
     },
     "compatibility": {

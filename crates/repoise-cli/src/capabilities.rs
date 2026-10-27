@@ -32,9 +32,10 @@ pub fn document(heartbeat_ms: u64) -> Value {
         "features": features(),
         "commands": commands(),
         "benchmark": {
-            "supported": false,
+            "supported": true,
             "command": "bench",
-            "note": "The benchmark coordinator is planned in the agent platform program (AP-04); no benchmark workload ships in this build.",
+            "docs": "docs/bench.md",
+            "note": "Suite-driven benchmark coordinator (AP-04): native orchestration; each trial's agent process runs through the optional AP-03 Node host bridge. Exit codes: 0 completed, 1 operational failure, 2 usage, 3 preflight/suite failure, 4 interrupted.",
         },
         "exitCodes": {
             "ok": 0,
@@ -42,6 +43,8 @@ pub fn document(heartbeat_ms: u64) -> Value {
             "usage": 2,
             "indexMissingOrStale": 3,
             "coverageNotMet": 4,
+            "benchPreflight": 3,
+            "benchInterrupted": 4,
         },
         "compatibility": {
             "policy": "additive",
@@ -89,7 +92,7 @@ fn commands() -> Value {
     add(&mut entries, "purge", vec![json!("json")]);
     add(&mut entries, "capabilities", vec![json!("json")]);
     add(&mut entries, "mcp", vec![json!("mcp-stdio")]);
-    add(&mut entries, "bench", Vec::new());
+    add(&mut entries, "bench", vec![json!("json")]);
     add(&mut entries, "greet", Vec::new());
     add(&mut entries, "help", Vec::new());
     add(&mut entries, "version", Vec::new());
@@ -133,7 +136,7 @@ pub fn print_human(doc: &Value) {
     );
     let codes = &doc["exitCodes"];
     println!(
-        "exit codes: 0 ok; 1 operational; 2 usage; 3 index missing/stale; 4 coverage not met ({}..{})",
+        "exit codes: 0 ok; 1 operational; 2 usage; 3 index missing/stale (bench preflight/suite); 4 coverage not met (bench interruption) ({}..{})",
         codes["ok"], codes["coverageNotMet"]
     );
 }

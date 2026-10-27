@@ -2,7 +2,8 @@
 
 Agent adapters are standalone, versioned Node 20+ executables that drive
 external agents for controlled trials. The protocol is the contract; adapters
-are its implementations; a future runner (AP-04) is the consumer.
+are its implementations; the benchmark runner (`repoise bench`, AP-04, see
+[bench](bench.md)) is its consumer.
 
 ## Layout
 
@@ -186,8 +187,9 @@ schemas (validated with ajv).
 - Implemented: protocol v1 schemas, host, conformance fixtures, Cline
   adapter with its tests.
 - Not implemented: `tool_telemetry` and `read_only_restriction` in the Cline
-  CLI (declared false), live Cline verification, the runner (AP-04), and
-  suites/metrics (AP-05).
+  CLI (declared false), live Cline verification, and suites/metrics (AP-05).
+  The benchmark runner (AP-04) is implemented and consumes the protocol via
+  the checked-in host bridge; see [bench](bench.md).
 - Private evaluation corpora belong in locally configured directories
   (e.g. `~/repoise-eval/`), never in this repository; the repo holds
   synthetic fixtures only.

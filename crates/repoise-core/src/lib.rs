@@ -13,6 +13,7 @@
 //! these services; see `docs/architecture.md` for boundaries.
 
 pub mod adapter;
+pub mod bench;
 pub mod cache;
 pub mod check;
 pub mod chunk;
