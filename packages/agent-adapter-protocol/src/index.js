@@ -52,7 +52,8 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * Result: `{ status, reason, errors, warnings, unknownEventTypes, events,
  * hello, adapter, harness, usage, elapsedMs, adapterDurationMs, exitCode,
- * exitSignal }`. `elapsedMs` is coordinator-measured wall time;
+ * exitSignal }`. `elapsedMs` is host-measured wall time in fractional
+ * milliseconds;
  * `adapterDurationMs` is the harness-reported duration and a separate value. */
 export async function runAdapter(request, options = {}) {
   const startedHr = process.hrtime.bigint();
@@ -164,8 +165,15 @@ export async function runAdapter(request, options = {}) {
     spawnError = spawnError ?? error;
   });
   // Drain stderr so a chatty adapter cannot block on a full pipe buffer;
-  // diagnostics are not part of the protocol.
-  child.stderr.on("data", () => {});
+  // diagnostics are not part of the protocol, but consumers may mirror them
+  // through `options.onStderr(chunk)` (e.g. to a stderr log).
+  child.stderr.on("data", (chunk) => {
+    try {
+      options.onStderr?.(chunk);
+    } catch {
+      // Diagnostics only; never fail the trial on a logging problem.
+    }
+  });
 
   // The versioned JSON request travels on stdin as the first line. stdin
   // stays open: on cancellation the host sends a `cancel` control line

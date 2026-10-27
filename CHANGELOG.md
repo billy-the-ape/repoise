@@ -17,10 +17,10 @@ The CLI gained machine-automation surfaces without changing existing
 
 - `repoise capabilities` (and `--json`) — version/capabilities handshake:
   event-stream protocol version and checked-in schema, build features,
-  command/machine-output matrix, benchmark availability (planned `bench`,
-  not shipped), the stable exit-code table (0 ok, 1 operational, 2 usage,
-  3 index missing/stale, 4 coverage not met) and the additive
-  compatibility policy. Schema: `schemas/capabilities.v1.schema.json`.
+  command/machine-output matrix, benchmark availability (`bench`, shipped in
+  this cycle alongside AP-04), the stable exit-code table (0 ok, 1
+  operational, 2 usage, 3 index missing/stale, 4 coverage not met) and the
+  additive compatibility policy. Schema: `schemas/capabilities.v1.schema.json`.
 - `repoise index --events` and `repoise watch --events` — NDJSON event
   streams on stdout (started, phase-scoped progress, warning, 15 s
   heartbeat overridable via `REPOISE_EVENTS_HEARTBEAT_MS`, and exactly one
@@ -119,6 +119,132 @@ are required for the protocol host itself; the Cline adapter honors
 `CLINE_EXECUTABLE` and the documented `CLONE_*` passthrough namespace. See
 [docs/agent-adapters.md](docs/agent-adapters.md) and
 `docs/plans/agent-platform/03-agent-adapters.md` for the implementation
+record.
+
+### Benchmark runner (AP-04)
+
+`repoise bench` runs suite-driven agent benchmark experiments: repeated
+trials over one frozen Git snapshot in disposable linked worktrees, against
+declared retrieval conditions (`baseline`, `repoise` with enforced
+`lexical`/`hybrid` through a read-only `repoise mcp` server bound to each
+trial worktree, pinned to the declared `searchMode` with the new
+`repoise mcp --search-mode` flag). The coordinator owns scheduling, isolation, budgets, interruption
+and artifacts; it never implements an agent loop — every trial's agent
+process is driven through the AP-03 protocol via the checked-in host bridge
+(`packages/agent-adapter-protocol/bin/adapter-host-run.mjs`), with the
+coordinator sending the cooperative `cancel` line on SIGINT/SIGTERM,
+escalating after a grace window and force-killing the bridge and its
+recorded process tree at the outer wall-clock deadline (exit 4, remaining
+trials `not_started`). Preflight (exit 3) freezes the experiment: the
+strictly parsed suite manifest (schema v1,
+`schemas/bench-suite.v1.schema.json`; suite/prompt files must live outside
+the benchmarked repository), a reproducible snapshot (clean commit or
+recorded patch; the resolved Repoise cache directory never counts as dirt),
+node/bridge/adapter resolution, `env:`/`credentialRef` resolution (names
+only), and the hybrid vector-coverage gate. Artifacts under
+`<output>/<experiment>/`: immutable `manifest.json`, final `report.json`
+(`qualityGate: not_evaluated` — grading is AP-05), per-trial `trial.json`,
+`request.json`, adapter `events.ndjson`/`result.json`/`stderr.log` and
+`host.log`. Exit codes: 0 completed, 1 operational, 2 usage, 3
+preflight/suite, 4 interrupted. A source-checkout build needs no
+environment variables; installed npm/native packages do not ship the host
+bridge and need `REPOISE_BENCH_HOST_BRIDGE` (pointing at the bridge file in
+a source checkout), and `REPOISE_BENCH_RUNNER` optionally overrides the
+suite's adapter executable. Node is required only to launch adapter
+processes; orchestration is native. Declared limitations: worktrees are
+isolation, not security
+sandboxes (hidden-test integrity awaits a host-enforced mechanism, AP-05/
+AP-06), no grading/metrics/report export (AP-05), and no `--events` stream
+for `bench` yet. Post-review hardening: task/condition ids are restricted
+to `[A-Za-z0-9_-]` (trial ids and artifact directories derive from them,
+so other characters could make sanitized ids collide); a failed patch
+snapshot removes the partially created worktree before surfacing the
+error; failures after workspace creation (request write, host bridge,
+trial-record write) record an `infra_error` trial with the workspace
+cleaned up so the report is always published; and `report.json`
+`startedAtUtc` is captured at experiment start. A second review round
+fixed three more correctness issues: searches that omit `mode` on a
+hybrid/vectors-only pinned server now use the pinned mode instead of
+being refused (only explicitly different modes are rejected); the seeded
+condition-order shuffle now advances its splitmix64 stream (one draw per
+swap, so orders are no longer correlated); and the experiment `id` is
+restricted to `[A-Za-z0-9_-]` so it cannot escape the artifact output
+root (`.`, `..`). A third review round fixed three more gaps: a
+hybrid/vectors-only trial whose trial index has no published vectors now
+fails setup as `infra_error` (the pinned MCP server would otherwise
+silently degrade to lexical, since `repoise index` exits 0 even when
+embeddings fail or stay pending); the host bridge now scans the remainder
+of the first stdin chunk for `cancel`, so a request and a cancel line
+arriving together (SIGINT during trial setup) no longer lose the
+cancellation; and the coordinator now applies a 15-minute default
+(900000 ms) when the suite omits `limits.wallClockMs` — the per-trial
+wall bound is always in effect (forwarded to the adapter and enforced by
+the coordinator's outer watchdog), and `experimentWallClockMs` is
+documented as checked between trials rather than a hard cap. A fourth
+review round closed two credential-forwarding gaps and a CI failure: the
+trial's MCP server env now carries the embedding endpoint/API-key
+variables declared in the root config (resolved from the coordinator's
+process environment; without them a hybrid query on the pinned server
+would silently degrade to lexical), and the provider's `credentialRef`
+variable is now forwarded to the adapter's process environment (adapters
+read `process.env[<name>]`, so a suite with `credentialRef: "env:FOO"`
+and `adapter.env: {}` no longer passes preflight and then runs without
+the credential); both are covered by unit tests and documented in
+`docs/bench.md`. The host-bridge test file is now prettier-formatted
+(CI's prettier check), and `docs/automation.md` now reports
+`benchmark: supported: true`, the bench exit-code rows and the bench
+signal behavior. A fifth review round fixed a plaintext-secret leak in
+`request.json` (the `mcp.env` values are now redacted in the artifact — names
+kept, values replaced with a placeholder — and the unredacted request goes
+only to the host bridge over stdin; the recorded `requestHash` hashes the
+redacted form), the snapshot dirtiness check now also excludes the output
+root (running `repoise bench` from the repository root with the default
+in-repo `output.dir` no longer fails the second invocation with
+`working tree is dirty`; an output directory equal to the repository root is
+rejected), the hybrid vector gate now also fails on `embedding.failed > 0`
+(a partly failed embedding run is never recorded as hybrid), and generated
+trial-id collisions across the task/condition boundary (e.g. task `a` +
+condition `r0-x` versus task `a-r0` + condition `x`) are rejected in suite
+validation. `README.md` and `docs/architecture.md` now document `repoise
+bench` and the `repoise mcp --search-mode` pin. A sixth review round closed
+an untrusted-content execution gap: the host bridge is now resolved from the
+source checkout the running executable was built from (walked up from
+`current_exe()`) instead of the user's current directory, so a benchmarked
+repository that commits its own
+`packages/agent-adapter-protocol/bin/adapter-host-run.mjs` is never executed
+automatically with adapter credentials; a resolved bridge inside the
+benchmarked repository root is rejected (the explicit
+`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice). A seventh
+review round fixed a dirtiness-check bug: the snapshot check now runs `git
+status --porcelain --untracked-files=all`, so each untracked file is listed
+individually — under the default `normal` mode git collapses an untracked
+parent directory into one ancestor entry (e.g. `?? .bench/`), which is not a
+descendant of a nested in-repo output root (or cache root), so every run
+after the first (including `--dry-run`) failed with `working tree is
+dirty`; sibling untracked files beside the output/cache root still count as
+dirt. It also corrected the environment wording (installed npm/native
+packages do not ship the host bridge and need `REPOISE_BENCH_HOST_BRIDGE`)
+and a stale `request.json` comment in the artifact layout. An eighth
+review round fixed two coordinator correctness gaps: `timings.agentMs`
+now actually uses the host-measured `elapsedMs` (the bridge reports it as a
+fractional millisecond value, which `as_u64` silently rejected, forcing
+the coordinator's own span — including Node/bridge startup — to be
+recorded instead), and the pre-trial drift check now re-hashes the
+recorded `patchFile` (a mid-experiment patch edit would otherwise
+silently change the snapshot for later trials), and preflight now also
+enforces that `patchFile` lives outside the benchmarked repository. A
+ninth review round fixed two more encoding/parsing bugs: the host
+bridge now puts its stdin in stream-level UTF-8 mode, so a multi-byte
+character straddling a pipe read boundary in a large non-ASCII request no
+longer decodes to U+FFFD (before, the adapter could silently receive a
+prompt that differed from the recorded `requestHash`), and the snapshot
+dirtiness check now runs `git status --porcelain -z`, so paths with spaces,
+tabs, quotes, backslashes or (default `core.quotePath`) non-ASCII bytes are
+no longer C-quoted into unrecognizable entries that made the runner's own
+artifacts count as dirt on every run after the first (renames are parsed
+from the NUL-separated origin field). See
+[docs/bench.md](docs/bench.md) and
+`docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 
 ### Cross-worktree cache reuse

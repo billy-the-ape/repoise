@@ -1,8 +1,133 @@
 # AP-04: benchmark orchestration and trial isolation
 
-Status: proposed. Depends on [CLI contracts](02-cli-contracts.md) and
+Status: implemented (2026-10-27); see the [implementation
+status](#implementation-status) below for the shipped design, validation and
+deferred items. Depends on [CLI contracts](02-cli-contracts.md) and
 [agent adapters](03-agent-adapters.md); coordinate schemas with
 [grading/reporting](05-suites-metrics-reports.md).
+
+## Implementation status
+
+Shipped as the `repoise bench` command in `crates/repoise-core/src/bench/`
+with the Node host bridge
+`packages/agent-adapter-protocol/bin/adapter-host-run.mjs` (tested by
+`packages/agent-adapter-protocol/test/bridge.test.mjs`). The current-state
+guide is [docs/bench.md](../../bench.md). Shipped behavior:
+
+- Suite manifest (schema v1, `schemas/bench-suite.v1.schema.json`), strictly
+  parsed; suite/prompt files must live outside the benchmarked repository.
+- Preflight (exit 3): reproducible snapshot (clean commit or recorded patch,
+  with the resolved Repoise cache directory and the output root excluded
+  from dirt; an output directory equal to the repository root is rejected),
+  node/bridge/adapter resolution, `env:`/`credentialRef` resolution (names
+  only), hybrid vector-coverage gate, root status and guidance captured
+  into the immutable `manifest.json`.
+- One disposable linked git worktree per trial at the frozen detached
+  revision; the user's checkout is never reset. `repoise` conditions get a
+  trial-local index build (setup timed separately) plus a read-only
+  `repoise mcp` server bound to the trial worktree and pinned to the
+  condition's declared `searchMode` with `--search-mode` (a tool request
+  naming a different mode is refused, so a hybrid run cannot silently
+  degrade); the effective mode and any degradation are recorded. Baseline
+  trials remove only the managed
+  overlay from the disposable worktree.
+- Trials run through the AP-03 host (bridge) only; the coordinator sends the
+  cooperative `cancel` line on SIGINT/SIGTERM, escalates after grace, and
+  force-kills the bridge and its recorded process tree at the outer
+  wall-clock deadline. Remaining trials are recorded `not_started`; exit 4.
+- Sequential scheduling with per-block seeded condition order; per-trial
+  limits forwarded to the adapter (wall clock always enforced by the
+  coordinator); `experimentWallClockMs` budget with published report.
+- Artifacts: `manifest.json`, `report.json` (`qualityGate: not_evaluated`),
+  per-trial `trial.json`/`request.json`/`adapter/` (`events.ndjson`,
+  `result.json`, `stderr.log`) and `host.log`.
+
+Design deltas from this plan document: the actual surface is
+`repoise bench [SUITE]` (the suite manifest file replaces the proposed
+`--conditions/--repeat` flags; `--dry-run`/`--json`/`--runner`/`--repeat`/
+`--seed`/`--output` flags exist as documented in `docs/bench.md`), and the
+"native or optional companion" question resolved as native orchestration
+with the AP-03 host as the only Node piece. Post-review hardening
+(2026-10-27, nine rounds): task/condition ids are restricted to
+`[A-Za-z0-9_-]` (trial ids and artifact directories derive from them), a
+failed patch snapshot removes the partially created worktree,
+post-workspace failures (request write, host bridge, trial-record write)
+record an `infra_error` trial with cleanup so the report is always
+published, and `report.json` `startedAtUtc` is captured at experiment
+start. Second round: searches omitting `mode` on a hybrid/vectors-only
+pinned MCP server use the pinned mode (only explicitly different modes
+are refused); the seeded condition shuffle advances its splitmix64
+stream (one draw per swap); and the experiment `id` is restricted to
+`[A-Za-z0-9_-]` so it cannot escape the artifact output root. Third round:
+a hybrid/vectors-only trial whose trial index has no published vectors
+fails setup as `infra_error` (no silent lexical degradation — `repoise
+index` exits 0 even when embeddings fail or stay pending, and the pinned
+MCP server would otherwise answer lexically); the host bridge scans the
+remainder of the first stdin chunk for `cancel` (a request and a cancel
+line arriving together no longer lose the cancellation); the coordinator
+applies a 15-minute default when the suite omits `limits.wallClockMs`
+(always enforced), and `experimentWallClockMs` is documented as checked
+between trials rather than a hard cap. Fourth round: the trial's MCP
+server env now carries the embedding endpoint/API-key variables declared
+in the root config (resolved from the coordinator's process environment,
+so a hybrid query on the pinned server can no longer silently degrade to
+lexical); the provider's `credentialRef` variable is forwarded to the
+adapter's process environment (adapters read `process.env[<name>]`, so a
+suite with `credentialRef: "env:FOO"` and `adapter.env: {}` no longer
+passes preflight and then runs without the credential); the host-bridge
+test file is prettier-formatted (CI check); and `docs/automation.md` now
+reports `benchmark: supported: true`, the bench exit-code rows and the
+bench signal behavior. Fifth round: `request.json` now stores a redacted
+copy of the AP-03 request (`condition.mcp.env` values replaced with a
+placeholder; the unredacted request goes only to the host bridge over
+stdin, and the recorded `requestHash` hashes the redacted form) so
+embedding endpoint/API-key values never land in plaintext in shareable
+artifacts; the snapshot dirtiness check excludes the output root, so the
+default in-repo `output.dir` no longer fails the second invocation with
+`working tree is dirty` (an output root equal to the repository root is
+rejected); the hybrid vector gate also fails on `embedding.failed > 0`
+(a partly failed embedding run is never recorded as hybrid); and generated
+trial-id collisions across the task/condition boundary (the `-` joiner:
+task `a` + condition `r0-x` versus task `a-r0` + condition `x`) are
+rejected in suite validation. `README.md` and `docs/architecture.md` now
+document `repoise bench` and the `repoise mcp --search-mode` pin. Sixth
+round: the host bridge is resolved from the source checkout the running
+executable was built from (walked up from `current_exe()`) instead of the
+user's current directory, and a resolved bridge inside the benchmarked
+repository root is rejected — repository content is untrusted data, so a
+repo that ships its own `adapter-host-run.mjs` must never be executed
+automatically with adapter credentials (the explicit
+`REPOISE_BENCH_HOST_BRIDGE` override remains an operator choice). Seventh
+round: the snapshot dirtiness check now runs `git status --porcelain
+--untracked-files=all` so each untracked file is listed individually —
+under the default `normal` mode git collapses an untracked parent into one
+ancestor entry (e.g. `?? .bench/`) that is not a descendant of a nested
+in-repo output/cache root, so every run after the first (including
+`--dry-run`) failed as dirty; sibling untracked files still count; the
+environment wording now states that installed npm/native packages need
+`REPOISE_BENCH_HOST_BRIDGE` (they do not ship the host bridge); and the
+stale `request.json` layout comment was corrected. Eighth round: the
+coordinator now reads the host-measured `elapsedMs` as a fractional
+millisecond value (rounded) instead of always falling back to its own
+span around the host run (`as_u64` rejected the bridge's fractional value),
+and the pre-trial drift check now re-hashes the recorded `patchFile`
+against the preflight hash (a mid-experiment patch edit would otherwise
+silently change the snapshot for later trials); preflight also enforces
+the schema rule that `patchFile` lives outside the benchmarked repository.
+Ninth round: the host bridge now decodes its stdin with stream-level UTF-8
+(`setEncoding("utf8")`) so a multi-byte character straddling a pipe read
+boundary in a large non-ASCII request no longer becomes U+FFFD (the adapter
+would otherwise silently run a prompt different from the recorded
+`requestHash`); and the snapshot dirtiness check now uses `git status
+--porcelain -z`, so C-quoted paths (spaces, tabs, quotes, backslashes,
+non-ASCII under default `core.quotePath`) no longer defeat the
+output/cache-root exclusion — a spaced or non-ASCII in-repo output
+directory would otherwise make every run after the first fail as dirty
+(rename entries are parsed from the NUL-separated origin field).
+
+Deferred to AP-05/AP-06: grading, metrics comparison, report export,
+CLI-transport conditions, natural-agent-choice experiments, host-enforced
+isolation for hidden-test integrity, CPU/RAM/VRAM/power sampling.
 
 ## Product behavior
 
@@ -40,7 +165,9 @@ ordinary `repoise index`, startup, package installation and project test hooks.
 MCP enabled/disabled alone does not identify embedding impact. Existing MCP
 defaults lexical. Controlled conditions require an explicit validated mechanism
 (adapter policy or an instrumented benchmark MCP boundary) selecting allowed
-search mode. Log requested/effective mode, degradation, vector coverage, profile
+search mode — shipped as the server-side `--search-mode` pin (added during
+AP-04 review), exercised by a CLI integration test that parses the exact
+argv the coordinator generates. Log requested/effective mode, degradation, vector coverage, profile
 fingerprint, embedding request timings and whether Repoise was used at all.
 Do not silently count degraded lexical calls as successful hybrid execution.
 

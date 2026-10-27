@@ -19,6 +19,7 @@ the generated cache.
 ```sh
 repoise mcp [ROOT]                  # stdio MCP server (JSON-RPC 2.0)
 repoise mcp --allow-refresh [ROOT]  # additionally expose refresh_project_knowledge
+repoise mcp --search-mode lexical [ROOT]  # pin the retrieval mode for this server
 ```
 
 `ROOT` defaults to the current directory; the server binds at startup to that
@@ -29,6 +30,15 @@ All diagnostics (startup line, parse errors, shutdown) go
 to **stderr**; stdout carries MCP protocol traffic only (newline-delimited
 JSON-RPC 2.0 messages). When the client closes stdin, the server flushes and
 exits with code 0.
+
+The retrieval mode can be pinned per server with `--search-mode
+<lexical|hybrid|vectors-only>`. A pinned server uses that mode when the tool
+request omits `mode`, and refuses (with a `scope mismatch` error) any request
+naming a different mode — the same enforcement style as the scope-verification
+arguments. The pinned mode is documented in the `mode` property description of
+`search_project_knowledge`. `repoise bench` uses this flag to give each
+repoise-condition trial an MCP boundary that enforces the suite's declared
+`searchMode` (see [Benchmarks](bench.md)).
 
 ## Tools
 

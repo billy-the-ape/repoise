@@ -20,6 +20,8 @@ See the [publication record](docs/publish/alpha-1-status.md) for verification an
 - Structural links (references, referenced-by, parent, children), an explicit watch loop, and managed agent guidance.
 - CLI and stdio MCP interfaces over the same services; MCP is read-only by default.
 - Optional OpenAI-compatible embeddings and bounded Git history retrieval.
+- Suite-driven agent benchmark runner (`repoise bench`: disposable worktrees,
+  frozen snapshots, declared retrieval conditions, AP-03 agent adapters).
 
 Git working trees, committed snapshots, and plain directories are supported.
 Embeddings and remote history enrichment are opt-in. Fixture content remains
@@ -91,7 +93,8 @@ for local installation and checks.
 ## CLI commands
 
 Exit codes: 0 success, 1 operational failure, 2 usage error, 3 the index is
-stale or missing for search/read/status.
+stale or missing for search/read/status (and `bench` preflight/suite
+failure), 4 coverage not met for `check` (and `bench` interruption).
 
 Global options accepted by most commands: `--json` (machine-readable output),
 `--config <PATH>`, `--local-config <PATH>`, `--max-file-bytes <N>`, and
@@ -239,6 +242,23 @@ it as `npx --no-install repoise`.
 
 - `repoise greet` — print the project greeting.
 - `repoise help` / `repoise version` — usage and version information.
+
+### Benchmarks
+
+- `repoise bench [OPTIONS] <SUITE>` — run a suite-driven agent benchmark:
+  repeated trials over a frozen snapshot in disposable worktrees, against
+  declared retrieval conditions, driven through the AP-03 agent adapter
+  protocol (the optional Node host bridge). `--dry-run` inspects the frozen
+  plan without launching agents; `--json` machine output. Exit codes: 0
+  completed, 1 operational failure, 2 usage, 3 preflight/suite failure,
+  4 interrupted. A source-checkout build needs no environment variables;
+  installed npm/native packages do not ship the host bridge and need
+  `REPOISE_BENCH_HOST_BRIDGE`. See [bench](docs/bench.md).
+
+  ```sh
+  repoise bench --dry-run /abs/path/to/suite.json
+  repoise bench /abs/path/to/suite.json --output /tmp/bench-out
+  ```
 
 ## Use with an agent
 

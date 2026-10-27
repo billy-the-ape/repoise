@@ -675,9 +675,14 @@ fn capabilities_json_is_a_stable_handshake() {
     assert_eq!(doc["exitCodes"]["usage"], 2);
     assert_eq!(doc["exitCodes"]["indexMissingOrStale"], 3);
     assert_eq!(doc["exitCodes"]["coverageNotMet"], 4);
-    // The benchmark facade is discoverable but absent in this build.
-    assert_eq!(doc["benchmark"]["supported"], false);
+    assert_eq!(doc["exitCodes"]["benchPreflight"], 3);
+    assert_eq!(doc["exitCodes"]["benchInterrupted"], 4);
+    // The benchmark coordinator is available; the Node adapter host is
+    // optional (only repoise-condition trials require it).
+    assert_eq!(doc["benchmark"]["supported"], true);
     assert_eq!(doc["benchmark"]["command"], "bench");
+    assert_eq!(doc["benchmark"]["docs"], "docs/bench.md");
+    assert_eq!(modes("bench"), vec!["json"]);
 }
 
 #[test]

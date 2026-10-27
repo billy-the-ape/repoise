@@ -31,21 +31,24 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/check.rs` | Offline freshness/coverage check over the status view with stable categories for automation (no provider calls) |
 | `crates/repoise-core/src/related.rs` | Bounded related-knowledge service: syntactic reference edges, reverse references and parent/child links over labeled chunk splits from a source chunk |
 | `crates/repoise-core/src/watch.rs` | Incremental watch loop: debounced scanning, coalesced per-path content, bounded pending-path publication through the shared index operation (including the configured embedding session, built once per watch process), branch-switch rescan and safe cancellation |
+| `crates/repoise-core/src/bench/` | Benchmark coordinator (AP-04): suite manifest validation, preflight (reproducible snapshot, output-root dirtiness exclusion, prerequisites, vector-coverage gates), seeded trial plan, disposable-worktree trials with trial-local index builds and the pinned read-only MCP argv, budgets, interruption and artifacts; the agent loop itself is delegated to the AP-03 host bridge |
 | `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |
 | `crates/repoise-core/src/purge.rs` | Removal of generated cache data only, with scope-id validation |
-| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge/related/check/watch/overlay/mcp adapters) |
-| `crates/repoise-cli/src/mcp.rs` | stdio MCP server (JSON-RPC 2.0 over stdin/stdout): `search_project_knowledge`, `read_project_knowledge`, `related_project_knowledge`, `project_knowledge_status` and the opt-in `refresh_project_knowledge`; scope-bound, read-only by default, stdout carries protocol traffic only |
+| `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge/related/check/watch/overlay/mcp/bench adapters) |
+| `crates/repoise-cli/src/mcp.rs` | stdio MCP server (JSON-RPC 2.0 over stdin/stdout): `search_project_knowledge`, `read_project_knowledge`, `related_project_knowledge`, `project_knowledge_status` and the opt-in `refresh_project_knowledge`; scope-bound, read-only by default, stdout carries protocol traffic only; optional `--search-mode` pin refusing requests that name a different mode (used by `bench` trials) |
 | `crates/repoise-cli/src/github_enrichment.rs` | Optional (`github-enrichment` CLI feature) read-only GitHub transport for history enrichment: commit-to-PR verification, ETag-cached change-request fetch, request budgets, rate-limit/permission classification |
 | `crates/repoise-cli/src/progress.rs` | Terminal rendering of index progress: throttled in-place line on a TTY, appended lines otherwise, stderr under `--json`, honest ETAs, and one printed final line per phase |
 | `crates/repoise-core/tests/` and `crates/repoise-cli/tests/` | Contract and executable behavior fixtures |
-| `schemas/` | Published versioned configuration schema |
+| `schemas/` | Published versioned schemas: configuration, event stream, capabilities, agent adapter request, bench suite |
 | `npm/repoise/` | Thin launcher and allowlisted npm package metadata |
+| `packages/agent-adapter-protocol/` and `packages/agent-adapter-cline/` | AP-03 agent adapter protocol: the checked-in Node host bridge (`adapter-host-run.mjs`, driven by the bench coordinator), fake conformance adapters and the first real adapter (Cline); no-Node operation is unaffected |
 | `scripts/release/` | Claim preparation, packaging, smoke tests and release staging |
 | `scripts/` | Local checks, release build and installation helpers |
 | `.github/workflows/` | Cross-platform checks and manually requested build artifacts |
 | `docs/plans/` | Intended scope and acceptance gates, not shipped behavior |
 | `docs/storage.md` | Current-state guide for the persistent index and cache layout |
 | `docs/mcp.md` | Current-state guide for the stdio MCP server: launch, tools, client registration |
+| `docs/bench.md` | Current-state guide for the benchmark runner: suites, preflight, trial lifecycle, artifacts |
 
 The CLI depends on the core; the core must not depend on a CLI or agent client.
 The MCP stdio adapter (`crates/repoise-cli/src/mcp.rs`) calls the same core services

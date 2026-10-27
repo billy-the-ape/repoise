@@ -34,15 +34,26 @@ const MAX_TOOL_OUTPUT_BYTES: usize = 256 * 1024;
 struct Server {
     context: crate::Context,
     allow_refresh: bool,
+    /// Pinned retrieval mode (`--search-mode`); when set, tool requests
+    /// naming a different mode are refused.
+    search_mode: Option<repoise_core::search::SearchMode>,
 }
 
 /// Runs the stdio MCP server until stdin closes (clean shutdown, exit 0).
 pub fn run_mcp(opts: &crate::CliOptions) -> Result<ExitCode, String> {
     let context = crate::build_context(opts)?;
     let allow_refresh = opts.allow_refresh || context.effective.mcp_refresh;
+    let search_mode = match opts.mcp_search_mode.as_deref() {
+        Some("hybrid") => Some(repoise_core::search::SearchMode::Hybrid),
+        Some("vectors-only") => Some(repoise_core::search::SearchMode::VectorsOnly),
+        Some("lexical") => Some(repoise_core::search::SearchMode::Lexical),
+        None => None,
+        _ => unreachable!("validated in parse_args"),
+    };
     let server = Server {
         context,
         allow_refresh,
+        search_mode,
     };
     eprintln!(
         "repoise mcp: serving {}/{} on stdio; read-only{}",
@@ -191,7 +202,7 @@ impl Server {
                         "maxResults": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Page size (default 5, cap 20)" },
                         "maxOutputTokens": { "type": "integer", "minimum": 1, "description": "Output token budget, estimated (default 1200)" },
                         "cursor": { "type": "string", "description": "Opaque pagination token from a previous page" },
-                        "mode": { "type": "string", "enum": ["lexical", "hybrid", "vectors-only"], "description": "Retrieval mode (default lexical)" },
+                        "mode": { "type": "string", "enum": ["lexical", "hybrid", "vectors-only"], "description": search_mode_description(self.search_mode) },
                         "rrfK": { "type": "integer", "minimum": 1, "description": "Reciprocal-rank-fusion k for hybrid mode" }
                     },
                     "required": ["query"],
@@ -464,10 +475,37 @@ impl Server {
         let max_results = u32_value(args, "maxResults");
         let max_output_tokens = u64_value(args, "maxOutputTokens");
         let cursor = string_arg(args, "cursor");
-        let mode = match string_arg(args, "mode").as_deref() {
-            Some("hybrid") => repoise_core::search::SearchMode::Hybrid,
-            Some("vectors-only") => repoise_core::search::SearchMode::VectorsOnly,
-            _ => repoise_core::search::SearchMode::Lexical,
+        let requested = match string_arg(args, "mode").as_deref() {
+            Some("hybrid") => Some(repoise_core::search::SearchMode::Hybrid),
+            Some("vectors-only") => Some(repoise_core::search::SearchMode::VectorsOnly),
+            Some("lexical") => Some(repoise_core::search::SearchMode::Lexical),
+            None => None,
+            // Unreachable: the `mode` enum is validated upstream.
+            Some(_) => None,
+        };
+        // A pinned server mode (--search-mode) is the enforced retrieval
+        // mode: omitting `mode` uses it; requesting a different one is a
+        // scope mismatch, never a silent downgrade or upgrade.
+        let mode = match (self.search_mode, requested) {
+            (Some(pinned), Some(requested)) if requested != pinned => {
+                let (pinned, requested) = (
+                    match pinned {
+                        repoise_core::search::SearchMode::Lexical => "lexical",
+                        repoise_core::search::SearchMode::Hybrid => "hybrid",
+                        repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
+                    },
+                    match requested {
+                        repoise_core::search::SearchMode::Lexical => "lexical",
+                        repoise_core::search::SearchMode::Hybrid => "hybrid",
+                        repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
+                    },
+                );
+                return Err(format!(
+                    "scope mismatch: this server is bound to search mode {pinned}, refusing {requested}"
+                ));
+            }
+            (Some(pinned), _) => pinned,
+            (None, requested) => requested.unwrap_or(repoise_core::search::SearchMode::Lexical),
         };
         let rrf_k = u32_value(args, "rrfK");
         let query_embedder = if mode != repoise_core::search::SearchMode::Lexical {
@@ -599,6 +637,23 @@ fn scope_input_schema() -> Value {
         },
         "additionalProperties": false
     })
+}
+
+/// Description for the search tool's `mode` property, noting the pinned
+/// server mode (`--search-mode`) when one is set.
+fn search_mode_description(pinned: Option<repoise_core::search::SearchMode>) -> String {
+    match pinned {
+        Some(pinned) => format!(
+            "Retrieval mode. This server is pinned to {}; requests naming a \
+             different mode are refused.",
+            match pinned {
+                repoise_core::search::SearchMode::Lexical => "lexical",
+                repoise_core::search::SearchMode::Hybrid => "hybrid",
+                repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
+            }
+        ),
+        None => "Retrieval mode (default lexical)".to_string(),
+    }
 }
 
 /// Adds the scope-verification properties to a tool input schema.

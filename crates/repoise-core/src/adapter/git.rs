@@ -40,9 +40,15 @@ impl GitAdapter {
 
     /// Runs `git <args>` in the repository, returning stdout on success.
     pub fn run_git(&self, args: &[&str]) -> Result<String, AdapterError> {
+        self.run_git_in(&self.root, args)
+    }
+
+    /// Runs `git <args>` with an explicit working directory (e.g. a linked
+    /// worktree root), returning stdout on success.
+    pub fn run_git_in(&self, cwd: &Path, args: &[&str]) -> Result<String, AdapterError> {
         let output = Command::new("git")
             .args(args)
-            .current_dir(&self.root)
+            .current_dir(cwd)
             .output()
             .map_err(AdapterError::Io)?;
         if !output.status.success() {

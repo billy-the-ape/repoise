@@ -28,8 +28,8 @@ The JSON document (`schemaVersion: 1`) carries:
   plus enabled build features (`remote-embedding`, `github-enrichment`);
 - `commands` — every command with its machine output modes
   (`json`, `events`, or `mcp-stdio`);
-- `benchmark` — `supported: false` in this build; the planned `bench`
-  coordinator (AP-04) is discoverable but not shipped;
+- `benchmark` — `supported: true`; the `bench` coordinator (AP-04) with its
+  command, docs path and exit-code note (see [bench](bench.md));
 - `exitCodes` — the stable exit-code table (below);
 - `compatibility` — the compatibility policy (below).
 
@@ -91,8 +91,8 @@ embedding coverage are reported separately (`total: null` means indeterminate).
 | 0    | ok (success, clean cancellation)                                  |
 | 1    | operational failure (index, watch step, enrichment, I/O, …)      |
 | 2    | usage error (unknown flags/arguments)                            |
-| 3    | index missing or stale (`status`, `search`, `check --fresh`)     |
-| 4    | coverage not met (`check`)                                        |
+| 3    | index missing or stale (`status`, `search`, `check --fresh`), or `bench` preflight/suite failure |
+| 4    | coverage not met (`check`), or `bench` interruption (SIGINT/SIGTERM) |
 
 The table is advertised by `capabilities --json` and covered by tests;
 automation should not parse human text for status.
@@ -109,6 +109,11 @@ automation should not parse human text for status.
 - `index` has no graceful signal handler. A signal kills the process
   abruptly (no terminal event → incomplete output); the transactional
   publication guarantees the last complete generation survives.
+- `bench` handles SIGINT/SIGTERM per trial: the in-flight trial receives the
+  cooperative `cancel` line (the bridge and the adapter's recorded process
+  tree are force-killed after the grace period), remaining trials are
+  recorded `not_started`, the report is still published and the exit code is
+  4 (see [bench](bench.md#trial-lifecycle)).
 - Windows process termination (`TerminateProcess`) is abrupt for both
   operations, the same way as any OS kill.
 
