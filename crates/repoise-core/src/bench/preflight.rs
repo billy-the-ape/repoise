@@ -403,10 +403,11 @@ pub fn dry_run(
     preflight: &Preflight,
     trials: &[super::plan::Trial],
 ) -> serde_json::Value {
-    let per_trial_wall = suite.limits.wall_clock_ms;
-    let estimated = trials
-        .len()
-        .saturating_mul(per_trial_wall.unwrap_or(0) as usize);
+    let per_trial_wall = suite
+        .limits
+        .wall_clock_ms
+        .unwrap_or(super::suite::DEFAULT_TRIAL_WALL_CLOCK_MS);
+    let estimated = trials.len().saturating_mul(per_trial_wall as usize);
     serde_json::json!({
         "schemaVersion": 1,
         "kind": "dry-run",
@@ -460,7 +461,7 @@ pub fn dry_run(
         "estimatedMaxAgentWallMs": estimated,
         "assumptions": [
             "estimatedMaxAgentWallMs = trials * per-trial wallClockMs; it is an upper bound on timed agent work and excludes setup (worktree/index), setup is not estimated",
-            "per-trial wallClockMs defaults are applied by the adapter host when the suite omits limits",
+            "per-trial wallClockMs is always in effect: the coordinator applies a default of 900000 ms (15 minutes) when the suite omits limits.wallClockMs, forwards the effective value to the adapter, and enforces it with its own outer watchdog",
             "no completion time is promised; actual time depends on the model, provider and hardware"
         ]
     })

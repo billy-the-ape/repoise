@@ -161,6 +161,39 @@ impl RunContext {
                     setup.insert("indexGeneration".into(), Value::from(index.generation_id));
                     setup.insert("indexManifestHash".into(), Value::from(index.manifest_hash));
                     setup.insert("vectors".into(), Value::from(index.vectors_total));
+                    // A hybrid/vectors-only condition must actually have
+                    // published vectors: `repoise index` exits 0 even when
+                    // embeddings fail or stay pending, and the pinned MCP
+                    // server degrades to lexical for a vectorless index.
+                    // Fail setup instead of counting a lexical run as hybrid.
+                    if matches!(
+                        condition.search_mode.as_deref(),
+                        Some("hybrid") | Some("vectors-only")
+                    ) && (index.vectors_total == 0 || index.vectors_pending > 0)
+                    {
+                        return self.record_infra(
+                            trial,
+                            TrialTimings {
+                                queue_ms,
+                                setup_started,
+                                started,
+                            },
+                            InfraSetup {
+                                workspace: Some(workspace),
+                                setup: Value::Object(setup),
+                                guidance,
+                            },
+                            "index_missing_vectors",
+                            &format!(
+                                "condition '{}' requires published vectors, but the trial \
+                                 index published {} vector(s) with {} pending; the pinned \
+                                 MCP server would silently degrade to lexical",
+                                condition.search_mode.as_deref().unwrap_or(""),
+                                index.vectors_total,
+                                index.vectors_pending
+                            ),
+                        );
+                    }
                 }
                 Err(message) => {
                     return self.record_infra(
@@ -537,7 +570,9 @@ fn build_request(
             "sampling": profile.sampling
         },
         "limits": {
-            "wallClockMs": limits.wall_clock_ms,
+            "wallClockMs": limits
+                .wall_clock_ms
+                .unwrap_or(super::suite::DEFAULT_TRIAL_WALL_CLOCK_MS),
             "maxIterations": limits.max_iterations,
             "maxToolCalls": limits.max_tool_calls,
             "tokenBudget": limits.token_budget,
@@ -651,7 +686,7 @@ fn mode_record(condition: &Condition, host_result: &Value) -> Value {
     serde_json::json!({
         "requested": requested,
         "effective": if used { "observed" } else { "not_observed" },
-        "note": "verified from the adapter tool telemetry event stream"
+        "note": "tool-call presence from the adapter tool telemetry event stream; the executed search mode is enforced by the pinned MCP server (a vectorless trial index fails setup)"
     })
 }
 
@@ -659,6 +694,7 @@ struct IndexInfo {
     generation_id: i64,
     manifest_hash: String,
     vectors_total: u64,
+    vectors_pending: u64,
     elapsed_ms: u128,
 }
 
@@ -702,6 +738,7 @@ fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, St
             .unwrap_or_default()
             .to_string(),
         vectors_total: value["vectors_total"].as_u64().unwrap_or(0),
+        vectors_pending: value["embedding"]["pending"].as_u64().unwrap_or(0),
         elapsed_ms: started.elapsed().as_millis(),
     })
 }
@@ -787,11 +824,15 @@ fn run_host(
         all
     });
 
-    let watchdog_deadline = ctx
+    // The per-trial wall bound is always in effect: the suite value, or the
+    // coordinator default when omitted (the host arms no timeout on its own).
+    let wall_clock_ms = ctx
         .suite
         .limits
         .wall_clock_ms
-        .map(|ms| Instant::now() + Duration::from_millis(ms) + OUTER_WATCHDOG_MARGIN);
+        .unwrap_or(super::suite::DEFAULT_TRIAL_WALL_CLOCK_MS);
+    let watchdog_deadline =
+        Instant::now() + Duration::from_millis(wall_clock_ms) + OUTER_WATCHDOG_MARGIN;
     let mut cancel_started: Option<Instant> = None;
     let mut watchdog_fired = false;
     loop {
@@ -808,9 +849,7 @@ fn run_host(
                 {
                     force_kill(&mut child, &adapter_dir);
                     break;
-                } else if let Some(deadline) = watchdog_deadline
-                    && Instant::now() >= deadline
-                {
+                } else if Instant::now() >= watchdog_deadline {
                     watchdog_fired = true;
                     force_kill(&mut child, &adapter_dir);
                     break;

@@ -57,7 +57,16 @@ start. Second round: searches omitting `mode` on a hybrid/vectors-only
 pinned MCP server use the pinned mode (only explicitly different modes
 are refused); the seeded condition shuffle advances its splitmix64
 stream (one draw per swap); and the experiment `id` is restricted to
-`[A-Za-z0-9_-]` so it cannot escape the artifact output root.
+`[A-Za-z0-9_-]` so it cannot escape the artifact output root. Third round:
+a hybrid/vectors-only trial whose trial index has no published vectors
+fails setup as `infra_error` (no silent lexical degradation — `repoise
+index` exits 0 even when embeddings fail or stay pending, and the pinned
+MCP server would otherwise answer lexically); the host bridge scans the
+remainder of the first stdin chunk for `cancel` (a request and a cancel
+line arriving together no longer lose the cancellation); the coordinator
+applies a 15-minute default when the suite omits `limits.wallClockMs`
+(always enforced), and `experimentWallClockMs` is documented as checked
+between trials rather than a hard cap.
 
 Deferred to AP-05/AP-06: grading, metrics comparison, report export,
 CLI-transport conditions, natural-agent-choice experiments, host-enforced

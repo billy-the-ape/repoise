@@ -94,10 +94,12 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   with opt-in `credentialRef`, model, reasoning, compaction, free-form
   sampling).
 - `limits` — per-trial caps forwarded to the adapter (`wallClockMs` is always
-  enforced by the coordinator regardless of adapter support).
-- `budgets.experimentWallClockMs` — hard cap on total experiment wall time;
-  trials not started after it are recorded as `not_started` and the report is
-  still published.
+  enforced by the coordinator regardless of adapter support; the coordinator
+  applies a 15-minute default — 900000 ms — when the suite omits it).
+- `budgets.experimentWallClockMs` — experiment wall-time cap checked between
+  trials (a trial already running still completes, bounded by its own
+  `wallClockMs`); trials not started after it are recorded as `not_started`
+  and the report is still published.
 
 The suite file and every `promptFile` must live **outside** the benchmarked
 repository: a trial checkout would otherwise expose gold answers and
@@ -130,9 +132,11 @@ randomized per task/repetition block with the recorded seed). Each trial:
    cache (setup time is recorded separately from the agent interval) and
    launches a read-only `repoise mcp` server bound to the trial worktree,
    pinned to the condition's declared `searchMode` with `--search-mode`
-   (the server refuses requests naming a different mode, so a hybrid run can
-   never silently degrade to lexical; the effective mode and any degradation
-   are recorded in `trial.json` `mode`);
+   (the server refuses requests naming a different mode, and setup fails
+   with `infra_error` if the trial index has no published vectors for a
+   hybrid/vectors-only condition, so a hybrid run can never silently
+   degrade to lexical; the effective mode and any degradation are recorded
+   in `trial.json` `mode`);
 3. writes the full AP-03 request (`trials/<id>/request.json`) and spawns the
    host bridge (`node adapter-host-run.mjs <adapter> [args]`);
 4. on SIGINT/SIGTERM sends the cooperative `cancel` line to the bridge,
@@ -176,7 +180,9 @@ configured local output directory.
 - No `--events` NDJSON stream for `bench` (progress lines only; AP-02 stream
   remains on `index`/`watch`).
 - Token/cost limits are forwarded to the adapter and enforced by the host
-  only where measurable; wall time is always enforced by the coordinator.
+  only where measurable; per-trial wall time is always enforced by the
+  coordinator (15-minute default when the suite omits `wallClockMs`), and the
+  experiment-level cap is checked between trials.
 
 ## Quick smoke (no live inference)
 
@@ -190,5 +196,5 @@ repoise bench /abs/path/to/suite.json --output /tmp/bench-out
 
 The host bridge itself is tested by
 `packages/agent-adapter-protocol/test/bridge.test.mjs` (successful run,
-stderr mirroring, cooperative cancel, missing request line) alongside the
-AP-03 conformance suite.
+stderr mirroring, cooperative cancel, cancel in the same chunk as the
+request, missing request line) alongside the AP-03 conformance suite.

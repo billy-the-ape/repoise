@@ -205,7 +205,12 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "wallClockMs": { "type": "integer", "minimum": 1 },
+        "wallClockMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 900000,
+          "description": "Per-trial wall-clock cap in milliseconds. Omitting it applies the coordinator default of 900000 ms (15 minutes); the effective value is forwarded to the adapter and enforced by the coordinator's outer watchdog, so a per-trial wall bound is always in effect."
+        },
         "maxIterations": { "type": "integer", "minimum": 1 },
         "maxToolCalls": { "type": "integer", "minimum": 1 },
         "tokenBudget": { "type": "integer", "minimum": 1 },
@@ -221,7 +226,7 @@
         "experimentWallClockMs": {
           "type": "integer",
           "minimum": 1,
-          "description": "Hard cap on total experiment wall time; remaining trials are then recorded as not_started."
+          "description": "Experiment wall-time cap in milliseconds, checked between trials: a trial already running still completes (bounded by its own wallClockMs); trials not started once the cap passes are recorded as not_started."
         }
       }
     },

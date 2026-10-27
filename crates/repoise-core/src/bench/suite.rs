@@ -200,6 +200,10 @@ pub struct CompactionSpec {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Limits {
+    /// Per-trial wall-clock cap in milliseconds. When omitted the
+    /// coordinator applies [`DEFAULT_TRIAL_WALL_CLOCK_MS`], so a per-trial
+    /// wall bound is always in effect (forwarded to the adapter and enforced
+    /// by the coordinator's outer watchdog).
     pub wall_clock_ms: Option<u64>,
     pub max_iterations: Option<u64>,
     pub max_tool_calls: Option<u64>,
@@ -213,10 +217,18 @@ pub struct Limits {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Budgets {
-    /// Hard cap on total experiment wall time; remaining trials are then
-    /// recorded as `not_started` (the report is still published).
+    /// Experiment wall-time cap in milliseconds, checked between trials: a
+    /// trial already running still completes (bounded by its own wall clock);
+    /// trials not started once the cap passes are recorded `not_started` (the
+    /// report is still published).
     pub experiment_wall_clock_ms: Option<u64>,
 }
+
+/// Default per-trial wall clock applied by the coordinator when the suite
+/// omits `limits.wallClockMs`: 15 minutes. The per-trial wall bound is
+/// always in effect — it is forwarded to the adapter and enforced by the
+/// coordinator's outer watchdog regardless of adapter support.
+pub const DEFAULT_TRIAL_WALL_CLOCK_MS: u64 = 900_000;
 
 /// Artifact location settings.
 #[derive(Clone, Debug, Deserialize, Serialize)]

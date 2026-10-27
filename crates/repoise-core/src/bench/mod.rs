@@ -237,7 +237,8 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
             push_not_started(&mut records, trial, "interrupted");
             continue;
         }
-        // Experiment budget: hard cap on total wall time.
+        // Experiment wall-time cap: checked between trials (a running trial
+        // still completes, bounded by its own wall clock).
         if let Some(deadline) = experiment_deadline
             && Instant::now() >= deadline
         {

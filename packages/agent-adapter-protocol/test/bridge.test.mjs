@@ -107,6 +107,24 @@ test("bridge forwards the cooperative cancel line to the adapter", async () => {
   assert.equal(result.reason, "host_requested");
 });
 
+test("bridge honors a cancel line arriving in the same chunk as the request", async () => {
+  // The coordinator writes the request, then (if SIGINT was already flagged
+  // during trial setup) the cancel line within microseconds; both can land in
+  // the pipe before the bridge attaches its first stdin listener. The cancel
+  // must not be dropped.
+  const root = mkdtempSync(join(tmpdir(), "ap04-bridge-"));
+  const requestJson = JSON.stringify(makeRequest(root));
+  const child = spawn(process.execPath, [bridge, join(fixtures, "fake-cancel.mjs")], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdin.write(`${requestJson}\ncancel\n`);
+  const code = await new Promise((resolve) => child.on("close", resolve));
+  assert.equal(code, 0);
+  const result = JSON.parse(readFileSync(join(root, "result.json"), "utf8"));
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.reason, "host_requested");
+});
+
 test("bridge fails when the request line never arrives", async () => {
   const root = mkdtempSync(join(tmpdir(), "ap04-bridge-"));
   const child = spawn(

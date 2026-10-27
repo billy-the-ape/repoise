@@ -55,6 +55,7 @@ const abortController = new AbortController();
 
 // Read the request line, then keep stdin open for the cooperative `cancel`
 // channel (the only graceful path on Windows).
+let requestRest = "";
 const requestLine = await new Promise((resolve, reject) => {
   let buffer = "";
   const onData = (chunk) => {
@@ -62,6 +63,10 @@ const requestLine = await new Promise((resolve, reject) => {
     const index = buffer.indexOf("\n");
     if (index >= 0) {
       process.stdin.removeListener("data", onData);
+      // The coordinator may write the request and the `cancel` line before
+      // the first listener is attached (SIGINT during trial setup); keep the
+      // remainder so that cancel is not silently dropped.
+      requestRest = buffer.slice(index + 1);
       resolve(buffer.slice(0, index));
     }
   };
@@ -71,11 +76,13 @@ const requestLine = await new Promise((resolve, reject) => {
   );
   process.stdin.on("error", reject);
 });
-process.stdin.on("data", (chunk) => {
-  for (const line of chunk.toString("utf8").split("\n")) {
+const scanCancel = (text) => {
+  for (const line of text.split("\n")) {
     if (line.trim() === "cancel") abortController.abort();
   }
-});
+};
+scanCancel(requestRest);
+process.stdin.on("data", (chunk) => scanCancel(chunk.toString("utf8")));
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => abortController.abort());
 }

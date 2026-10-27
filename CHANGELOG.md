@@ -166,7 +166,19 @@ being refused (only explicitly different modes are rejected); the seeded
 condition-order shuffle now advances its splitmix64 stream (one draw per
 swap, so orders are no longer correlated); and the experiment `id` is
 restricted to `[A-Za-z0-9_-]` so it cannot escape the artifact output
-root (`.`, `..`). The `--search-mode` pin is
+root (`.`, `..`). A third review round fixed three more gaps: a
+hybrid/vectors-only trial whose trial index has no published vectors now
+fails setup as `infra_error` (the pinned MCP server would otherwise
+silently degrade to lexical, since `repoise index` exits 0 even when
+embeddings fail or stay pending); the host bridge now scans the remainder
+of the first stdin chunk for `cancel`, so a request and a cancel line
+arriving together (SIGINT during trial setup) no longer lose the
+cancellation; and the coordinator now applies a 15-minute default
+(900000 ms) when the suite omits `limits.wallClockMs` — the per-trial
+wall bound is always in effect (forwarded to the adapter and enforced by
+the coordinator's outer watchdog), and `experimentWallClockMs` is
+documented as checked between trials rather than a hard cap. The
+`--search-mode` pin is
 exercised by integration tests that parse the exact argv the bench
 coordinator generates with the real CLI parser (lexical- and
 hybrid-pinned servers). See [docs/bench.md](docs/bench.md) and
