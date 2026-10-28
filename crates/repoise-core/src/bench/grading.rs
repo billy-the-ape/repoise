@@ -1378,4 +1378,30 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn final_event_without_an_answer_field_fails_answer_checks() {
+        // A final event shaped like an adapter that records no answer
+        // (the Cline adapter records the final text under `data.answer`;
+        // an adapter that omits it leaves the answer absent) has no
+        // recorded answer: every answer-scope check fails with an explicit
+        // reason instead of passing, and `answerPresent` is false.
+        let dir = temp_dir("no-answer-final");
+        write_events(&dir, &serde_json::json!({ "other": "data" }));
+        let task = task_with(Some(deterministic_evaluator(vec![
+            serde_json::json!({"id": "c1", "type": "containsAny", "values": ["ok"]}),
+        ])));
+        let grading = grade_and_write(&task, &dir, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "fail");
+        assert!(!grading.answer_present);
+        assert!(
+            grading.checks[0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("no final answer"),
+            "{}",
+            grading.checks[0]["detail"].as_str().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

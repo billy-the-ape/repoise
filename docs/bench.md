@@ -139,9 +139,12 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
 - `tasks[].evaluator` — how the task is graded after the trial, outside agent
   visibility. `method` is `deterministic` (default), `humanRubric` or
   `modelJudge`; `answerField` names the field of the final event's `data`
-  object holding the answer text (default `answer`); `rubric` is required
+  object holding the answer text (default `answer`; the Cline adapter
+  records the agent's final message text under `data.answer` - see the
+  agent adapter guide); `rubric` is required
   for `humanRubric`; `checks` (required for `deterministic`, forbidden for
-  the declared-only methods) are literal-substring assertions: `type`
+  the declared-only methods) are literal-substring assertions: `id`
+  (required, unique within the task), an optional `note`, `type`
   (`containsAny` / `containsAll` / `notContains`, case-sensitive), `values`
   (non-empty literal substrings; `containsAny` accepts alternative correct
   evidence — exact string equality is deliberately not the default) and an
@@ -151,7 +154,9 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   artifact content; when no haystack exists (no answer, or the artifact was
   not produced), every check fails — including `notContains` — so a trial
   that produced no answer cannot pass. A task without an evaluator is never
-  graded (`not_graded`).
+  graded (`not_graded`). Example, where every declared literal
+  substring must appear in the recorded answer:
+  `{"checks": [{"id": "mentions", "type": "containsAll", "values": ["retry", "backoff"]}]}`
 - `gates` — predeclared quality gate (AP-05); thresholds are decided before
   the experiment, not fitted to its results. `baseline` (condition id),
   `minCorrectness` (default 1.0), `correctnessMargin` (default 0.0) and

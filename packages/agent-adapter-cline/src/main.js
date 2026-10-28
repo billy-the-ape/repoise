@@ -93,6 +93,10 @@ function mapClineUsage(payload) {
 export async function main() {
   let finalEmitted = false;
   let runResult = null;
+  // The agent's final message text (from the `done` event), recorded on
+  // the final event as `data.answer` for benchmark grading; null when no
+  // final text was produced.
+  let finalAnswer = null;
   let exitCode = null;
   let stopKind = null; // "timeout" | "cancelled" | "budget_stop"
   let iterations = 0;
@@ -419,6 +423,7 @@ export async function main() {
       ts: now(),
       status,
       reason,
+      data: { answer: finalAnswer },
       usage: { ...usageTotals },
       durationMs:
         runResult && typeof runResult.durationMs === "number"
@@ -543,6 +548,7 @@ export async function main() {
       }
       case "done": {
         const text = typeof event.text === "string" ? event.text : "";
+        if (text) finalAnswer = text;
         emit({
           v: 1,
           t: "note",

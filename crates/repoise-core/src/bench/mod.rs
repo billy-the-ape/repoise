@@ -207,7 +207,7 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         trials,
         overrides: &prepared.overrides,
     };
-    preflight::write_manifest(&layout.experiment_dir, &manifest_input)?;
+    let manifest = preflight::write_manifest(&layout.experiment_dir, &manifest_input)?;
 
     let adapter_env = resolve_adapter_env(suite)?;
     let ctx = runner::RunContext {
@@ -288,13 +288,13 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
     }
 
     // The report reads the recorded trial + grading artifacts (the same
-    // sources a later `bench report` rebuild uses).
+    // sources a later `bench report` rebuild uses). Task provenance comes
+    // from the frozen manifest (preflight hashed the prompt files before
+    // the trial loop): no disk reads at report time, so a prompt file
+    // deleted mid-run cannot sink the report, and the report's provenance
+    // matches what a `bench report` rebuild re-reads.
     let trial_data = collect_trials(&layout)?;
-    let provenance: Vec<suite::TaskProvenance> = suite
-        .tasks
-        .iter()
-        .map(|task| task.provenance())
-        .collect::<Result<Vec<_>, _>>()?;
+    let provenance = provenance_from_manifest(&manifest)?;
     let input = ReportInput {
         experiment_id: &suite.id,
         suite_hash,
@@ -569,6 +569,20 @@ fn collect_trials(layout: &artifacts::Layout) -> Result<Vec<analysis::TrialData>
             .cmp(b.trial["trialId"].as_str().unwrap_or(""))
     });
     Ok(collected)
+}
+
+/// Task provenance from the frozen manifest. The manifest's task entries
+/// were hashed at preflight, so report assembly never re-reads prompt
+/// files from disk.
+fn provenance_from_manifest(manifest: &Value) -> Result<Vec<suite::TaskProvenance>, Error> {
+    manifest["tasks"]
+        .as_array()
+        .ok_or_else(|| Error::Config("manifest has no tasks array".into()))?
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| Error::Json(err.to_string()))
 }
 
 /// `repoise bench report` (AP-05): re-grades recorded trials offline
@@ -1280,5 +1294,34 @@ mod tests {
             "a corrupt manifest must not be graded"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn report_provenance_comes_from_the_frozen_manifest() {
+        // run() takes the report's task provenance from the manifest
+        // preflight wrote (prompt files hashed before the trial loop), so
+        // a prompt file deleted mid-run cannot sink the report: no disk
+        // read happens on this path.
+        let manifest = serde_json::json!({
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [{ "id": "c1", "type": "containsAll", "values": ["ok"] }]
+                }
+            }]
+        });
+        let provenance = provenance_from_manifest(&manifest).unwrap();
+        assert_eq!(provenance.len(), 1);
+        assert_eq!(provenance[0].id, "task-a");
+        assert_eq!(provenance[0].prompt_hash, "hash-a");
+
+        // A manifest without a tasks array is a configuration error, never a panic.
+        let err = provenance_from_manifest(&serde_json::json!({})).unwrap_err();
+        assert!(err.to_string().contains("tasks array"), "{}", err);
     }
 }

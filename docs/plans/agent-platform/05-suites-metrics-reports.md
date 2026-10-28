@@ -81,6 +81,15 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   stale "AP-05 not implemented" boundary line in
   [agent adapters](../../agent-adapters.md) and a broken relative link in
   `scripts/eval/RUNBOOK.md` are fixed.
+- Further review fixes: the Cline adapter records the agent's final
+  message text on the `final` event's `data.answer` (null when none), with
+  the convention described in the adapter-events schema and the
+  [agent adapter](../../agent-adapters.md) guide, so deterministic answer
+  grading works end to end with the shipped adapter; the run takes the
+  report's task provenance from the frozen manifest (no prompt-file disk
+  reads at report time), so a prompt file deleted mid-run cannot sink the
+  report; the `docs/bench.md` check description names the required `id`
+  and optional `note` fields and shows an example check.
 
 Deliberately deferred (open decisions before AP-06, per the acceptance
 section): model-judge runtime and calibration, grading-plugin isolation

@@ -324,6 +324,16 @@ record.
   an empty draw as defense in depth); a broken relative link in
   `scripts/eval/RUNBOOK.md` and the stale "AP-05 not implemented" boundary
   line in `docs/agent-adapters.md` are fixed.
+- Further review fixes: the Cline adapter now records the agent's final
+  message text on the `final` event's `data.answer` (null when no final
+  text was produced) - the convention is described in the adapter-events
+  schema and the agent adapter guide - so deterministic answer grading
+  works end to end with the shipped adapter; `repoise bench` now takes the
+  report's task provenance from the frozen manifest instead of re-reading
+  prompt files after the trial loop, so a prompt file deleted mid-run
+  cannot prevent the report from being published; the `docs/bench.md`
+  check description names the required `id` and optional `note` fields and
+  shows an example check.
 
 Declared limitations: `modelJudge` has no model-judge runtime (the tested
 model never grades itself); worktree isolation is not a security sandbox for

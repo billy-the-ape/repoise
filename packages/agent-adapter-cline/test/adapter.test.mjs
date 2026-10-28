@@ -131,6 +131,12 @@ test("repoise mode: isolated state, MCP config, effective-config, usage", async 
   assert.equal(result.adapterDurationMs, 42);
   assert.equal(result.exitCode, 0);
 
+  // The final event records the agent's final message text (the stub's
+  // `done` text) under `data.answer` for benchmark grading.
+  const finalEvent = result.events.at(-1);
+  assert.equal(finalEvent.t, "final");
+  assert.equal(finalEvent.data.answer, "stub answer");
+
   // The stub records the invocation it actually saw.
   const manifest = JSON.parse(
     readFileSync(join(workspace, "stub-manifest.json"), "utf8"),

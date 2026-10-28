@@ -129,6 +129,9 @@
       "then": {
         "required": ["status"],
         "properties": {
+          "data": {
+            "description": "When present, the run's recorded result payload. Adapters SHOULD record the agent's final answer text under `answer` so benchmark grading (suite answerField, default `answer`) can score the recorded answer without a transcript."
+          },
           "usage": {
             "description": "The run's normalized usage total (authoritative when present); same shape as the normalized result usage.",
             "type": "object",
