@@ -267,7 +267,12 @@ Method handling:
   `trials/<id>/grading.json.rejected` (bytes preserved) and records an
   `evaluator_error` in `grading.json`; that recorded error is re-emitted
   verbatim on later rebuilds (its reason never nests or repeats) until a
-  valid manual record replaces it. Engine-written records carry
+  valid manual record replaces it. The same preservation applies when the
+  engine replaces an operator record left on a censored (non-completed)
+  trial: the operator's bytes move to `grading.json.rejected` and the
+  censored `not_graded` record is written in its place (a manual
+  pass/fail is preserved, not honored - a graded result cannot stand
+  behind a censored trial). Engine-written records carry
   `source: "engine"` and are replaced on the next grading pass.
 - `modelJudge` — declared-only: this build runs no model judge (grading must
   stay independent of the tested model); the result must also be written as
@@ -329,7 +334,7 @@ Under `<output.dir>/<experiment.id>/`:
 | `report.md` | Human-readable rendering of `report.json` (derived from the same object) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
 | `trials/<id>/grading.json` | One trial's grading record (schema v1); engine records carry `source: "engine"`, operator manual records do not |
-| `trials/<id>/grading.json.rejected` | Operator manual record the engine rejected (invalid or unparseable); the engine never overwrites operator bytes in place |
+| `trials/<id>/grading.json.rejected` | Operator manual record the engine replaced without honoring (invalid, unparseable, or left on a censored trial); the engine never overwrites operator bytes in place |
 | `trials/<id>/request.json` | The AP-03 request with `condition.mcp.env` values redacted (names kept; the live request with real values goes only to the host bridge over stdin; a local artifact) |
 | `trials/<id>/adapter/` | `events.ndjson`, `result.json`, `stderr.log` (adapter diagnostics) |
 | `trials/<id>/host.log` | Coordinator-side bridge stderr |

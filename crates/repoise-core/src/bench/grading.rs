@@ -130,6 +130,20 @@ pub fn manual_grading_is_valid(raw: &Value, expected_method: &str) -> bool {
             .is_some_and(|reason| !reason.trim().is_empty())
 }
 
+/// Preserves an operator-written `grading.json` at `grading.json.rejected`
+/// (original bytes, never overwritten in place) so that an engine record
+/// written in its place does not clobber the operator's file.
+fn preserve_operator_record(trial_dir: &Path) -> Result<(), String> {
+    let grading_path = trial_dir.join("grading.json");
+    let rejected_path = trial_dir.join("grading.json.rejected");
+    if rejected_path.exists() {
+        std::fs::remove_file(&rejected_path)
+            .map_err(|err| format!("could not replace existing grading.json.rejected: {err}"))?;
+    }
+    std::fs::rename(&grading_path, &rejected_path)
+        .map_err(|err| format!("could not preserve the operator's grading.json: {err}"))
+}
+
 /// Preserves an invalid/unparseable operator `grading.json` at
 /// `grading.json.rejected` (original bytes, never overwritten in place) and
 /// writes the `evaluator_error` record in its place. The returned grading is
@@ -143,17 +157,11 @@ fn record_rejected_manual_record(
     method: &str,
     reason: &str,
 ) -> Result<Grading, String> {
-    let grading_path = trial_dir.join("grading.json");
-    let rejected_path = trial_dir.join("grading.json.rejected");
-    if rejected_path.exists() {
-        std::fs::remove_file(&rejected_path)
-            .map_err(|err| format!("could not replace existing grading.json.rejected: {err}"))?;
-    }
-    std::fs::rename(&grading_path, &rejected_path)
-        .map_err(|err| format!("could not preserve the operator's grading.json: {err}"))?;
+    preserve_operator_record(trial_dir)?;
     let record =
         evaluator_error_record(trial_id, task_id, condition_id, repetition, method, reason);
-    artifacts::write_json(&grading_path, &record).map_err(|err| err.to_string())?;
+    artifacts::write_json(&trial_dir.join("grading.json"), &record)
+        .map_err(|err| err.to_string())?;
     Ok(Grading {
         status: "evaluator_error".into(),
         method: method.into(),
@@ -227,7 +235,10 @@ struct RecordBody {
 /// valid and kept verbatim (never rewritten as engine records). An invalid
 /// or unparseable operator record is preserved at `grading.json.rejected`
 /// and an `evaluator_error` is recorded in its place (returned as
-/// `Ok`); a recorded `evaluator_error` is re-emitted verbatim. Everything
+/// `Ok`); a recorded `evaluator_error` is re-emitted verbatim. Any other
+/// operator-written record the engine replaces (for example an operator
+/// file left on a censored trial) is likewise preserved at
+/// `grading.json.rejected` before the engine record is written. Everything
 /// else is (re)computed and written as an engine record. A `Result::Err`
 /// means the engine itself failed and the caller records `evaluator_error`.
 pub fn grade_and_write(
@@ -401,6 +412,30 @@ pub fn grade_and_write(
             }
         },
     };
+    // The engine never clobbers operator bytes in place. Where an engine
+    // record is about to be written and a record without an engine
+    // provenance marker (or one that is not parseable JSON) already
+    // exists - for example an operator file left on a censored trial -
+    // preserve the operator's original bytes at grading.json.rejected
+    // first. A manual pass/fail is preserved, not honored: a graded
+    // result cannot stand behind a censored trial.
+    let preserved_operator_record = match read_existing_record(trial_dir) {
+        ExistingRecord::Record(raw)
+            if raw.get("source").and_then(Value::as_str) != Some("engine") =>
+        {
+            preserve_operator_record(trial_dir)?;
+            true
+        }
+        ExistingRecord::Unparseable { .. } => {
+            preserve_operator_record(trial_dir)?;
+            true
+        }
+        ExistingRecord::Record(_) | ExistingRecord::Absent => false,
+    };
+    let mut grading = grading;
+    if preserved_operator_record && let Some(reason) = grading.reason.as_mut() {
+        reason.push_str("; the operator's record is preserved at grading.json.rejected");
+    }
     artifacts::write_json(
         &trial_dir.join("grading.json"),
         &record(
@@ -1265,6 +1300,82 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("plain file name"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn censored_grading_preserves_an_existing_operator_record() {
+        // An operator-written grading.json on a censored manual-grading
+        // trial must not be clobbered in place: the engine preserves the
+        // operator's bytes at grading.json.rejected and writes the
+        // censored not_graded record in its place (a manual pass/fail is
+        // preserved, not honored, because a graded result cannot stand
+        // behind a censored trial).
+        let dir = temp_dir("censored-operator-record");
+        std::fs::create_dir_all(dir.join("adapter")).unwrap();
+        let task = task_with(Some(Evaluator {
+            method: "humanRubric".into(),
+            answer_field: "answer".into(),
+            rubric: Some("review the trial".into()),
+            checks: Vec::new(),
+        }));
+        std::fs::write(
+            dir.join("grading.json"),
+            r#"{"schemaVersion":1,"status":"pass","method":"humanRubric","reason":"operator judgment"}"#,
+        )
+        .unwrap();
+        let grading = grade_and_write(
+            &task,
+            &dir,
+            "t1",
+            "cond",
+            0,
+            "error",
+            Some("wall_clock_exceeded"),
+        )
+        .unwrap();
+        assert_eq!(grading.status, "not_graded");
+        assert!(
+            grading
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("grading.json.rejected"),
+            "{}",
+            grading.reason.unwrap()
+        );
+        let rejected = std::fs::read_to_string(dir.join("grading.json.rejected")).unwrap();
+        assert!(rejected.contains("operator judgment"));
+        let engine: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("grading.json")).unwrap())
+                .unwrap();
+        assert_eq!(engine["status"], "not_graded");
+        assert_eq!(engine["source"], "engine");
+
+        // A rebuild now sees an engine record: no second preservation, and
+        // the operator's bytes at grading.json.rejected stay untouched.
+        let again = grade_and_write(
+            &task,
+            &dir,
+            "t1",
+            "cond",
+            0,
+            "error",
+            Some("wall_clock_exceeded"),
+        )
+        .unwrap();
+        assert_eq!(again.status, "not_graded");
+        assert!(
+            !again
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("grading.json.rejected")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("grading.json.rejected")).unwrap(),
+            rejected
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

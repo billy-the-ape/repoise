@@ -273,7 +273,10 @@ record.
   `evaluator_error` and the engine never clobbers the operator's bytes in
   place - the operator's file is preserved at
   `trials/<id>/grading.json.rejected` and the recorded error is re-emitted
-  verbatim across rebuilds until a valid manual record replaces it. An
+  verbatim across rebuilds until a valid manual record replaces it; the
+  same preservation applies when the engine replaces an operator record
+  left on a censored trial (preserved, not honored - a graded result
+  cannot stand behind a censored trial). An
   absent answer or artifact fails every check (including `notContains`), so
   a trial that produced no answer is `fail`. Declared artifact files and the
   adapter event log are read only when they are regular files (symlinks and

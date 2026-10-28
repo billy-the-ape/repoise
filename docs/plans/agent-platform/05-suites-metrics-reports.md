@@ -33,7 +33,9 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   unparseable operator records are `evaluator_error`: the operator's file is
   preserved at `grading.json.rejected` (never clobbered in place) and the
   recorded error is re-emitted verbatim across rebuilds until a valid
-  manual record replaces it.
+  manual record replaces it; the same preservation applies when the engine
+  replaces an operator record left on a censored trial (preserved, not
+  honored — a graded result cannot stand behind a censored trial).
 - Report (`report.json` schema v1 + `report.md` rendered from the same
   object): status/grading counts (planned/attempted/completed/timed-out/
   cancelled/invalid/not-started; nothing dropped), overall/per-condition/
