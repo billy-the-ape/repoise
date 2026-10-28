@@ -77,9 +77,38 @@ pub fn record(
     })
 }
 
-/// Reads the stored grading record when present.
+/// The state of the stored grading record. Only operator-written files can
+/// be unparseable: engine records are JSON the engine itself wrote.
+enum ExistingRecord {
+    Absent,
+    Record(Value),
+    Unparseable { parse_error: String, raw: String },
+}
+
+/// Reads the stored grading record, distinguishing an absent file from a
+/// present-but-unparseable one (an operator file the engine must not
+/// clobber silently).
+fn read_existing_record(trial_dir: &Path) -> ExistingRecord {
+    let path = trial_dir.join("grading.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return ExistingRecord::Absent;
+    };
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => ExistingRecord::Record(value),
+        Err(err) => ExistingRecord::Unparseable {
+            parse_error: err.to_string(),
+            raw,
+        },
+    }
+}
+
+/// Reads the stored grading record when present and parseable.
 pub fn load(trial_dir: &Path) -> Option<Value> {
-    artifacts::read_json(&trial_dir.join("grading.json")).ok()
+    match read_existing_record(trial_dir) {
+        ExistingRecord::Record(value) => Some(value),
+        ExistingRecord::Absent | ExistingRecord::Unparseable { .. } => None,
+    }
 }
 
 /// Validates an operator-written manual grading record: schema version, a
@@ -197,9 +226,9 @@ pub fn grade_and_write(
                         ),
                     )
                 } else {
-                    match load(trial_dir) {
+                    match read_existing_record(trial_dir) {
                         // Operator-written record (no engine provenance marker).
-                        Some(raw)
+                        ExistingRecord::Record(raw)
                             if raw.get("source").and_then(Value::as_str) != Some("engine") =>
                         {
                             if manual_grading_is_valid(&raw, method) {
@@ -219,10 +248,20 @@ pub fn grade_and_write(
                              (expected method '{method}', status pass/fail and a non-empty reason)"
                             ));
                         }
+                        // An operator file that is not parseable JSON: report
+                        // an evaluator_error and keep the operator's text (the
+                        // caller's evaluator_error record preserves it in its
+                        // reason) instead of silently clobbering it.
+                        ExistingRecord::Unparseable { parse_error, raw } => {
+                            return Err(format!(
+                                "existing grading.json is not parseable JSON ({parse_error}); \
+                                 operator text preserved in the evaluator_error record: {raw}"
+                            ));
+                        }
                         // A recorded evaluator error is sticky: re-emit it so
                         // consecutive rebuilds agree instead of drifting to
                         // pending. A valid manual record replaces it.
-                        Some(raw)
+                        ExistingRecord::Record(raw)
                             if raw.get("status").and_then(Value::as_str)
                                 == Some("evaluator_error")
                                 && raw.get("method").and_then(Value::as_str) == Some(method) =>
@@ -233,7 +272,8 @@ pub fn grade_and_write(
                                 raw.get("reason").and_then(Value::as_str).unwrap_or("")
                             ));
                         }
-                        // Engine-written pending/censored state: recompute.
+                        // Engine-written pending/censored state, or no record
+                        // yet: recompute.
                         _ => match method {
                             "humanRubric" => Grading::not_graded(
                                 method,
@@ -359,7 +399,7 @@ fn evaluate_checks(
             "containsAll" => haystack
                 .as_deref()
                 .is_some_and(|text| check.values.iter().all(|value| text.contains(value))),
-            "notContains" => haystack.as_deref().is_none_or(|text| {
+            "notContains" => haystack.as_deref().is_some_and(|text| {
                 !check
                     .values
                     .iter()
@@ -403,19 +443,18 @@ fn evaluate_checks(
                 }
             }
             "notContains" if passed => "no forbidden substring present".into(),
-            "notContains" => {
-                let found: Vec<String> = check
-                    .values
-                    .iter()
-                    .filter(|value| {
-                        haystack
-                            .as_deref()
-                            .is_some_and(|text| text.contains(value.as_str()))
-                    })
-                    .cloned()
-                    .collect();
-                format!("found forbidden: {}", found.join(", "))
-            }
+            "notContains" => match haystack.as_deref() {
+                None => evidence_detail(&check.scope, &check.artifact),
+                Some(text) => {
+                    let found: Vec<String> = check
+                        .values
+                        .iter()
+                        .filter(|value| text.contains(value.as_str()))
+                        .cloned()
+                        .collect();
+                    format!("found forbidden: {}", found.join(", "))
+                }
+            },
             other => unreachable!("validated check type: {other}"),
         };
         records.push(serde_json::json!({
@@ -778,6 +817,59 @@ mod tests {
         let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
         assert_eq!(grading.status, "fail");
         assert_eq!(grading.method, "humanRubric");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unparseable_manual_record_is_evaluator_error_and_not_clobbered() {
+        let dir = temp_dir("unparseable");
+        let trial = dir.join("trial");
+        write_events(&trial, &serde_json::json!({ "answer": "x" }));
+        let task = task_with(Some(
+            serde_json::from_value(serde_json::json!({
+                "method": "humanRubric",
+                "rubric": "name the failing function"
+            }))
+            .unwrap(),
+        ));
+
+        // Operator writes a record with a trailing comma: present but not
+        // parseable JSON.
+        let broken = r#"{"schemaVersion":1,"status":"pass","method":"humanRubric","reason":"trailing comma","#;
+        std::fs::write(trial.join("grading.json"), broken).unwrap();
+
+        let err = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
+        assert!(err.contains("not parseable JSON"), "{err}");
+        // The engine must not have clobbered the operator's text.
+        assert_eq!(
+            std::fs::read_to_string(trial.join("grading.json")).unwrap(),
+            broken
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absent_answer_fails_every_check_type_including_not_contains() {
+        // A trial that produced no answer cannot pass a notContains-only
+        // task: an absent haystack fails every check type, so the trial is
+        // graded fail (never "vacuously clean").
+        let dir = temp_dir("no-answer-notcontains");
+        let trial = dir.join("trial");
+        write_events(&trial, &serde_json::json!({}));
+        let task = task_with(Some(
+            serde_json::from_value(serde_json::json!({
+                "checks": [{
+                    "id": "no-forbidden-claim",
+                    "type": "notContains",
+                    "values": ["definitely present"]
+                }]
+            }))
+            .unwrap(),
+        ));
+        let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "fail");
+        assert!(!grading.answer_present);
+        assert_eq!(grading.checks[0]["result"], "fail");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

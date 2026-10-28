@@ -269,9 +269,12 @@ record.
   failure, cancellation) are `not_graded`, never graded as wrong answers.
   Operator-written manual grading records are kept verbatim (never relabeled
   as engine records, so repeated rebuilds never lose them); engine records
-  carry `source: "engine"`; an invalid manual record is `evaluator_error`,
-  and that recorded error stays in place across rebuilds until a valid
-  manual record replaces it.
+  carry `source: "engine"`; an invalid or unparseable manual record is
+  `evaluator_error` (the operator's text is preserved in the record's
+  reason), and that recorded error stays in place across rebuilds until a
+  valid manual record replaces it. An absent answer or artifact fails
+  every check (including `notContains`), so a trial that produced no
+  answer is `fail`.
 - The published report (`report.json`, schema v1) is rendered to `report.md`
   from the same object: status/grading counts (every planned slot lands in
   exactly one bucket), overall/per-condition/per-task grading summaries with
@@ -280,14 +283,18 @@ record.
   on both sides, zero-baseline undefined-reduction note, task-cluster
   bootstrap percentile interval with recorded seed/iterations, labelled
   success-only medians, timeout rate) plus the predeclared quality gate
-  (`pass`/`fail`/`insufficient_data`/`not_configured`). The gate is
-  descriptive evidence against predeclared thresholds, not a product gate.
+  (`pass`/`fail`/`insufficient_data`/`not_configured`): the overall status
+  is `pass` only when every declared check was evaluated and passed; a
+  speed gain with insufficient correctness data is `insufficient_data`,
+  never `pass`. The gate is descriptive evidence against predeclared
+  thresholds, not a product gate.
 - `repoise bench report --experiment <ID> [--output <DIR>] [--json]` re-grades
   recorded trials and rebuilds the report offline from the frozen manifest
   and trial artifacts (no worktrees, no agent processes, no network);
   `not_started` slots are persisted as `trial.json` so rebuilds see the same
-  counts. Exit `0` on success, `1` when the experiment is missing or
-  incomplete.
+  counts (not-started slots are never re-graded, matching the run), and the
+  run's status and `failureReason` carry over from the previous report.
+  Exit `0` on success, `1` when the experiment is missing or incomplete.
 
 Declared limitations: `modelJudge` has no model-judge runtime (the tested
 model never grades itself); worktree isolation is not a security sandbox for

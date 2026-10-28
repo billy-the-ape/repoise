@@ -37,10 +37,10 @@
           "id": { "type": "string", "minLength": 1 },
           "type": { "type": "string", "enum": ["containsAny", "containsAll", "notContains"] },
           "scope": { "type": "string", "enum": ["answer", "artifact"] },
-          "artifact": { "type": "string" },
+          "artifact": { "type": ["string", "null"], "description": "Artifact file name; null for answer-scope checks." },
           "result": { "type": "string", "enum": ["pass", "fail"] },
           "detail": { "type": "string" },
-          "note": { "type": "string" }
+          "note": { "type": ["string", "null"], "description": "The check's assertion note; null when the suite declared none." }
         }
       }
     },

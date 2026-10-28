@@ -666,28 +666,32 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
         let repetition = trial["repetition"].as_u64().unwrap_or(0) as u32;
         let status = trial["status"].as_str().unwrap_or("");
         let reason = trial["reason"].as_str().map(str::to_string);
-        let grading_task = task.grading_task();
-        if let Err(err) = grading::grade_and_write(
-            &grading_task,
-            &trial_dir,
-            trial_id,
-            condition_id,
-            repetition,
-            status,
-            reason.as_deref(),
-        ) {
-            let record = grading::evaluator_error_record(
+        // `run()` never grades not-started slots (no answer was produced);
+        // grading them here would inflate notGraded between run and rebuild.
+        if status != "not_started" {
+            let grading_task = task.grading_task();
+            if let Err(err) = grading::grade_and_write(
+                &grading_task,
+                &trial_dir,
                 trial_id,
-                task_id,
                 condition_id,
                 repetition,
-                task.evaluator
-                    .as_ref()
-                    .map(|evaluator| evaluator.method.as_str())
-                    .unwrap_or("none"),
-                &format!("evaluator failure: {err}"),
-            );
-            let _ = artifacts::write_json(&trial_dir.join("grading.json"), &record);
+                status,
+                reason.as_deref(),
+            ) {
+                let record = grading::evaluator_error_record(
+                    trial_id,
+                    task_id,
+                    condition_id,
+                    repetition,
+                    task.evaluator
+                        .as_ref()
+                        .map(|evaluator| evaluator.method.as_str())
+                        .unwrap_or("none"),
+                    &format!("evaluator failure: {err}"),
+                );
+                let _ = artifacts::write_json(&trial_dir.join("grading.json"), &record);
+            }
         }
     }
 
@@ -696,18 +700,20 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
     // experiment run, not the analysis); the analysis itself is always
     // recomputed.
     let previous = artifacts::read_json(&layout.report_path()).ok();
-    let (started_at, ended_at, duration_ms, status) = match previous {
+    let (started_at, ended_at, duration_ms, status, failure_reason) = match previous {
         Some(report) => (
             report["startedAtUtc"].as_str().unwrap_or("").to_string(),
             report["endedAtUtc"].as_str().unwrap_or("").to_string(),
             report["durationMs"].as_u64().unwrap_or(0) as u128,
             report["status"].as_str().unwrap_or("unknown").to_string(),
+            report["failureReason"].as_str().map(str::to_string),
         ),
         None => (
             manifest["startedAtUtc"].as_str().unwrap_or("").to_string(),
             runner::now_utc(),
             0,
             "unknown".into(),
+            None,
         ),
     };
     let suite_hash = manifest["suiteHash"].as_str().unwrap_or("");
@@ -721,7 +727,14 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
         planned,
         trials: &trials,
     };
-    let report = assemble_report(&input, &status, None, &started_at, &ended_at, duration_ms);
+    let report = assemble_report(
+        &input,
+        &status,
+        failure_reason,
+        &started_at,
+        &ended_at,
+        duration_ms,
+    );
     artifacts::write_json(&layout.report_path(), &report)?;
     artifacts::write_text(
         &layout.experiment_dir.join("report.md"),
@@ -854,6 +867,125 @@ mod tests {
         std::fs::remove_file(&patch).unwrap();
         assert!(patch_drift_error(&patch, &hash).is_err());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `bench report` rebuild re-grades recorded slots but must not grade
+    /// not-started ones (matching the run's own counts), and must carry the
+    /// run's status/failure reason into the rebuilt report.
+    #[test]
+    fn rebuild_skips_not_started_slots_and_carries_run_facts() {
+        let dir =
+            std::env::temp_dir().join(format!("repoise-bench-rebuild-{}", std::process::id()));
+        let experiment = dir.join("exp");
+        let trials_dir = experiment.join("trials");
+        std::fs::create_dir_all(trials_dir.join("t-completed").join("adapter")).unwrap();
+        std::fs::create_dir_all(trials_dir.join("t-unstarted")).unwrap();
+
+        // Frozen manifest: one deterministic task, one condition, two
+        // planned slots (one completed, one never started).
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [{
+                        "id": "c1",
+                        "type": "containsAll",
+                        "values": ["ok"]
+                    }]
+                }
+            }],
+            "conditions": [{ "id": "cond", "retrievalMode": "baseline" }],
+            "gates": null,
+            "report": null,
+            "trials": [
+                { "trialId": "t-completed", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 0 },
+                { "trialId": "t-unstarted", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 1 }
+            ]
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        // Completed trial with a final answer; unstarted slot without events.
+        let completed = trials_dir.join("t-completed");
+        std::fs::write(
+            completed.join("adapter").join("events.ndjson"),
+            r#"{"t":"final","data":{"answer":"ok"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            completed.join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t-completed",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "completed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let unstarted = trials_dir.join("t-unstarted");
+        std::fs::write(
+            unstarted.join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t-unstarted",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "not_started",
+                "reason": "budget_exceeded"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // The run's report recorded a failure; the rebuild must carry the
+        // reason over instead of dropping it.
+        std::fs::write(
+            experiment.join("report.json"),
+            serde_json::to_string(&serde_json::json!({
+                "status": "failed",
+                "failureReason": "budget exceeded before all trials ran",
+                "startedAtUtc": "2026-01-01T00:00:00Z",
+                "endedAtUtc": "2026-01-01T00:05:00Z",
+                "durationMs": 300000
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let outcome = rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        })
+        .unwrap();
+        let report = outcome.payload;
+        assert_eq!(report["status"], "failed");
+        assert_eq!(
+            report["failureReason"],
+            "budget exceeded before all trials ran"
+        );
+        assert_eq!(report["counts"]["planned"], 2);
+        assert_eq!(report["counts"]["attempted"], 1);
+        assert_eq!(report["counts"]["notStarted"], 1);
+        // The completed slot is re-graded; the unstarted slot is not graded
+        // at all (no grading.json, and it lands in no grading bucket).
+        assert!(completed.join("grading.json").exists());
+        assert!(!unstarted.join("grading.json").exists());
+        assert_eq!(report["grading"]["overall"]["pass"], 1);
+        assert_eq!(report["counts"]["notGraded"], 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

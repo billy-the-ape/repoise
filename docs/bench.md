@@ -147,8 +147,11 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   evidence — exact string equality is deliberately not the default) and an
   optional `scope`/`artifact` pair that reads `adapter/<name>` from the
   trial's artifact directory (names only, must be listed in the task's
-  `expectedArtifacts`). A task without an evaluator is never graded
-  (`not_graded`).
+  `expectedArtifacts`). The haystack is the recorded answer or the produced
+  artifact content; when no haystack exists (no answer, or the artifact was
+  not produced), every check fails — including `notContains` — so a trial
+  that produced no answer cannot pass. A task without an evaluator is never
+  graded (`not_graded`).
 - `gates` — predeclared quality gate (AP-05); thresholds are decided before
   the experiment, not fitted to its results. `baseline` (condition id),
   `minCorrectness` (default 1.0), `correctnessMargin` (default 0.0) and
@@ -253,8 +256,11 @@ Method handling:
   repeated `bench report` rebuilds never lose it); an existing record with a
   mismatched method or missing fields is an `evaluator_error`, never silently
   accepted, and that recorded error stays in place across rebuilds until a
-  valid manual record replaces it. Engine-written records carry
-  `source: "engine"` and are replaced on the next grading pass.
+  valid manual record replaces it; an operator record that is not parseable
+  JSON is likewise an `evaluator_error`, with the operator's text preserved
+  in the record's reason and the file not clobbered by the engine. Engine-
+  written records carry `source: "engine"` and are replaced on the next
+  grading pass.
 - `modelJudge` — declared-only: this build runs no model judge (grading must
   stay independent of the tested model); the result must also be written as
   a manual grading record.
@@ -270,7 +276,8 @@ Method handling:
   status bucket, nothing is dropped.
 - `grading` — overall, per-condition and per-task grading summaries with the
   correctness rate over graded trials (`heldOutTasks` / `developmentTasks`
-  split included).
+  split included); per-condition `attempted` excludes not-started slots,
+  matching the global counts and the `timeoutRate` denominator.
 - `analysis` — present only when `gates` is declared: for each declared
   improvement, the median per-task paired difference and reduction (candidate
   minus baseline, over tasks with measured data on both sides; zero or
@@ -281,13 +288,19 @@ Method handling:
 - `qualityGate` — the predeclared gate evaluated: per-condition correctness
   vs `minCorrectness`, per-improvement median paired reduction vs
   `threshold`, and the candidate-vs-baseline `correctnessMargin` floor.
-  Status is `pass`, `fail` or `insufficient_data` (with the reason per
-  check); `not_configured` when the suite declares no gate. A pass/fail
+  Status is `pass` only when every declared check was evaluated and passed;
+  any declared check that could not be evaluated makes the overall status
+  `insufficient_data` (with the reason per check), any failed evaluated
+  check makes it `fail`, and `not_configured` when the suite declares no
+  gate — a speed gain without correctness data is never a pass. A pass/fail
   verdict is descriptive evidence against the predeclared thresholds, not a
   product gate (the v1 section 11 gates remain the product targets).
 
 `bench report` re-runs grading and report assembly from the frozen manifest
-and trial artifacts (see the command surface above).
+and trial artifacts (see the command surface above). Not-started slots are
+not re-graded (the run never graded them either), so the rebuilt report sees
+the same counts as the run; the run's status and `failureReason` are carried
+over from the previous report when one exists.
 
 ## Artifacts
 

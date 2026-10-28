@@ -21,8 +21,9 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   deterministic checks over the recorded answer and declared artifact files
   (`containsAny`/`containsAll`/`notContains`, case-sensitive substring;
   alternative correct evidence accepted, exact equality deliberately not the
-  default); censored (timed-out/failed) trials are `not_graded`, never wrong
-  answers; `humanRubric`/`modelJudge` are declared-only in this build —
+  default; an absent answer or artifact fails every check — including
+  `notContains` — so a trial that produced no answer is `fail`); censored
+  (timed-out/failed) trials are `not_graded`, never wrong answers; `humanRubric`/`modelJudge` are declared-only in this build —
   operator-written manual records are validated and kept verbatim (never
   relabeled as engine records, so repeated rebuilds never lose them),
   engine records (`source: "engine"`) are replaced, invalid manual records
@@ -37,11 +38,18 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   reduction note, task-cluster bootstrap percentile interval with recorded
   seed/iterations, labelled success-only medians, timeout rate) and the
   predeclared quality gate (`pass`/`fail`/`insufficient_data`/
-  `not_configured`). Timeouts stay censored; the gate is descriptive evidence
-  against predeclared thresholds, not a product gate.
+  `not_configured`): the overall status is `pass` only when every declared
+  check was evaluated and passed, and a speed gain with insufficient
+  correctness data is `insufficient_data`, never `pass`. Per-condition
+  `attempted` excludes not-started slots (matching the global counts and the
+  `timeoutRate` denominator). Timeouts stay censored; the gate is
+  descriptive evidence against predeclared thresholds, not a product gate.
 - `repoise bench report --experiment <ID> [--output <DIR>] [--json]`
   re-grades recorded trials and rebuilds the report offline from the frozen
-  manifest and artifacts (no worktrees, no agent processes).
+  manifest and artifacts (no worktrees, no agent processes). Not-started
+  slots are never re-graded (the run never graded them either), so the
+  rebuilt report sees the same counts as the run, and the run's status and
+  `failureReason` carry over from the previous report when one exists.
 
 Deliberately deferred (open decisions before AP-06, per the acceptance
 section): model-judge runtime and calibration, grading-plugin isolation

@@ -160,7 +160,10 @@ pub fn grading_summary(trials: &[TrialData], tasks: &[TaskProvenance]) -> Value 
             None => {
                 let attempted = trials
                     .iter()
-                    .filter(|t| t.trial["conditionId"].as_str() == Some(condition))
+                    .filter(|t| {
+                        t.trial["conditionId"].as_str() == Some(condition)
+                            && t.trial["status"].as_str() != Some("not_started")
+                    })
                     .count();
                 let completed = trials
                     .iter()
@@ -285,7 +288,10 @@ fn condition_metric_values(trials: &[TrialData], condition_id: &str, metric: &st
 fn descriptive_condition_stats(trials: &[TrialData], condition_id: &str) -> Value {
     let attempts = trials
         .iter()
-        .filter(|trial| trial.trial["conditionId"].as_str() == Some(condition_id))
+        .filter(|trial| {
+            trial.trial["conditionId"].as_str() == Some(condition_id)
+                && trial.trial["status"].as_str() != Some("not_started")
+        })
         .count();
     let completed = trials
         .iter()
@@ -490,8 +496,9 @@ fn condition_grading(trials: &[TrialData], condition_id: &str) -> (usize, usize)
 
 /// Evaluates the predeclared quality gate against the collected trials.
 /// Checks are declared before the experiment; this only measures them.
-/// Overall status: `fail` when any evaluated check fails, `insufficient_data`
-/// when no check can be evaluated, otherwise `pass`.
+/// Overall status: `insufficient_data` when no check was declared or any
+/// check could not be evaluated, `fail` when any evaluated check fails, and
+/// `pass` only when every declared check was evaluated and passed.
 pub fn quality_gate(
     trials: &[TrialData],
     conditions: &[Condition],
@@ -585,16 +592,19 @@ pub fn quality_gate(
             }),
         });
     }
-    let any_failed = checks
-        .iter()
-        .any(|check| check["status"].as_str() == Some("failed"));
-    let any_evaluated = checks
-        .iter()
-        .any(|check| matches!(check["status"].as_str(), Some("passed") | Some("failed")));
-    let status = if any_failed {
-        "fail"
-    } else if !any_evaluated {
+    // The gate passes only when every predeclared check was evaluated and
+    // passed: a speed gain with insufficient correctness data is not a pass.
+    let status = if checks.is_empty()
+        || checks
+            .iter()
+            .any(|check| check["status"].as_str() == Some("insufficient_data"))
+    {
         "insufficient_data"
+    } else if checks
+        .iter()
+        .any(|check| check["status"].as_str() == Some("failed"))
+    {
+        "fail"
     } else {
         "pass"
     };
@@ -754,7 +764,7 @@ pub fn render_markdown(report: &Value) -> String {
         if let Some(note) = gate.get("note").and_then(Value::as_str) {
             md.push_str(&format!("{note}\n\n"));
         }
-        if let Some(checks) = gate["checks"].as_array() {
+        if let Some(checks) = gate.get("checks").and_then(Value::as_array) {
             for check in checks {
                 md.push_str(&format!(
                     "- {}: observed {} vs threshold {} -> {}\n",
@@ -1179,6 +1189,137 @@ mod tests {
         // must not pass.
         let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
         assert_eq!(gate["status"], "insufficient_data");
+    }
+
+    #[test]
+    fn gate_is_insufficient_when_any_check_lacks_data() {
+        // The candidate adapter errors on every trial: correctness and
+        // margin are insufficient (no graded candidate trials), but the
+        // instant failures make the paired reduction look ~98% faster.
+        // The gate must not pass on partial data.
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-b",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "error",
+                Some("adapter_failure"),
+                Some(50),
+                None,
+                None,
+            ),
+            trial(
+                "task-b",
+                "candidate",
+                "error",
+                Some("adapter_failure"),
+                Some(50),
+                None,
+                None,
+            ),
+        ];
+        let gates = gates();
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        assert_eq!(gate["status"], "insufficient_data");
+        let checks: Vec<(&str, &str)> = gate["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|check| {
+                (
+                    check["name"].as_str().unwrap(),
+                    check["status"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            checks,
+            vec![
+                ("correctness:baseline", "passed"),
+                ("correctness:candidate", "insufficient_data"),
+                ("improvement:candidate:agentMs", "passed"),
+                ("correctness-margin:candidate", "insufficient_data"),
+            ]
+        );
+    }
+
+    #[test]
+    fn condition_attempted_and_timeout_rate_exclude_not_started_slots() {
+        // 2 attempted (1 completed, 1 timed out) + 4 not-started slots for
+        // the baseline condition: the per-condition numbers must match the
+        // global counts (attempted 2, timeoutRate 1/2, not 1/4).
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-b",
+                "baseline",
+                "error",
+                Some("wall_clock_exceeded"),
+                Some(150000),
+                None,
+                None,
+            ),
+            trial(
+                "task-a",
+                "baseline",
+                "not_started",
+                Some("budget_exceeded"),
+                None,
+                None,
+                None,
+            ),
+            trial(
+                "task-b",
+                "baseline",
+                "not_started",
+                Some("budget_exceeded"),
+                None,
+                None,
+                None,
+            ),
+        ];
+        let grading = grading_summary(&trials, &base_tasks());
+        let baseline = grading["byCondition"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["conditionId"].as_str() == Some("baseline"))
+            .unwrap();
+        assert_eq!(baseline["attempted"], 2);
+        assert_eq!(baseline["completed"], 1);
+        assert_eq!(baseline["timedOut"], 1);
+
+        let gates = gates();
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let descriptive = &paired["comparisons"][0]["descriptive"];
+        assert_eq!(descriptive["baseline"]["attempts"], 2);
+        assert_eq!(descriptive["baseline"]["timeoutRate"], 0.5);
     }
 
     #[test]
