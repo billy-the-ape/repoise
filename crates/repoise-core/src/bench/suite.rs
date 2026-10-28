@@ -783,6 +783,17 @@ pub(crate) fn gates_problems(gates: &Gates, conditions: &[Condition]) -> Vec<Str
     problems
 }
 
+/// Report-spec declaration problems. Shared by [`Suite::validate`] and the
+/// report rebuild: a zero-iteration bootstrap must fail validation instead
+/// of letting `paired_analysis` take a percentile of an empty draw.
+pub(crate) fn report_problems(report: &ReportSpec) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
+    if report.bootstrap_iterations == 0 {
+        problems.push("report.bootstrapIterations must be at least 1".into());
+    }
+    problems
+}
+
 impl Suite {
     /// Validates the semantic rules the schema cannot express.
     pub fn validate(&self) -> Result<(), Error> {
@@ -889,10 +900,8 @@ impl Suite {
         if let Some(gates) = &self.gates {
             problems.extend(gates_problems(gates, &self.conditions));
         }
-        if let Some(report) = &self.report
-            && report.bootstrap_iterations == 0
-        {
-            problems.push("report.bootstrapIterations must be at least 1".into());
+        if let Some(report) = &self.report {
+            problems.extend(report_problems(report));
         }
         if let Some(problem) = problems.first() {
             return Err(Error::Config(problem.clone()));

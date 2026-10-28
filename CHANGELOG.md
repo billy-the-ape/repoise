@@ -314,6 +314,13 @@ record.
   killed by the coordinator's outer watchdog (`infra_error` or `cancelled`
   with reason `host_watchdog`) are counted as censored timeouts that keep
   their recorded capped agent time, not as infra failures.
+- Further review fixes: the `bench report` rebuild path now also re-validates
+  the manifest's `report` spec, so a `bootstrapIterations: 0` spec fails
+  with a configuration error instead of reaching a percentile of an empty
+  bootstrap sample (the percentile helper now returns NaN - JSON `null` - on
+  an empty draw as defense in depth); a broken relative link in
+  `scripts/eval/RUNBOOK.md` and the stale "AP-05 not implemented" boundary
+  line in `docs/agent-adapters.md` are fixed.
 
 Declared limitations: `modelJudge` has no model-judge runtime (the tested
 model never grades itself); worktree isolation is not a security sandbox for

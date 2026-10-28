@@ -12,7 +12,7 @@ third, separate layer from the agent benchmarks: the frozen synthetic
 fixtures below answer "does retrieval find the evidence?", the legacy
 replay-evidence import (below) records past single-axis agent runs, and the
 `repoise bench` live trials (AP-04/AP-05, see
-[docs/bench.md](../docs/bench.md)) answer "does the agent workflow improve?".
+[docs/bench.md](../../docs/bench.md)) answer "does the agent workflow improve?".
 Search latency and final agent latency answer different questions; none of
 the three layers substitutes for another, and the master-plan section 11
 adoption gates are evaluated only from controlled live trials (AP-05), never

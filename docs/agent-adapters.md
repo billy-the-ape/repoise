@@ -187,9 +187,11 @@ schemas (validated with ajv).
 - Implemented: protocol v1 schemas, host, conformance fixtures, Cline
   adapter with its tests.
 - Not implemented: `tool_telemetry` and `read_only_restriction` in the Cline
-  CLI (declared false), live Cline verification, and suites/metrics (AP-05).
-  The benchmark runner (AP-04) is implemented and consumes the protocol via
-  the checked-in host bridge; see [bench](bench.md).
+  CLI (declared false), and live Cline verification.
+- The benchmark runner (AP-04) is implemented and consumes the protocol via
+  the checked-in host bridge; independent post-trial grading, paired
+  metrics and reports (AP-05) are implemented as well; see
+  [bench](bench.md).
 - Private evaluation corpora belong in locally configured directories
   (e.g. `~/repoise-eval/`), never in this repository; the repo holds
   synthetic fixtures only.

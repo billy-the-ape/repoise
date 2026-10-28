@@ -67,6 +67,12 @@ fn median(values: &[f64]) -> f64 {
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     let n = sorted.len();
+    if n == 0 {
+        // Defense in depth: a validated report spec always resamples at
+        // least once; an empty draw reports a null interval (NaN
+        // serializes as JSON null) instead of panicking.
+        return f64::NAN;
+    }
     let index = ((p / 100.0) * (n as f64 - 1.0)) as usize;
     sorted[index.min(n - 1)]
 }
@@ -1580,5 +1586,20 @@ mod tests {
         );
         let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
         assert_eq!(gate["status"], "insufficient_data");
+    }
+
+    #[test]
+    fn percentile_of_an_empty_draw_is_nan() {
+        // Defense in depth: an empty draw must not panic (usize underflow
+        // in debug, out-of-bounds index in release) and must serialize to
+        // JSON null in the interval object.
+        assert!(percentile(&[], 2.5).is_nan());
+        assert!(
+            serde_json::to_string(&serde_json::json!({
+                "low": percentile(&[], 2.5)
+            }))
+            .unwrap()
+            .contains("null")
+        );
     }
 }

@@ -657,6 +657,9 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
     if let Some(gates) = &gates {
         problems.extend(suite::gates_problems(gates, &conditions));
     }
+    if let Some(report_spec) = &report_spec {
+        problems.extend(suite::report_problems(report_spec));
+    }
     if !problems.is_empty() {
         return Err(Error::Config(format!(
             "manifest for experiment '{}' failed validation: {}",
@@ -1128,6 +1131,67 @@ mod tests {
             manual
         );
         assert_eq!(outcome.payload["grading"]["overall"]["pass"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_refuses_a_zero_bootstrap_report_spec() {
+        // Suite::validate rejects bootstrapIterations == 0; the rebuild
+        // path must fail the same semantic check instead of letting
+        // paired_analysis take a percentile of an empty bootstrap sample
+        // (which panics).
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-rebuild-reportspec-{}",
+            std::process::id()
+        ));
+        let experiment = dir.join("exp");
+        std::fs::create_dir_all(experiment.join("trials")).unwrap();
+
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [{ "id": "c1", "type": "containsAll", "values": ["ok"] }]
+                }
+            }],
+            "conditions": [
+                { "id": "baseline", "retrievalMode": "baseline" },
+                { "id": "candidate", "retrievalMode": "repoise", "searchMode": "lexical" }
+            ],
+            "gates": {
+                "baseline": "baseline",
+                "improvements": [{ "candidate": "candidate", "metric": "agentMs", "threshold": 0.10 }]
+            },
+            "report": { "bootstrapIterations": 0 },
+            "trials": []
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = match rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("rebuild of a zero-iteration report spec must fail"),
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("bootstrapIterations must be at least 1"),
+            "{}",
+            message
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

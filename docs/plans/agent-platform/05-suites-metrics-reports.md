@@ -71,6 +71,14 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   (`infra_error` or `cancelled` with reason `host_watchdog`) are counted as
   censored timeouts that keep their recorded capped agent time, not as
   infra failures.
+- Further review fixes: the rebuild path re-validates the manifest's
+  `report` spec too (`report_problems`, shared with `Suite::validate`) — a
+  `bootstrapIterations: 0` spec fails with a configuration error instead of
+  reaching a percentile of an empty bootstrap draw, and `percentile`
+  returns NaN (JSON `null`) on an empty draw as defense in depth. The
+  stale "AP-05 not implemented" boundary line in
+  [agent adapters](../../agent-adapters.md) and a broken relative link in
+  `scripts/eval/RUNBOOK.md` are fixed.
 
 Deliberately deferred (open decisions before AP-06, per the acceptance
 section): model-judge runtime and calibration, grading-plugin isolation
