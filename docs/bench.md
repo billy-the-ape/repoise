@@ -249,9 +249,12 @@ Method handling:
 - `humanRubric` — declared-only in this build: the operator writes the
   manual grading record (schema version, status `pass`/`fail`, the declared
   method, a non-empty reason) to `trials/<id>/grading.json` and the engine
-  keeps it unchanged; an existing record with a mismatched method or missing
-  fields is an `evaluator_error`, never silently accepted. Engine-written
-  records carry `source: "engine"` and are replaced on the next grading pass.
+  keeps it verbatim (never rewritten or relabeled as an engine record, so
+  repeated `bench report` rebuilds never lose it); an existing record with a
+  mismatched method or missing fields is an `evaluator_error`, never silently
+  accepted, and that recorded error stays in place across rebuilds until a
+  valid manual record replaces it. Engine-written records carry
+  `source: "engine"` and are replaced on the next grading pass.
 - `modelJudge` — declared-only: this build runs no model judge (grading must
   stay independent of the tested model); the result must also be written as
   a manual grading record.

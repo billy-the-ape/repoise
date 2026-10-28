@@ -23,9 +23,11 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   alternative correct evidence accepted, exact equality deliberately not the
   default); censored (timed-out/failed) trials are `not_graded`, never wrong
   answers; `humanRubric`/`modelJudge` are declared-only in this build —
-  operator-written manual records are validated and kept, engine records
-  (`source: "engine"`) are replaced, invalid manual records are
-  `evaluator_error`.
+  operator-written manual records are validated and kept verbatim (never
+  relabeled as engine records, so repeated rebuilds never lose them),
+  engine records (`source: "engine"`) are replaced, invalid manual records
+  are `evaluator_error` and that recorded error stays in place across
+  rebuilds until a valid manual record replaces it.
 - Report (`report.json` schema v1 + `report.md` rendered from the same
   object): status/grading counts (planned/attempted/completed/timed-out/
   cancelled/invalid/not-started; nothing dropped), overall/per-condition/

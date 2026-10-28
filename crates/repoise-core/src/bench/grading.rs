@@ -162,7 +162,8 @@ struct RecordBody {
 /// Grades one trial for its task and writes `grading.json`.
 ///
 /// Manual grading records (human rubric / model judge) are honored when
-/// valid and kept unchanged; everything else is (re)computed. A `Result::Err`
+/// valid and kept verbatim (never rewritten as engine records); everything
+/// else is (re)computed and written as an engine record. A `Result::Err`
 /// means the engine itself failed and the caller records `evaluator_error`.
 pub fn grade_and_write(
     task: &Task,
@@ -196,26 +197,44 @@ pub fn grade_and_write(
                         ),
                     )
                 } else {
-                    // Engine-written records (censored slots, pending manual
-                    // state) are replaced; only operator-written records are
-                    // validated and kept.
-                    let existing = load(trial_dir)
-                        .filter(|raw| raw.get("source").and_then(Value::as_str) != Some("engine"));
-                    match existing {
-                        Some(raw) if manual_grading_is_valid(&raw, method) => Grading {
-                            status: raw["status"].as_str().unwrap_or("not_graded").into(),
-                            method: method.into(),
-                            reason: raw["reason"].as_str().map(str::to_string),
-                            checks: Vec::new(),
-                            answer_present: false,
-                        },
-                        Some(_) => {
+                    match load(trial_dir) {
+                        // Operator-written record (no engine provenance marker).
+                        Some(raw)
+                            if raw.get("source").and_then(Value::as_str) != Some("engine") =>
+                        {
+                            if manual_grading_is_valid(&raw, method) {
+                                // Kept verbatim: an engine rewrite would
+                                // relabel the operator's file as engine-written
+                                // and the next rebuild would drop it.
+                                return Ok(Grading {
+                                    status: raw["status"].as_str().unwrap_or("not_graded").into(),
+                                    method: method.into(),
+                                    reason: raw["reason"].as_str().map(str::to_string),
+                                    checks: Vec::new(),
+                                    answer_present: false,
+                                });
+                            }
                             return Err(format!(
                                 "existing grading.json is not a valid manual grading record \
                              (expected method '{method}', status pass/fail and a non-empty reason)"
                             ));
                         }
-                        None => match method {
+                        // A recorded evaluator error is sticky: re-emit it so
+                        // consecutive rebuilds agree instead of drifting to
+                        // pending. A valid manual record replaces it.
+                        Some(raw)
+                            if raw.get("status").and_then(Value::as_str)
+                                == Some("evaluator_error")
+                                && raw.get("method").and_then(Value::as_str) == Some(method) =>
+                        {
+                            return Err(format!(
+                                "existing grading.json is a recorded evaluator_error ({}); \
+                                 write a valid manual grading record to replace it",
+                                raw.get("reason").and_then(Value::as_str).unwrap_or("")
+                            ));
+                        }
+                        // Engine-written pending/censored state: recompute.
+                        _ => match method {
                             "humanRubric" => Grading::not_graded(
                                 method,
                                 "human rubric review pending: the operator must write \
@@ -662,6 +681,103 @@ mod tests {
         .unwrap();
         let err = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
         assert!(err.contains("not a valid manual grading record"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn kept_manual_record_survives_repeat_grading_passes() {
+        let dir = temp_dir("manual-repeat");
+        let trial = dir.join("trial");
+        write_events(&trial, &serde_json::json!({ "answer": "x" }));
+        let task = task_with(Some(
+            serde_json::from_value(serde_json::json!({
+                "method": "humanRubric",
+                "rubric": "name the failing function"
+            }))
+            .unwrap(),
+        ));
+
+        // First pass: pending, engine record written.
+        let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "not_graded");
+
+        // Operator writes a valid manual record.
+        std::fs::write(
+            trial.join("grading.json"),
+            r#"{"schemaVersion":1,"status":"pass","method":"humanRubric","reason":"names parse_header; blinded review by op-x"}"#,
+        )
+        .unwrap();
+
+        // Consecutive grading passes (e.g. two `bench report` rebuilds) must
+        // keep the operator's record verbatim: still a pass, still
+        // operator-owned (no engine relabel), same reason.
+        for pass in 0..2 {
+            let grading =
+                grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+            assert_eq!(grading.status, "pass", "pass {pass} must stay a pass");
+            assert_eq!(grading.method, "humanRubric");
+            let stored = load(&trial).unwrap();
+            assert_eq!(stored["status"], "pass", "pass {pass} stored status");
+            assert_eq!(
+                stored.get("source"),
+                None,
+                "pass {pass}: kept manual record must not be relabeled as engine-written"
+            );
+            assert!(
+                stored["reason"].as_str().unwrap().contains("blinded"),
+                "pass {pass}: operator reason must survive"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recorded_evaluator_error_stays_stable_across_rebuilds() {
+        let dir = temp_dir("sticky-error");
+        let trial = dir.join("trial");
+        write_events(&trial, &serde_json::json!({ "answer": "x" }));
+        let task = task_with(Some(
+            serde_json::from_value(serde_json::json!({
+                "method": "humanRubric",
+                "rubric": "name the failing function"
+            }))
+            .unwrap(),
+        ));
+
+        // Operator writes an invalid record; the first pass rejects it and
+        // the caller (runner/rebuild) records an evaluator_error in its
+        // place, exactly as production does.
+        std::fs::write(
+            trial.join("grading.json"),
+            r#"{"schemaVersion":1,"status":"fail","method":"deterministic","reason":"nope"}"#,
+        )
+        .unwrap();
+        let first = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
+        assert!(
+            first.contains("not a valid manual grading record"),
+            "{first}"
+        );
+        let record = evaluator_error_record("t1", "t1", "cond", 0, "humanRubric", &first);
+        std::fs::write(
+            trial.join("grading.json"),
+            serde_json::to_string_pretty(&record).unwrap(),
+        )
+        .unwrap();
+
+        // The next rebuild must re-emit the evaluator error instead of
+        // drifting to pending, so consecutive rebuilds agree on the counts.
+        let second =
+            grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
+        assert!(second.contains("recorded evaluator_error"), "{second}");
+        // And a corrected manual record replaces it.
+        std::fs::write(
+            trial.join("grading.json"),
+            r#"{"schemaVersion":1,"status":"fail","method":"humanRubric","reason":"missed the failing function"}"#,
+        )
+        .unwrap();
+        let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "fail");
+        assert_eq!(grading.method, "humanRubric");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
