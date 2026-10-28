@@ -112,6 +112,7 @@
               },
               "rubric": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Human-readable rubric; required for humanRubric."
               },
               "checks": {
@@ -141,6 +142,13 @@
                   }
                 }
               }
+            },
+            "if": {
+              "properties": { "method": { "const": "humanRubric" } },
+              "required": ["method"]
+            },
+            "then": {
+              "required": ["rubric"]
             }
           }
         }

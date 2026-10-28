@@ -230,7 +230,12 @@ Trial statuses: `completed`, `error` (adapter/protocol failure or wall-clock
 timeout), `cancelled` (cooperative cancellation), `infra_error` (worktree,
 index, host-bridge or artifact failure — the workspace is always cleaned up
 and the experiment continues), `not_started` (budget, interruption or an
-unrecoverable coordinator failure; the report is always published).
+unrecoverable coordinator failure; the report is always published). When
+the coordinator's outer watchdog force-kills the bridge at the per-trial
+wall-clock deadline, the trial is recorded as `infra_error` (or `cancelled`
+on a coincident interrupt) with reason `host_watchdog`; the report still
+counts it as a censored timeout (it keeps its recorded agentMs at or above
+the cap) rather than as an infra failure.
 
 ## Grading (AP-05)
 
@@ -304,10 +309,14 @@ Method handling:
   product gate (the v1 section 11 gates remain the product targets).
 
 `bench report` re-runs grading and report assembly from the frozen manifest
-and trial artifacts (see the command surface above). Not-started slots are
-not re-graded (the run never graded them either), so the rebuilt report sees
-the same counts as the run; the run's status and `failureReason` are carried
-over from the previous report when one exists.
+and trial artifacts (see the command surface above). The manifest's task,
+condition and gate declarations are re-validated on the rebuild path (the
+manifest is untrusted input: a copied or hand-edited manifest fails with a
+configuration error instead of panicking the graders or reading outside the
+trial directory). Not-started slots are not re-graded (the run never graded
+them either), so the rebuilt report sees the same counts as the run; the
+run's status and `failureReason` are carried over from the previous report
+when one exists.
 
 ## Artifacts
 

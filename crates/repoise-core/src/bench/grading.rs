@@ -353,7 +353,11 @@ pub fn grade_and_write(
                              (see the AP-05 plan); the result must be written as a manual \
                              grading record",
                             ),
-                            _ => unreachable!("validated method"),
+                            other => {
+                                return Err(format!(
+                                    "evaluator method '{other}' is not a validated method"
+                                ));
+                            }
                         },
                     }
                 }
@@ -375,7 +379,8 @@ pub fn grade_and_write(
                 } else {
                     let answer = extract_final_answer(&adapter_dir, &evaluator.answer_field)?;
                     let (checks, all_passed) =
-                        evaluate_checks(&evaluator.checks, answer.as_deref(), &adapter_dir);
+                        evaluate_checks(&evaluator.checks, answer.as_deref(), &adapter_dir)
+                            .map_err(|err| format!("check evaluation failed: {err}"))?;
                     Grading {
                         status: if all_passed { "pass" } else { "fail" }.into(),
                         method: "deterministic".into(),
@@ -436,6 +441,19 @@ fn read_guarded_artifact(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Refuses artifact names that would not stay inside the adapter directory
+/// (belt and braces over suite validation, which the rebuild path re-runs):
+/// only plain file names are joined; path separators, dot entries and
+/// absolute paths are rejected instead of resolved against `adapter_dir`.
+fn artifact_name_escapes(name: &str) -> bool {
+    name.is_empty()
+        || Path::new(name).is_absolute()
+        || name.as_bytes().contains(&b'/')
+        || name.as_bytes().contains(&92) // backslash
+        || name == "."
+        || name == ".."
+}
+
 /// Reads the final event of the adapter event log and returns the declared
 /// answer field when it is a string.
 fn extract_final_answer(adapter_dir: &Path, answer_field: &str) -> Result<Option<String>, String> {
@@ -492,17 +510,35 @@ fn evaluate_checks(
     checks: &[super::suite::Check],
     answer: Option<&str>,
     adapter_dir: &Path,
-) -> (Vec<Value>, bool) {
+) -> Result<(Vec<Value>, bool), String> {
     let mut records: Vec<Value> = Vec::new();
     let mut all_passed = true;
     for check in checks {
         let haystack: Option<String> = match check.scope.as_str() {
             "answer" => answer.map(str::to_string),
             "artifact" => {
-                let name = check.artifact.as_deref().expect("validated artifact");
+                let Some(name) = check.artifact.as_deref() else {
+                    return Err(format!(
+                        "check '{}' declares scope 'artifact' without an artifact name",
+                        check.id
+                    ));
+                };
+                if artifact_name_escapes(name) {
+                    return Err(format!(
+                        "check '{}' artifact name '{}' is not a plain file name; \
+                         artifact files are read as adapter/<name> only",
+                        check.id, name
+                    ));
+                }
                 read_guarded_artifact(&adapter_dir.join(name))
             }
-            other => unreachable!("validated scope: {other}"),
+            other => {
+                return Err(format!(
+                    "check '{}' declares unknown scope '{other}' (expected 'answer' or \
+                     'artifact')",
+                    check.id
+                ));
+            }
         };
         let passed = match check.kind.as_str() {
             "containsAny" => haystack
@@ -517,7 +553,13 @@ fn evaluate_checks(
                     .iter()
                     .any(|value| text.contains(value.as_str()))
             }),
-            other => unreachable!("validated check type: {other}"),
+            other => {
+                return Err(format!(
+                    "check '{}' declares unknown type '{other}' (expected containsAny, \
+                     containsAll or notContains)",
+                    check.id
+                ));
+            }
         };
         all_passed = all_passed && passed;
         let detail = match check.kind.as_str() {
@@ -567,7 +609,13 @@ fn evaluate_checks(
                     format!("found forbidden: {}", found.join(", "))
                 }
             },
-            other => unreachable!("validated check type: {other}"),
+            other => {
+                return Err(format!(
+                    "check '{}' declares unknown type '{other}' (expected containsAny, \
+                     containsAll or notContains)",
+                    check.id
+                ));
+            }
         };
         records.push(serde_json::json!({
             "id": check.id,
@@ -579,7 +627,7 @@ fn evaluate_checks(
             "note": check.note
         }));
     }
-    (records, all_passed)
+    Ok((records, all_passed))
 }
 
 fn evidence_detail(scope: &str, artifact: &Option<String>) -> String {
@@ -1149,6 +1197,74 @@ mod tests {
         })])));
         let err = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
         assert!(err.contains("not a regular file"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unvalidated_check_declarations_fail_instead_of_panicking() {
+        // A hand-edited manifest can carry check declarations that
+        // `Suite::validate` would reject. The grader must fail with an
+        // evaluator error (never panic) and must never read outside the
+        // adapter directory.
+        use crate::bench::suite::Check;
+        let dir = temp_dir("unvalidated-checks");
+        std::fs::create_dir_all(dir.join("adapter")).unwrap();
+        std::fs::write(
+            dir.join("adapter").join("events.ndjson"),
+            r#"{"t":"final","data":{"answer":"ok"}}"#,
+        )
+        .unwrap();
+        let check = |scope: &str, kind: &str, artifact: Option<&str>| Check {
+            id: "c1".into(),
+            scope: scope.into(),
+            artifact: artifact.map(str::to_string),
+            kind: kind.into(),
+            values: vec!["ok".into()],
+            note: None,
+        };
+        let evaluator = |scope: &str, kind: &str, artifact: Option<&str>| Evaluator {
+            method: "deterministic".into(),
+            answer_field: "answer".into(),
+            rubric: None,
+            checks: vec![check(scope, kind, artifact)],
+        };
+        let err = grade_and_write(
+            &task_with(Some(evaluator("answer", "regex", None))),
+            &dir,
+            "t1",
+            "cond",
+            0,
+            "completed",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown type"), "{err}");
+        let err = grade_and_write(
+            &task_with(Some(evaluator("artifact", "containsAll", None))),
+            &dir,
+            "t1",
+            "cond",
+            0,
+            "completed",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("without an artifact name"), "{err}");
+        let err = grade_and_write(
+            &task_with(Some(evaluator(
+                "artifact",
+                "containsAll",
+                Some("../../escape.txt"),
+            ))),
+            &dir,
+            "t1",
+            "cond",
+            0,
+            "completed",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("plain file name"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

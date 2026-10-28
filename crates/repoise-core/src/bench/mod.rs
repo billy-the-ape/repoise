@@ -631,6 +631,40 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
                 .map_err(|err| Error::Json(err.to_string()))?,
         )
     };
+    // The manifest is untrusted input on the rebuild path: a copied or
+    // hand-edited manifest must fail the same semantic rules the run
+    // validated, instead of panicking the graders or escaping the trial
+    // directory through an artifact name.
+    let mut problems: Vec<String> = Vec::new();
+    if tasks.is_empty() {
+        problems.push("manifest declares no tasks".into());
+    }
+    let mut seen_task_ids: Vec<&str> = Vec::new();
+    for task in &tasks {
+        if !task.id.is_empty() {
+            if seen_task_ids.contains(&task.id.as_str()) {
+                problems.push(format!("duplicate task id '{}'", task.id));
+            } else {
+                seen_task_ids.push(&task.id);
+            }
+        }
+        problems.extend(suite::task_problems(&task.grading_task()));
+    }
+    if conditions.is_empty() {
+        problems.push("manifest declares no conditions".into());
+    }
+    problems.extend(suite::condition_problems(&conditions));
+    if let Some(gates) = &gates {
+        problems.extend(suite::gates_problems(gates, &conditions));
+    }
+    if !problems.is_empty() {
+        return Err(Error::Config(format!(
+            "manifest for experiment '{}' failed validation: {}",
+            request.experiment_id,
+            problems.join("; ")
+        )));
+    }
+
     let planned = manifest["trials"]
         .as_array()
         .map(|trials| trials.len())
@@ -1094,6 +1128,93 @@ mod tests {
             manual
         );
         assert_eq!(outcome.payload["grading"]["overall"]["pass"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_refuses_a_corrupt_manifest_without_panic() {
+        // A manifest a validated run would never have written: an unknown
+        // check type and an artifact name that escapes the adapter
+        // directory. The rebuild must fail preflight instead of panicking
+        // the grader or reading outside the trial directory.
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-rebuild-corrupt-{}",
+            std::process::id()
+        ));
+        let experiment = dir.join("exp");
+        let trials_dir = experiment.join("trials");
+        std::fs::create_dir_all(trials_dir.join("t-1").join("adapter")).unwrap();
+
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "expectedArtifacts": ["../../escape.txt"],
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [
+                        { "id": "c1", "type": "regex", "values": ["ok"] },
+                        {
+                            "id": "c2",
+                            "scope": "artifact",
+                            "type": "containsAll",
+                            "artifact": "../../escape.txt",
+                            "values": ["x"]
+                        }
+                    ]
+                }
+            }],
+            "conditions": [{ "id": "cond", "retrievalMode": "baseline" }],
+            "gates": null,
+            "report": null,
+            "trials": [
+                { "trialId": "t-1", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 0 }
+            ]
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            trials_dir.join("t-1").join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t-1",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "completed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            trials_dir.join("t-1").join("adapter").join("events.ndjson"),
+            r#"{"t":"final","data":{"answer":"ok"}}"#,
+        )
+        .unwrap();
+
+        let err = match rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("rebuild of a corrupt manifest must fail"),
+        };
+        let message = err.to_string();
+        assert!(message.contains("failed validation"), "{}", message);
+        assert!(message.contains("regex"), "{}", message);
+        assert!(message.contains("plain file name"), "{}", message);
+        assert!(
+            !trials_dir.join("t-1").join("grading.json").exists(),
+            "a corrupt manifest must not be graded"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

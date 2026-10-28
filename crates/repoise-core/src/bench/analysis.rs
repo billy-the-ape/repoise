@@ -29,14 +29,18 @@ pub struct TrialData {
     pub grading: Option<Value>,
 }
 
-/// Timed-out trials: the coordinator records the host wall-clock timeout
-/// (`wall_clock_exceeded`) and the outer watchdog (`host_watchdog`).
+/// Timed-out trials: the coordinator records the per-trial wall-clock
+/// timeout as status `error` with reason `wall_clock_exceeded`; when the
+/// outer watchdog force-kills the bridge instead, the trial is recorded as
+/// `infra_error` (or `cancelled` on a coincident interrupt) with reason
+/// `host_watchdog`. Both are censored timeouts: the agent ran out of its
+/// wall-clock budget, so the trial keeps its recorded agentMs (at or above
+/// the cap) and is never read as an infra failure.
 pub fn is_timed_out(trial: &Value) -> bool {
-    trial.get("status").and_then(Value::as_str) == Some("error")
-        && trial
-            .get("reason")
-            .and_then(Value::as_str)
-            .is_some_and(|reason| matches!(reason, "wall_clock_exceeded" | "host_watchdog"))
+    trial
+        .get("reason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| matches!(reason, "wall_clock_exceeded" | "host_watchdog"))
 }
 
 fn grading_status(trial: &TrialData) -> Option<&str> {
@@ -82,7 +86,7 @@ pub fn counts(trials: &[TrialData], planned: usize) -> Value {
     for trial in trials {
         match trial.trial["status"].as_str() {
             Some("completed") => completed += 1,
-            Some("error") if is_timed_out(&trial.trial) => timed_out += 1,
+            _ if is_timed_out(&trial.trial) => timed_out += 1,
             Some("error") | Some("infra_error") => invalid += 1,
             Some("cancelled") => cancelled += 1,
             _ => {}
@@ -270,7 +274,10 @@ fn metric_values(
         let value = match metric {
             "agentMs" => trial.trial.pointer("/timings/agentMs"),
             "inputTokens" => trial.trial.pointer("/usage/inputTokens"),
-            _ => unreachable!("validated metric"),
+            // An unvalidated metric (a hand-edited manifest racing the
+            // rebuild validation) measures nothing: the task is excluded
+            // with the reason naming the metric.
+            _ => None,
         };
         if let Some(value) = value.and_then(Value::as_f64) {
             values.push(value);
@@ -290,7 +297,7 @@ fn condition_metric_values(trials: &[TrialData], condition_id: &str, metric: &st
                 .pointer(match metric {
                     "agentMs" => "/timings/agentMs",
                     "inputTokens" => "/usage/inputTokens",
-                    _ => unreachable!("validated metric"),
+                    _ => "/never",
                 })
                 .and_then(Value::as_f64)
         })
@@ -368,6 +375,41 @@ pub fn paired_analysis(
 ) -> Value {
     let mut comparisons: Vec<Value> = Vec::new();
     for improvement in &gates.improvements {
+        if !super::suite::IMPROVEMENT_METRICS.contains(&improvement.metric.as_str()) {
+            // A hand-edited manifest can declare an unsupported metric; name
+            // it per task instead of panicking or silently comparing nothing.
+            comparisons.push(serde_json::json!({
+                "baseline": gates.baseline,
+                "candidate": improvement.candidate,
+                "metric": improvement.metric,
+                "threshold": improvement.threshold,
+                "pairedTasks": 0,
+                "excludedTasks": tasks
+                    .iter()
+                    .map(|task| serde_json::json!({
+                        "taskId": task.id,
+                        "reason": format!(
+                            "declared metric '{}' is not a supported metric ({})",
+                            improvement.metric,
+                            super::suite::IMPROVEMENT_METRICS.join(", ")
+                        )
+                    }))
+                    .collect::<Vec<_>>(),
+                "zeroBaselineTasks": Vec::<String>::new(),
+                "zeroBaselineNote": Value::Null,
+                "medianPairedDifference": Value::Null,
+                "medianPairedReduction": Value::Null,
+                "pairedDifferenceCi": Value::Null,
+                "smallSampleNote": Value::Null,
+                "descriptive": {
+                    gates.baseline.as_str(): descriptive_condition_stats(trials, &gates.baseline),
+                    improvement.candidate.as_str(): descriptive_condition_stats(
+                        trials, &improvement.candidate
+                    )
+                }
+            }));
+            continue;
+        }
         let mut paired_diffs: Vec<f64> = Vec::new();
         let mut paired_reductions: Vec<f64> = Vec::new();
         let mut zero_baseline_tasks: Vec<String> = Vec::new();
@@ -1467,5 +1509,76 @@ mod tests {
         assert!(md.contains("success-only median agentMs"));
         assert!(md.contains("## Quality gate: pass"));
         assert!(md.contains("censored"));
+    }
+
+    #[test]
+    fn host_watchdog_kill_is_a_censored_timeout() {
+        // The outer watchdog force-kills the bridge: with no result.json
+        // the trial is recorded as `infra_error` (not `error`) with reason
+        // `host_watchdog`. It must still count as a timed-out trial and
+        // contribute its recorded (capped) agentMs to the paired metric.
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "infra_error",
+                Some("host_watchdog"),
+                Some(900_000),
+                None,
+                None,
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "completed",
+                None,
+                Some(1_000),
+                None,
+                Some("pass"),
+            ),
+        ];
+        let counts = counts(&trials, 2);
+        assert_eq!(counts["timedOut"], 1);
+        assert_eq!(counts["invalid"], 0);
+        assert_eq!(counts["completed"], 1);
+
+        let paired = paired_analysis(&trials, &base_tasks(), &gates(), &report_spec());
+        let reduction = paired["comparisons"][0]["medianPairedReduction"]
+            .as_f64()
+            .unwrap();
+        assert!((reduction - (900_000.0 - 1_000.0) / 900_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unknown_declared_metric_is_named_not_panicked() {
+        // A hand-edited manifest can declare an unsupported gate metric. The
+        // comparison names it per task and the gate check is
+        // insufficient_data, never a panic.
+        let trials = vec![trial(
+            "task-a",
+            "baseline",
+            "completed",
+            None,
+            Some(1_000),
+            None,
+            Some("pass"),
+        )];
+        let gates: Gates = serde_json::from_value(json!({
+            "baseline": "baseline",
+            "minCorrectness": 1.0,
+            "improvements": [{ "candidate": "candidate", "metric": "tokens", "threshold": 0.10 }]
+        }))
+        .unwrap();
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let comparison = &paired["comparisons"][0];
+        assert_eq!(comparison["pairedTasks"], 0);
+        assert!(
+            comparison["excludedTasks"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("not a supported metric")
+        );
+        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        assert_eq!(gate["status"], "insufficient_data");
     }
 }

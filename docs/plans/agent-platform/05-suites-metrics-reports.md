@@ -58,6 +58,19 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   slots are never re-graded (the run never graded them either), so the
   rebuilt report sees the same counts as the run, and the run's status and
   `failureReason` carry over from the previous report when one exists.
+- Fixes from the PR review round: a `humanRubric` evaluator without a rubric
+  (or with a blank one) fails suite validation, matching the schema, docs
+  and `Evaluator` doc comment (the checked-in suite schema enforces it with
+  an `if`/`then` rule); the rebuild path re-validates the frozen manifest's
+  task, condition and gate declarations (the manifest is untrusted input — a
+  copied or hand-edited manifest fails with a configuration error instead
+  of panicking a grader or reading outside the trial directory), and
+  structural check-declaration defects (unknown scope/type, artifact scope
+  without a name, non-plain artifact names) degrade to an `evaluator_error`
+  instead of panicking; trials killed by the coordinator's outer watchdog
+  (`infra_error` or `cancelled` with reason `host_watchdog`) are counted as
+  censored timeouts that keep their recorded capped agent time, not as
+  infra failures.
 
 Deliberately deferred (open decisions before AP-06, per the acceptance
 section): model-judge runtime and calibration, grading-plugin isolation

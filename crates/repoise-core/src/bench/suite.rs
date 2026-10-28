@@ -519,6 +519,270 @@ impl TaskProvenance {
     }
 }
 
+/// Per-task validation problems. Shared by [`Suite::validate`] and the
+/// report rebuild, which re-validates the task declarations frozen into the
+/// manifest so a copied or hand-edited manifest fails the same rules.
+pub(crate) fn task_problems(task: &Task) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
+    if task.id.trim().is_empty() {
+        problems.push("task id must not be empty".into());
+    } else if let Some(problem) = id_charset_problem(&task.id) {
+        problems.push(problem);
+    }
+    let has_prompt = task.prompt.is_some();
+    let has_file = task.prompt_file.is_some();
+    if has_prompt == has_file {
+        problems.push(format!(
+            "task '{}' must set exactly one of prompt/promptFile",
+            task.id
+        ));
+    }
+    if let Some(category) = &task.category
+        && !TASK_CATEGORIES.contains(&category.as_str())
+    {
+        problems.push(format!(
+            "task '{}' category '{}' is not one of: {}",
+            task.id,
+            category,
+            TASK_CATEGORIES.join(", ")
+        ));
+    }
+    for prefix in &task.allowed_paths {
+        if prefix.trim().is_empty() {
+            problems.push(format!(
+                "task '{}' allowedPaths must not contain empty entries",
+                task.id
+            ));
+        }
+    }
+    let mut artifact_names: Vec<&str> = Vec::new();
+    for artifact in &task.expected_artifacts {
+        match artifact_name_problem(artifact) {
+            Some(problem) => problems.push(format!(
+                "task '{}' expectedArtifacts entry '{}': {}",
+                task.id, artifact, problem
+            )),
+            None if artifact_names.contains(&artifact.as_str()) => problems.push(format!(
+                "task '{}' expectedArtifacts entry '{}' is duplicated",
+                task.id, artifact
+            )),
+            None => artifact_names.push(artifact.as_str()),
+        }
+    }
+    if let Some(evaluator) = &task.evaluator {
+        if !EVALUATOR_METHODS.contains(&evaluator.method.as_str()) {
+            problems.push(format!(
+                "task '{}' evaluator.method '{}' is not one of: {}",
+                task.id,
+                evaluator.method,
+                EVALUATOR_METHODS.join(", ")
+            ));
+        }
+        if evaluator.answer_field.trim().is_empty()
+            || !evaluator
+                .answer_field
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            problems.push(format!(
+                "task '{}' evaluator.answerField '{}' must be a non-empty [A-Za-z0-9_] field name",
+                task.id, evaluator.answer_field
+            ));
+        }
+        match evaluator.method.as_str() {
+            "deterministic" => {
+                if evaluator.checks.is_empty() {
+                    problems.push(format!(
+                        "task '{}' deterministic evaluator requires at least one check",
+                        task.id
+                    ));
+                }
+            }
+            "humanRubric" => {
+                if evaluator
+                    .rubric
+                    .as_deref()
+                    .is_none_or(|text| text.trim().is_empty())
+                {
+                    problems.push(format!(
+                        "task '{}' humanRubric evaluator requires a non-empty rubric",
+                        task.id
+                    ));
+                }
+                if !evaluator.checks.is_empty() {
+                    problems.push(format!(
+                        "task '{}' humanRubric evaluator must not declare checks (grading is written as a manual grading record)",
+                        task.id
+                    ));
+                }
+            }
+            "modelJudge" if !evaluator.checks.is_empty() => {
+                problems.push(format!(
+                    "task '{}' modelJudge evaluator must not declare checks (no model judge runs in this build; grading must be independent of the tested model)",
+                    task.id
+                ))
+            }
+            _ => {}
+        }
+        let mut check_ids: Vec<&str> = Vec::new();
+        for check in &evaluator.checks {
+            let check_where = format!("task '{}' check '{}'", task.id, check.id);
+            if check.id.trim().is_empty() {
+                problems.push(format!("task '{}' has a check with an empty id", task.id));
+            } else if check_ids.contains(&check.id.as_str()) {
+                problems.push(format!("{} id is duplicated", check_where));
+            } else {
+                check_ids.push(check.id.as_str());
+            }
+            if !CHECK_TYPES.contains(&check.kind.as_str()) {
+                problems.push(format!(
+                    "{}: type '{}' is not one of: {}",
+                    check_where,
+                    check.kind,
+                    CHECK_TYPES.join(", ")
+                ));
+            }
+            if check.values.is_empty() {
+                problems.push(format!("{}: values must not be empty", check_where));
+            }
+            match check.scope.as_str() {
+                "answer" => {
+                    if check.artifact.is_some() {
+                        problems.push(format!(
+                            "{}: scope 'answer' must not set artifact",
+                            check_where
+                        ));
+                    }
+                }
+                "artifact" => match check.artifact.as_deref() {
+                    Some(artifact) if artifact_names.contains(&artifact) => {}
+                    Some(artifact) => {
+                        problems.push(format!(
+                            "{}: artifact '{}' is not listed in the task's expectedArtifacts",
+                            check_where, artifact
+                        ));
+                    }
+                    None => {
+                        problems.push(format!(
+                            "{}: scope 'artifact' requires artifact",
+                            check_where
+                        ));
+                    }
+                },
+                other => {
+                    problems.push(format!(
+                        "{}: scope must be 'answer' or 'artifact', got '{}'",
+                        check_where, other
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// Per-condition validation problems (including cross-condition id
+/// uniqueness). Shared by [`Suite::validate`] and the report rebuild.
+pub(crate) fn condition_problems(conditions: &[Condition]) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
+    let mut condition_ids: Vec<&str> = Vec::new();
+    for condition in conditions {
+        if condition.id.trim().is_empty() {
+            problems.push("condition id must not be empty".into());
+        } else if id_charset_problem(&condition.id).is_some() {
+            problems.push(id_charset_problem(&condition.id).unwrap());
+        } else if condition_ids.contains(&condition.id.as_str()) {
+            problems.push(format!("duplicate condition id '{}'", condition.id));
+        } else {
+            condition_ids.push(&condition.id);
+        }
+        match condition.retrieval_mode.as_str() {
+            "baseline" => {
+                if condition.search_mode.is_some() {
+                    problems.push(format!(
+                        "condition '{}' is baseline; searchMode must be omitted",
+                        condition.id
+                    ));
+                }
+            }
+            "repoise" => match condition.search_mode.as_deref() {
+                Some("lexical") | Some("hybrid") => {}
+                Some(other) => problems.push(format!(
+                    "condition '{}' searchMode must be 'lexical' or 'hybrid', got '{other}'",
+                    condition.id
+                )),
+                None => problems.push(format!(
+                    "condition '{}' is repoise; searchMode is required",
+                    condition.id
+                )),
+            },
+            other => problems.push(format!(
+                "condition '{}' retrievalMode must be 'baseline' or 'repoise', got '{other}'",
+                condition.id
+            )),
+        }
+    }
+    problems
+}
+
+/// Gate declaration problems checked against the declared conditions.
+/// Shared by [`Suite::validate`] and the report rebuild.
+pub(crate) fn gates_problems(gates: &Gates, conditions: &[Condition]) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
+    if !conditions
+        .iter()
+        .any(|condition| condition.id == gates.baseline)
+    {
+        problems.push(format!(
+            "gates.baseline '{}' is not a declared condition id",
+            gates.baseline
+        ));
+    }
+    if !(0.0..=1.0).contains(&gates.min_correctness) {
+        problems.push("gates.minCorrectness must be a fraction in [0, 1]".into());
+    }
+    if !(0.0..=1.0).contains(&gates.correctness_margin) {
+        problems.push("gates.correctnessMargin must be a fraction in [0, 1]".into());
+    }
+    let mut candidates: Vec<&str> = Vec::new();
+    for improvement in &gates.improvements {
+        if !conditions
+            .iter()
+            .any(|condition| condition.id == improvement.candidate)
+        {
+            problems.push(format!(
+                "gates.improvements candidate '{}' is not a declared condition id",
+                improvement.candidate
+            ));
+        }
+        if improvement.candidate == gates.baseline {
+            problems.push(format!(
+                "gates.improvements candidate '{}' must differ from the baseline",
+                improvement.candidate
+            ));
+        }
+        if !IMPROVEMENT_METRICS.contains(&improvement.metric.as_str()) {
+            problems.push(format!(
+                "gates.improvements metric '{}' must be one of: {}",
+                improvement.metric,
+                IMPROVEMENT_METRICS.join(", ")
+            ));
+        }
+        if !(improvement.threshold > 0.0 && improvement.threshold <= 1.0) {
+            problems.push("gates.improvements threshold must be a fraction in (0, 1]".into());
+        }
+        if candidates.contains(&improvement.candidate.as_str()) {
+            problems.push(format!(
+                "gates.improvements candidate '{}' is declared twice",
+                improvement.candidate
+            ));
+        } else {
+            candidates.push(improvement.candidate.as_str());
+        }
+    }
+    problems
+}
+
 impl Suite {
     /// Validates the semantic rules the schema cannot express.
     pub fn validate(&self) -> Result<(), Error> {
@@ -552,202 +816,16 @@ impl Suite {
         }
         let mut task_ids: Vec<&str> = Vec::new();
         for task in &self.tasks {
-            if task.id.trim().is_empty() {
-                problems.push("task id must not be empty".into());
-            } else if id_charset_problem(&task.id).is_some() {
-                problems.push(id_charset_problem(&task.id).unwrap());
-            } else if task_ids.contains(&task.id.as_str()) {
+            let id_usable = !task.id.trim().is_empty() && id_charset_problem(&task.id).is_none();
+            if id_usable && task_ids.contains(&task.id.as_str()) {
                 problems.push(format!("duplicate task id '{}'", task.id));
-            } else {
+            } else if id_usable {
                 task_ids.push(&task.id);
             }
-            let has_prompt = task.prompt.is_some();
-            let has_file = task.prompt_file.is_some();
-            if has_prompt == has_file {
-                problems.push(format!(
-                    "task '{}' must set exactly one of prompt/promptFile",
-                    task.id
-                ));
-            }
-            if let Some(category) = &task.category
-                && !TASK_CATEGORIES.contains(&category.as_str())
-            {
-                problems.push(format!(
-                    "task '{}' category '{}' is not one of: {}",
-                    task.id,
-                    category,
-                    TASK_CATEGORIES.join(", ")
-                ));
-            }
-            for prefix in &task.allowed_paths {
-                if prefix.trim().is_empty() {
-                    problems.push(format!(
-                        "task '{}' allowedPaths must not contain empty entries",
-                        task.id
-                    ));
-                }
-            }
-            let mut artifact_names: Vec<&str> = Vec::new();
-            for artifact in &task.expected_artifacts {
-                match artifact_name_problem(artifact) {
-                    Some(problem) => problems.push(format!(
-                        "task '{}' expectedArtifacts entry '{}': {}",
-                        task.id, artifact, problem
-                    )),
-                    None if artifact_names.contains(&artifact.as_str()) => problems.push(format!(
-                        "task '{}' expectedArtifacts entry '{}' is duplicated",
-                        task.id, artifact
-                    )),
-                    None => artifact_names.push(artifact.as_str()),
-                }
-            }
-            if let Some(evaluator) = &task.evaluator {
-                if !EVALUATOR_METHODS.contains(&evaluator.method.as_str()) {
-                    problems.push(format!(
-                        "task '{}' evaluator.method '{}' is not one of: {}",
-                        task.id,
-                        evaluator.method,
-                        EVALUATOR_METHODS.join(", ")
-                    ));
-                }
-                if evaluator.answer_field.trim().is_empty()
-                    || !evaluator
-                        .answer_field
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    problems.push(format!(
-                        "task '{}' evaluator.answerField '{}' must be a non-empty [A-Za-z0-9_] field name",
-                        task.id, evaluator.answer_field
-                    ));
-                }
-                match evaluator.method.as_str() {
-                    "deterministic" => {
-                        if evaluator.checks.is_empty() {
-                            problems.push(format!(
-                                "task '{}' deterministic evaluator requires at least one check",
-                                task.id
-                            ));
-                        }
-                    }
-                    "humanRubric" => {
-                        if evaluator
-                            .rubric
-                            .as_deref()
-                            .is_some_and(|text| text.trim().is_empty())
-                        {
-                            problems.push(format!(
-                                "task '{}' humanRubric evaluator requires a non-empty rubric",
-                                task.id
-                            ));
-                        }
-                        if !evaluator.checks.is_empty() {
-                            problems.push(format!(
-                                "task '{}' humanRubric evaluator must not declare checks (grading is written as a manual grading record)",
-                                task.id
-                            ));
-                        }
-                    }
-                    "modelJudge" if !evaluator.checks.is_empty() => {
-                        problems.push(format!(
-                            "task '{}' modelJudge evaluator must not declare checks (no model judge runs in this build; grading must be independent of the tested model)",
-                            task.id
-                        ))
-                    }
-                    _ => {}
-                }
-                let mut check_ids: Vec<&str> = Vec::new();
-                for check in &evaluator.checks {
-                    let check_where = format!("task '{}' check '{}'", task.id, check.id);
-                    if check.id.trim().is_empty() {
-                        problems.push(format!("task '{}' has a check with an empty id", task.id));
-                    } else if check_ids.contains(&check.id.as_str()) {
-                        problems.push(format!("{} id is duplicated", check_where));
-                    } else {
-                        check_ids.push(check.id.as_str());
-                    }
-                    if !CHECK_TYPES.contains(&check.kind.as_str()) {
-                        problems.push(format!(
-                            "{}: type '{}' is not one of: {}",
-                            check_where,
-                            check.kind,
-                            CHECK_TYPES.join(", ")
-                        ));
-                    }
-                    if check.values.is_empty() {
-                        problems.push(format!("{}: values must not be empty", check_where));
-                    }
-                    match check.scope.as_str() {
-                        "answer" => {
-                            if check.artifact.is_some() {
-                                problems.push(format!(
-                                    "{}: scope 'answer' must not set artifact",
-                                    check_where
-                                ));
-                            }
-                        }
-                        "artifact" => match check.artifact.as_deref() {
-                            Some(artifact) if artifact_names.contains(&artifact) => {}
-                            Some(artifact) => {
-                                problems.push(format!(
-                                    "{}: artifact '{}' is not listed in the task's expectedArtifacts",
-                                    check_where, artifact
-                                ));
-                            }
-                            None => {
-                                problems.push(format!(
-                                    "{}: scope 'artifact' requires artifact",
-                                    check_where
-                                ));
-                            }
-                        },
-                        other => {
-                            problems.push(format!(
-                                "{}: scope must be 'answer' or 'artifact', got '{}'",
-                                check_where, other
-                            ));
-                        }
-                    }
-                }
-            }
+            problems.extend(task_problems(task));
         }
-        let mut condition_ids: Vec<&str> = Vec::new();
-        for condition in &self.conditions {
-            if condition.id.trim().is_empty() {
-                problems.push("condition id must not be empty".into());
-            } else if id_charset_problem(&condition.id).is_some() {
-                problems.push(id_charset_problem(&condition.id).unwrap());
-            } else if condition_ids.contains(&condition.id.as_str()) {
-                problems.push(format!("duplicate condition id '{}'", condition.id));
-            } else {
-                condition_ids.push(&condition.id);
-            }
-            match condition.retrieval_mode.as_str() {
-                "baseline" => {
-                    if condition.search_mode.is_some() {
-                        problems.push(format!(
-                            "condition '{}' is baseline; searchMode must be omitted",
-                            condition.id
-                        ));
-                    }
-                }
-                "repoise" => match condition.search_mode.as_deref() {
-                    Some("lexical") | Some("hybrid") => {}
-                    Some(other) => problems.push(format!(
-                        "condition '{}' searchMode must be 'lexical' or 'hybrid', got '{other}'",
-                        condition.id
-                    )),
-                    None => problems.push(format!(
-                        "condition '{}' is repoise; searchMode is required",
-                        condition.id
-                    )),
-                },
-                other => problems.push(format!(
-                    "condition '{}' retrievalMode must be 'baseline' or 'repoise', got '{other}'",
-                    condition.id
-                )),
-            }
-        }
+        problems.extend(condition_problems(&self.conditions));
+
         // Trial ids are generated from sanitized task/condition ids joined
         // with `-`, so distinct ids can collide across the task/condition
         // boundary (task `a` + condition `r0-x` and task `a-r0` +
@@ -809,60 +887,7 @@ impl Suite {
             }
         }
         if let Some(gates) = &self.gates {
-            if !self
-                .conditions
-                .iter()
-                .any(|condition| condition.id == gates.baseline)
-            {
-                problems.push(format!(
-                    "gates.baseline '{}' is not a declared condition id",
-                    gates.baseline
-                ));
-            }
-            if !(0.0..=1.0).contains(&gates.min_correctness) {
-                problems.push("gates.minCorrectness must be a fraction in [0, 1]".into());
-            }
-            if !(0.0..=1.0).contains(&gates.correctness_margin) {
-                problems.push("gates.correctnessMargin must be a fraction in [0, 1]".into());
-            }
-            let mut candidates: Vec<&str> = Vec::new();
-            for improvement in &gates.improvements {
-                if !self
-                    .conditions
-                    .iter()
-                    .any(|condition| condition.id == improvement.candidate)
-                {
-                    problems.push(format!(
-                        "gates.improvements candidate '{}' is not a declared condition id",
-                        improvement.candidate
-                    ));
-                }
-                if improvement.candidate == gates.baseline {
-                    problems.push(format!(
-                        "gates.improvements candidate '{}' must differ from the baseline",
-                        improvement.candidate
-                    ));
-                }
-                if !IMPROVEMENT_METRICS.contains(&improvement.metric.as_str()) {
-                    problems.push(format!(
-                        "gates.improvements metric '{}' must be one of: {}",
-                        improvement.metric,
-                        IMPROVEMENT_METRICS.join(", ")
-                    ));
-                }
-                if !(improvement.threshold > 0.0 && improvement.threshold <= 1.0) {
-                    problems
-                        .push("gates.improvements threshold must be a fraction in (0, 1]".into());
-                }
-                if candidates.contains(&improvement.candidate.as_str()) {
-                    problems.push(format!(
-                        "gates.improvements candidate '{}' is declared twice",
-                        improvement.candidate
-                    ));
-                } else {
-                    candidates.push(improvement.candidate.as_str());
-                }
-            }
+            problems.extend(gates_problems(gates, &self.conditions));
         }
         if let Some(report) = &self.report
             && report.bootstrap_iterations == 0
@@ -983,6 +1008,32 @@ mod tests {
             let err = suite.validate().unwrap_err();
             assert!(err.to_string().contains("[A-Za-z0-9_-]"), "{id}: {err}");
         }
+    }
+
+    #[test]
+    fn human_rubric_requires_a_rubric() {
+        // A declared humanRubric evaluator without any rubric fails
+        // validation (the rubric is what the operator reviews against); a
+        // whitespace-only rubric is rejected the same way.
+        for evaluator in [
+            serde_json::json!({ "method": "humanRubric" }),
+            serde_json::json!({ "method": "humanRubric", "rubric": "   " }),
+        ] {
+            let mut value = valid_suite_json();
+            value["tasks"][0]["evaluator"] = evaluator.clone();
+            let suite: Suite = serde_json::from_value(value).unwrap();
+            let err = suite.validate().unwrap_err();
+            assert!(
+                err.to_string().contains("requires a non-empty rubric"),
+                "{evaluator}: {err}"
+            );
+        }
+        // With a rubric the declaration validates.
+        let mut value = valid_suite_json();
+        value["tasks"][0]["evaluator"] =
+            serde_json::json!({ "method": "humanRubric", "rubric": "answer the question" });
+        let suite: Suite = serde_json::from_value(value).unwrap();
+        assert!(suite.validate().is_ok());
     }
 
     #[test]
