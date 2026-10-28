@@ -22,19 +22,27 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   (`containsAny`/`containsAll`/`notContains`, case-sensitive substring;
   alternative correct evidence accepted, exact equality deliberately not the
   default; an absent answer or artifact fails every check — including
-  `notContains` — so a trial that produced no answer is `fail`); censored
+  `notContains` — so a trial that produced no answer is `fail`); declared
+  artifact files and the adapter event log are read only when they are
+  regular files (symlinks/devices are treated as not produced) and with a
+  size cap; censored
   (timed-out/failed) trials are `not_graded`, never wrong answers; `humanRubric`/`modelJudge` are declared-only in this build —
   operator-written manual records are validated and kept verbatim (never
   relabeled as engine records, so repeated rebuilds never lose them),
-  engine records (`source: "engine"`) are replaced, invalid manual records
-  are `evaluator_error` and that recorded error stays in place across
-  rebuilds until a valid manual record replaces it.
+  engine records (`source: "engine"`) are replaced, and invalid or
+  unparseable operator records are `evaluator_error`: the operator's file is
+  preserved at `grading.json.rejected` (never clobbered in place) and the
+  recorded error is re-emitted verbatim across rebuilds until a valid
+  manual record replaces it.
 - Report (`report.json` schema v1 + `report.md` rendered from the same
   object): status/grading counts (planned/attempted/completed/timed-out/
   cancelled/invalid/not-started; nothing dropped), overall/per-condition/
   per-task grading summaries with the held-out split, and — only when `gates`
   is predeclared — paired per-task analysis (median paired difference and
-  reduction over tasks with data on both sides, zero-baseline undefined-
+  reduction over tasks with metric-eligible data on both sides — only
+  completed and timed-out trials contribute values; other trial statuses
+  are excluded and counted in the per-task exclusion reasons — zero-baseline
+  undefined-
   reduction note, task-cluster bootstrap percentile interval with recorded
   seed/iterations, labelled success-only medians, timeout rate) and the
   predeclared quality gate (`pass`/`fail`/`insufficient_data`/

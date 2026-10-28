@@ -235,22 +235,36 @@ pub fn grading_summary(trials: &[TrialData], tasks: &[TaskProvenance]) -> Value 
         "byTask": by_task
     })
 }
-/// The measured metric values for one (task, condition) cell. `agentMs`
-/// comes from `timings.agentMs` (timed-out trials keep their recorded time:
-/// censored at or above the per-trial cap); `inputTokens` from
-/// `usage.inputTokens`. Missing measurements are excluded — never replaced
-/// with zero.
+/// Trials that contribute to metric values: completed trials and timed-out
+/// trials (which keep their recorded time, censored at or above the
+/// per-trial cap). Non-timeout errors, cancellations, infra errors and
+/// never-started slots carried no useful measurement (a fast failure is not
+/// a fast success) and are excluded from every metric.
+fn metric_eligible(trial: &Value) -> bool {
+    trial["status"].as_str() == Some("completed") || is_timed_out(trial)
+}
+
+/// The measured metric values for one (task, condition) cell, plus the count
+/// of trials excluded as non-eligible. `agentMs` comes from `timings.agentMs`
+/// (timed-out trials keep their recorded time: censored at or above the
+/// per-trial cap); `inputTokens` from `usage.inputTokens`. Missing
+/// measurements are excluded — never replaced with zero.
 fn metric_values(
     trials: &[TrialData],
     task_id: &str,
     condition_id: &str,
     metric: &str,
-) -> Vec<f64> {
+) -> (Vec<f64>, usize) {
     let mut values: Vec<f64> = Vec::new();
+    let mut excluded = 0usize;
     for trial in trials {
         if trial.trial["taskId"].as_str() != Some(task_id)
             || trial.trial["conditionId"].as_str() != Some(condition_id)
         {
+            continue;
+        }
+        if !metric_eligible(&trial.trial) {
+            excluded += 1;
             continue;
         }
         let value = match metric {
@@ -262,13 +276,14 @@ fn metric_values(
             values.push(value);
         }
     }
-    values
+    (values, excluded)
 }
 
 fn condition_metric_values(trials: &[TrialData], condition_id: &str, metric: &str) -> Vec<f64> {
     trials
         .iter()
         .filter(|trial| trial.trial["conditionId"].as_str() == Some(condition_id))
+        .filter(|trial| metric_eligible(&trial.trial))
         .filter_map(|trial| {
             trial
                 .trial
@@ -282,9 +297,10 @@ fn condition_metric_values(trials: &[TrialData], condition_id: &str, metric: &st
         .collect()
 }
 
-/// Descriptive stats for one condition over all its trials (not just the
-/// paired subset), with the success-only median explicitly labelled as a
-/// selection-biased secondary metric.
+/// Descriptive stats for one condition over its metric-eligible trials
+/// (completed and timed-out; not just the paired subset), with the
+/// success-only median explicitly labelled as a selection-biased secondary
+/// metric.
 fn descriptive_condition_stats(trials: &[TrialData], condition_id: &str) -> Value {
     let attempts = trials
         .iter()
@@ -357,9 +373,9 @@ pub fn paired_analysis(
         let mut zero_baseline_tasks: Vec<String> = Vec::new();
         let mut excluded_tasks: Vec<Value> = Vec::new();
         for task in tasks {
-            let baseline_values =
+            let (baseline_values, baseline_excluded) =
                 metric_values(trials, &task.id, &gates.baseline, &improvement.metric);
-            let candidate_values = metric_values(
+            let (candidate_values, candidate_excluded) = metric_values(
                 trials,
                 &task.id,
                 &improvement.candidate,
@@ -369,38 +385,37 @@ pub fn paired_analysis(
                 (true, true) => {
                     excluded_tasks.push(serde_json::json!({
                         "taskId": task.id,
-                        "reason": "no measured data for this metric under either condition"
+                        "reason": format!(
+                            "no measured data for this metric under either condition ({} trial(s) excluded: not completed or timed out)",
+                            baseline_excluded + candidate_excluded
+                        )
                     }));
                     continue;
                 }
                 (true, false) => {
                     excluded_tasks.push(serde_json::json!({
                         "taskId": task.id,
-                        "reason": format!("no measured {} data under baseline condition '{}'", improvement.metric, gates.baseline)
+                        "reason": format!(
+                            "no measured {} data under baseline condition '{}' ({} trial(s) excluded: not completed or timed out)",
+                            improvement.metric, gates.baseline, baseline_excluded
+                        )
                     }));
                     continue;
                 }
                 (false, true) => {
                     excluded_tasks.push(serde_json::json!({
                         "taskId": task.id,
-                        "reason": format!("no measured {} data under candidate condition '{}'", improvement.metric, improvement.candidate)
+                        "reason": format!(
+                            "no measured {} data under candidate condition '{}' ({} trial(s) excluded: not completed or timed out)",
+                            improvement.metric, improvement.candidate, candidate_excluded
+                        )
                     }));
                     continue;
                 }
                 (false, false) => {}
             }
-            let baseline_mean = mean(&metric_values(
-                trials,
-                &task.id,
-                &gates.baseline,
-                &improvement.metric,
-            ));
-            let candidate_mean = mean(&metric_values(
-                trials,
-                &task.id,
-                &improvement.candidate,
-                &improvement.metric,
-            ));
+            let baseline_mean = mean(&baseline_values);
+            let candidate_mean = mean(&candidate_values);
             paired_diffs.push(candidate_mean - baseline_mean);
             if baseline_mean > 0.0 {
                 paired_reductions.push((baseline_mean - candidate_mean) / baseline_mean);
@@ -470,7 +485,7 @@ pub fn paired_analysis(
     serde_json::json!({
         "method": "paired per-task means; positive medianPairedDifference means the candidate is worse (larger) than the baseline for the metric; medianPairedReduction is (baseline - candidate) / baseline",
         "weighting": "tasks are weighted equally within this experiment; repeated trials of one task are correlated and stay inside one task in the bootstrap; cross-repository generalization requires repository-level clustering, which this build does not claim",
-        "timingPolicy": "censored: timed-out trials keep their recorded agentMs (at or above the per-trial cap) and are labelled in the descriptive stats; success-only medians are a labelled secondary metric",
+        "timingPolicy": "censored: timed-out trials keep their recorded agentMs (at or above the per-trial cap) and are labelled in the descriptive stats; non-timeout failures, cancellations, infra errors and never-started slots are excluded from every metric value (counted in the exclusion reasons); success-only medians are a labelled secondary metric",
         "baseline": gates.baseline,
         "comparisons": comparisons
     })
@@ -1193,10 +1208,10 @@ mod tests {
 
     #[test]
     fn gate_is_insufficient_when_any_check_lacks_data() {
-        // The candidate adapter errors on every trial: correctness and
-        // margin are insufficient (no graded candidate trials), but the
-        // instant failures make the paired reduction look ~98% faster.
-        // The gate must not pass on partial data.
+        // The candidate adapter errors on every trial: non-timeout failures
+        // carry no measurement, so correctness, margin and the paired
+        // reduction are all insufficient. The gate must not pass on partial
+        // data.
         let trials = vec![
             trial(
                 "task-a",
@@ -1255,8 +1270,94 @@ mod tests {
             vec![
                 ("correctness:baseline", "passed"),
                 ("correctness:candidate", "insufficient_data"),
-                ("improvement:candidate:agentMs", "passed"),
+                ("improvement:candidate:agentMs", "insufficient_data"),
                 ("correctness-margin:candidate", "insufficient_data"),
+            ]
+        );
+    }
+
+    #[test]
+    fn partially_graded_candidate_cannot_pass_the_gate_on_fast_failures() {
+        // A fast failure must not count as a fast success: the candidate
+        // errors on task-a (50 ms) and passes task-b in 1900 ms against a
+        // 2000 ms baseline. task-a drops out of the paired comparison (its
+        // only candidate trial is non-eligible), the observed reduction is
+        // 5%, below the 10% threshold, so the gate must fail rather than
+        // pass on apparent speed.
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-b",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "error",
+                Some("adapter_failure"),
+                Some(50),
+                None,
+                None,
+            ),
+            trial(
+                "task-b",
+                "candidate",
+                "completed",
+                None,
+                Some(1900),
+                None,
+                Some("pass"),
+            ),
+        ];
+        let gates = gates();
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let comparison = &paired["comparisons"][0];
+        // task-a is excluded, with its excluded trial counted in the reason.
+        assert_eq!(comparison["excludedTasks"][0]["taskId"], "task-a");
+        assert!(
+            comparison["excludedTasks"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("1 trial(s) excluded"),
+            "{:?}",
+            comparison["excludedTasks"][0]
+        );
+        assert_eq!(comparison["pairedTasks"], 1);
+        assert!((comparison["medianPairedReduction"].as_f64().unwrap() - 0.05).abs() < 1e-9);
+
+        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        assert_eq!(gate["status"], "fail");
+        let checks: Vec<(&str, &str)> = gate["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|check| {
+                (
+                    check["name"].as_str().unwrap(),
+                    check["status"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            checks,
+            vec![
+                ("correctness:baseline", "passed"),
+                ("correctness:candidate", "passed"),
+                ("improvement:candidate:agentMs", "failed"),
+                ("correctness-margin:candidate", "passed"),
             ]
         );
     }

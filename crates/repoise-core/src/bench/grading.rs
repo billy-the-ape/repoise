@@ -13,6 +13,7 @@
 //! A trial's own assertions, exit code or process status are never treated
 //! as correctness.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -82,7 +83,7 @@ pub fn record(
 enum ExistingRecord {
     Absent,
     Record(Value),
-    Unparseable { parse_error: String, raw: String },
+    Unparseable { parse_error: String },
 }
 
 /// Reads the stored grading record, distinguishing an absent file from a
@@ -98,7 +99,6 @@ fn read_existing_record(trial_dir: &Path) -> ExistingRecord {
         Ok(value) => ExistingRecord::Record(value),
         Err(err) => ExistingRecord::Unparseable {
             parse_error: err.to_string(),
-            raw,
         },
     }
 }
@@ -128,6 +128,39 @@ pub fn manual_grading_is_valid(raw: &Value, expected_method: &str) -> bool {
             .get("reason")
             .and_then(Value::as_str)
             .is_some_and(|reason| !reason.trim().is_empty())
+}
+
+/// Preserves an invalid/unparseable operator `grading.json` at
+/// `grading.json.rejected` (original bytes, never overwritten in place) and
+/// writes the `evaluator_error` record in its place. The returned grading is
+/// the recorded error itself, so callers do not write over it again.
+fn record_rejected_manual_record(
+    trial_dir: &Path,
+    trial_id: &str,
+    task_id: &str,
+    condition_id: &str,
+    repetition: u32,
+    method: &str,
+    reason: &str,
+) -> Result<Grading, String> {
+    let grading_path = trial_dir.join("grading.json");
+    let rejected_path = trial_dir.join("grading.json.rejected");
+    if rejected_path.exists() {
+        std::fs::remove_file(&rejected_path)
+            .map_err(|err| format!("could not replace existing grading.json.rejected: {err}"))?;
+    }
+    std::fs::rename(&grading_path, &rejected_path)
+        .map_err(|err| format!("could not preserve the operator's grading.json: {err}"))?;
+    let record =
+        evaluator_error_record(trial_id, task_id, condition_id, repetition, method, reason);
+    artifacts::write_json(&grading_path, &record).map_err(|err| err.to_string())?;
+    Ok(Grading {
+        status: "evaluator_error".into(),
+        method: method.into(),
+        reason: Some(reason.to_string()),
+        checks: Vec::new(),
+        answer_present: false,
+    })
 }
 
 /// A minimal `evaluator_error` record written when the grading engine
@@ -191,7 +224,10 @@ struct RecordBody {
 /// Grades one trial for its task and writes `grading.json`.
 ///
 /// Manual grading records (human rubric / model judge) are honored when
-/// valid and kept verbatim (never rewritten as engine records); everything
+/// valid and kept verbatim (never rewritten as engine records). An invalid
+/// or unparseable operator record is preserved at `grading.json.rejected`
+/// and an `evaluator_error` is recorded in its place (returned as
+/// `Ok`); a recorded `evaluator_error` is re-emitted verbatim. Everything
 /// else is (re)computed and written as an engine record. A `Result::Err`
 /// means the engine itself failed and the caller records `evaluator_error`.
 pub fn grade_and_write(
@@ -243,34 +279,63 @@ pub fn grade_and_write(
                                     answer_present: false,
                                 });
                             }
-                            return Err(format!(
-                                "existing grading.json is not a valid manual grading record \
-                             (expected method '{method}', status pass/fail and a non-empty reason)"
-                            ));
+                            // An invalid operator record: preserve the
+                            // operator's bytes at grading.json.rejected and
+                            // record the evaluator_error in grading.json
+                            // instead of overwriting the operator's file.
+                            let reason = format!(
+                                "existing manual grading record is invalid (expected method \
+                                 '{method}', status pass/fail and a non-empty reason); the \
+                                 operator's record is preserved at grading.json.rejected"
+                            );
+                            return record_rejected_manual_record(
+                                trial_dir,
+                                trial_id,
+                                task.id.as_str(),
+                                condition_id,
+                                repetition,
+                                method,
+                                &reason,
+                            );
                         }
-                        // An operator file that is not parseable JSON: report
-                        // an evaluator_error and keep the operator's text (the
-                        // caller's evaluator_error record preserves it in its
-                        // reason) instead of silently clobbering it.
-                        ExistingRecord::Unparseable { parse_error, raw } => {
-                            return Err(format!(
-                                "existing grading.json is not parseable JSON ({parse_error}); \
-                                 operator text preserved in the evaluator_error record: {raw}"
-                            ));
+                        // An operator file that is not parseable JSON: same
+                        // treatment - the operator's bytes are preserved
+                        // verbatim and the evaluator_error is recorded in
+                        // their place.
+                        ExistingRecord::Unparseable { parse_error, .. } => {
+                            let reason = format!(
+                                "existing grading.json is not parseable JSON ({parse_error}); the \
+                                 operator's record is preserved at grading.json.rejected"
+                            );
+                            record_rejected_manual_record(
+                                trial_dir,
+                                trial_id,
+                                task.id.as_str(),
+                                condition_id,
+                                repetition,
+                                method,
+                                &reason,
+                            )?
                         }
-                        // A recorded evaluator error is sticky: re-emit it so
-                        // consecutive rebuilds agree instead of drifting to
-                        // pending. A valid manual record replaces it.
+                        // A recorded evaluator error is sticky: re-emit the
+                        // stored reason verbatim (no rewrite, no re-wrapping,
+                        // so repeated rebuilds are byte-stable). A valid
+                        // manual record replaces it.
                         ExistingRecord::Record(raw)
                             if raw.get("status").and_then(Value::as_str)
                                 == Some("evaluator_error")
                                 && raw.get("method").and_then(Value::as_str) == Some(method) =>
                         {
-                            return Err(format!(
-                                "existing grading.json is a recorded evaluator_error ({}); \
-                                 write a valid manual grading record to replace it",
-                                raw.get("reason").and_then(Value::as_str).unwrap_or("")
-                            ));
+                            return Ok(Grading {
+                                status: "evaluator_error".into(),
+                                method: method.into(),
+                                reason: raw
+                                    .get("reason")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                                checks: Vec::new(),
+                                answer_present: false,
+                            });
                         }
                         // Engine-written pending/censored state, or no record
                         // yet: recompute.
@@ -345,12 +410,59 @@ pub fn grade_and_write(
     Ok(grading)
 }
 
+/// Upper bound for a declared artifact file read by deterministic checks.
+const MAX_ARTIFACT_BYTES: u64 = 1_048_576;
+/// Upper bound for the adapter event log read for grading.
+const MAX_EVENT_LOG_BYTES: u64 = 8_388_608;
+
+/// Reads an agent-writable artifact file with untrusted-content guards: the
+/// path must be a regular file (symlinks, FIFOs and devices are treated as
+/// absent, so the grader can neither hang nor read outside the adapter
+/// directory) and the read is capped. Any guard failure means the artifact
+/// was "not produced".
+fn read_guarded_artifact(path: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf = Vec::new();
+    std::io::Read::take(file, MAX_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > MAX_ARTIFACT_BYTES {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
 /// Reads the final event of the adapter event log and returns the declared
 /// answer field when it is a string.
 fn extract_final_answer(adapter_dir: &Path, answer_field: &str) -> Result<Option<String>, String> {
     let events_path = adapter_dir.join("events.ndjson");
-    let raw = std::fs::read_to_string(&events_path)
-        .map_err(|err| format!("adapter event log unreadable: {err}"))?;
+    let raw = match std::fs::symlink_metadata(&events_path) {
+        Ok(meta) if meta.file_type().is_file() => {
+            let file = std::fs::File::open(&events_path)
+                .map_err(|err| format!("adapter event log unreadable: {err}"))?;
+            let mut buf = Vec::new();
+            std::io::Read::take(file, MAX_EVENT_LOG_BYTES + 1)
+                .read_to_end(&mut buf)
+                .map_err(|err| format!("adapter event log unreadable: {err}"))?;
+            if buf.len() as u64 > MAX_EVENT_LOG_BYTES {
+                return Err(format!(
+                    "adapter event log unreadable: exceeds the {MAX_EVENT_LOG_BYTES}-byte grading limit"
+                ));
+            }
+            String::from_utf8_lossy(&buf).into_owned()
+        }
+        Ok(_) => {
+            return Err(
+                "adapter event log unreadable: not a regular file (symlinks and devices are refused)"
+                    .to_string(),
+            );
+        }
+        Err(err) => return Err(format!("adapter event log unreadable: {err}")),
+    };
     let mut final_event: Option<Value> = None;
     for line in raw.lines() {
         let line = line.trim();
@@ -388,7 +500,7 @@ fn evaluate_checks(
             "answer" => answer.map(str::to_string),
             "artifact" => {
                 let name = check.artifact.as_deref().expect("validated artifact");
-                std::fs::read_to_string(adapter_dir.join(name)).ok()
+                read_guarded_artifact(&adapter_dir.join(name))
             }
             other => unreachable!("validated scope: {other}"),
         };
@@ -712,14 +824,25 @@ mod tests {
         let stored = load(&trial).unwrap();
         assert!(stored["reason"].as_str().unwrap().contains("blinded"));
 
-        // A record whose method does not match the declared evaluator is invalid.
+        // A record whose method does not match the declared evaluator is
+        // invalid: the operator's bytes are preserved at
+        // grading.json.rejected and an evaluator_error is recorded in their
+        // place (never clobbered in place).
         std::fs::write(
             trial.join("grading.json"),
             r#"{"schemaVersion":1,"status":"fail","method":"deterministic","reason":"nope"}"#,
         )
         .unwrap();
-        let err = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
-        assert!(err.contains("not a valid manual grading record"), "{err}");
+        let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "evaluator_error");
+        assert!(grading.reason.unwrap().contains("invalid"));
+        let stored = load(&trial).unwrap();
+        assert_eq!(stored["status"], "evaluator_error");
+        assert_eq!(stored["source"], "engine");
+        assert_eq!(
+            std::fs::read_to_string(trial.join("grading.json.rejected")).unwrap(),
+            r#"{"schemaVersion":1,"status":"fail","method":"deterministic","reason":"nope"}"#
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -783,31 +906,38 @@ mod tests {
             .unwrap(),
         ));
 
-        // Operator writes an invalid record; the first pass rejects it and
-        // the caller (runner/rebuild) records an evaluator_error in its
-        // place, exactly as production does.
+        // Operator writes an invalid record; the first pass preserves it at
+        // grading.json.rejected and records an evaluator_error in its place.
         std::fs::write(
             trial.join("grading.json"),
             r#"{"schemaVersion":1,"status":"fail","method":"deterministic","reason":"nope"}"#,
         )
         .unwrap();
-        let first = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
-        assert!(
-            first.contains("not a valid manual grading record"),
-            "{first}"
-        );
-        let record = evaluator_error_record("t1", "t1", "cond", 0, "humanRubric", &first);
-        std::fs::write(
-            trial.join("grading.json"),
-            serde_json::to_string_pretty(&record).unwrap(),
-        )
-        .unwrap();
+        let first = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(first.status, "evaluator_error");
 
-        // The next rebuild must re-emit the evaluator error instead of
-        // drifting to pending, so consecutive rebuilds agree on the counts.
-        let second =
-            grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
-        assert!(second.contains("recorded evaluator_error"), "{second}");
+        // Subsequent passes must re-emit the recorded evaluator error
+        // verbatim: no re-wrapping, and the stored record stays byte-stable
+        // across passes, so repeated `bench report` rebuilds never nest the
+        // reason or repeat the operator's text.
+        let stored_after_first = std::fs::read_to_string(trial.join("grading.json")).unwrap();
+        for pass in 1..3 {
+            let grading =
+                grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+            assert_eq!(
+                grading.status, "evaluator_error",
+                "pass {pass} must stay an evaluator_error"
+            );
+            assert_eq!(
+                grading.reason, first.reason,
+                "pass {pass}: reason must be re-emitted verbatim"
+            );
+            assert_eq!(
+                std::fs::read_to_string(trial.join("grading.json")).unwrap(),
+                stored_after_first,
+                "pass {pass}: stored record must be byte-stable"
+            );
+        }
         // And a corrected manual record replaces it.
         std::fs::write(
             trial.join("grading.json"),
@@ -838,11 +968,17 @@ mod tests {
         let broken = r#"{"schemaVersion":1,"status":"pass","method":"humanRubric","reason":"trailing comma","#;
         std::fs::write(trial.join("grading.json"), broken).unwrap();
 
-        let err = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
-        assert!(err.contains("not parseable JSON"), "{err}");
-        // The engine must not have clobbered the operator's text.
+        // The engine must not clobber the operator's bytes in place: they
+        // are preserved at grading.json.rejected and an evaluator_error is
+        // recorded in their place.
+        let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "evaluator_error");
+        assert!(grading.reason.unwrap().contains("not parseable JSON"));
+        let stored = load(&trial).unwrap();
+        assert_eq!(stored["status"], "evaluator_error");
+        assert_eq!(stored["source"], "engine");
         assert_eq!(
-            std::fs::read_to_string(trial.join("grading.json")).unwrap(),
+            std::fs::read_to_string(trial.join("grading.json.rejected")).unwrap(),
             broken
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -917,6 +1053,102 @@ mod tests {
         let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
         assert_eq!(grading.status, "fail");
         assert!(!marker.exists(), "answer text must never be executed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversized_artifact_is_treated_as_absent() {
+        // A declared artifact beyond the read cap is treated as "not
+        // produced" rather than read (bounded grader work).
+        let dir = temp_dir("oversized-artifact");
+        let trial = dir.join("trial");
+        write_events(&trial, &serde_json::json!({}));
+        let adapter = trial.join("adapter");
+        std::fs::create_dir_all(&adapter).unwrap();
+        std::fs::write(
+            adapter.join("out.txt"),
+            vec![b'x'; MAX_ARTIFACT_BYTES as usize + 1],
+        )
+        .unwrap();
+        let task = task_with(Some(deterministic_evaluator(vec![serde_json::json!({
+            "id": "has-evidence",
+            "type": "containsAny",
+            "scope": "artifact",
+            "artifact": "out.txt",
+            "values": ["x"]
+        })])));
+        let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "fail");
+        assert_eq!(grading.checks[0]["result"], "fail");
+        assert!(
+            grading.checks[0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("was not produced"),
+            "oversized artifact must be treated as absent: {:?}",
+            grading.checks[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_artifact_is_treated_as_absent() {
+        // The agent can create symlinks in adapter/: following one would let
+        // it forge check results or probe files outside the trial. A
+        // symlinked declared artifact is treated as "not produced".
+        let dir = temp_dir("symlink-artifact");
+        let trial = dir.join("trial");
+        write_events(&trial, &serde_json::json!({}));
+        let adapter = trial.join("adapter");
+        std::fs::create_dir_all(&adapter).unwrap();
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "declared-evidence-token").unwrap();
+        std::os::unix::fs::symlink(&outside, adapter.join("out.txt")).unwrap();
+        let task = task_with(Some(deterministic_evaluator(vec![serde_json::json!({
+            "id": "has-evidence",
+            "type": "containsAny",
+            "scope": "artifact",
+            "artifact": "out.txt",
+            "values": ["declared-evidence-token"]
+        })])));
+        let grading = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap();
+        assert_eq!(grading.status, "fail");
+        assert_eq!(grading.checks[0]["result"], "fail");
+        assert!(
+            grading.checks[0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("was not produced"),
+            "symlink must not be followed: {:?}",
+            grading.checks[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_event_log_is_refused() {
+        // A symlinked events.ndjson must not be read: it could point at any
+        // readable file, forging the "final" answer.
+        let dir = temp_dir("symlink-events");
+        let trial = dir.join("trial");
+        let adapter = trial.join("adapter");
+        std::fs::create_dir_all(&adapter).unwrap();
+        let outside = dir.join("events.txt");
+        std::fs::write(
+            &outside,
+            "{\"v\":1,\"t\":\"final\",\"ts\":1,\"status\":\"completed\",\"data\":{\"answer\":\"forged\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, adapter.join("events.ndjson")).unwrap();
+        let task = task_with(Some(deterministic_evaluator(vec![serde_json::json!({
+            "id": "answer",
+            "type": "containsAll",
+            "values": ["forged"]
+        })])));
+        let err = grade_and_write(&task, &trial, "t1", "cond", 0, "completed", None).unwrap_err();
+        assert!(err.contains("not a regular file"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

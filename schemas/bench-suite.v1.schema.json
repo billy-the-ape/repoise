@@ -319,6 +319,7 @@
         "correctnessMargin": {
           "type": "number",
           "minimum": 0,
+          "maximum": 1,
           "default": 0.0,
           "description": "For an improvement check, the candidate's correctness rate may fall below the baseline's by at most this fraction."
         },

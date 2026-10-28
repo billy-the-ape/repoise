@@ -373,7 +373,17 @@ impl RunContext {
                         .unwrap_or("none"),
                     &format!("evaluator failure: {err}"),
                 );
-                let _ = artifacts::write_json(&trial_dir.join("grading.json"), &record);
+                if let Err(write_err) =
+                    artifacts::write_json(&trial_dir.join("grading.json"), &record)
+                {
+                    progress(
+                        self.json,
+                        &format!(
+                            "note: could not write grading record for {}: {write_err}",
+                            trial_dir.display()
+                        ),
+                    );
+                }
                 super::grading::Grading {
                     status: "evaluator_error".into(),
                     method: "none".into(),
@@ -472,7 +482,7 @@ impl RunContext {
                     .unwrap_or("none"),
                 &format!("evaluator failure: {err}"),
             );
-            let _ = artifacts::write_json(&trial_dir.join("grading.json"), &record);
+            artifacts::write_json(&trial_dir.join("grading.json"), &record)?;
         }
         if let Some(workspace) = state.workspace
             && !self.keep_workspaces

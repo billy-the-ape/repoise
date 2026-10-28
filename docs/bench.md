@@ -249,18 +249,21 @@ repository content are matched as data and never executed) and writes
 Method handling:
 
 - `deterministic` — checks run in-process; all checks must pass for a `pass`.
+  Declared artifact files are read only when they are regular files
+  (symlinks, FIFOs and devices are treated as not produced) and the read is
+  size-capped; the adapter event log is read with the same guards.
 - `humanRubric` — declared-only in this build: the operator writes the
   manual grading record (schema version, status `pass`/`fail`, the declared
   method, a non-empty reason) to `trials/<id>/grading.json` and the engine
   keeps it verbatim (never rewritten or relabeled as an engine record, so
-  repeated `bench report` rebuilds never lose it); an existing record with a
-  mismatched method or missing fields is an `evaluator_error`, never silently
-  accepted, and that recorded error stays in place across rebuilds until a
-  valid manual record replaces it; an operator record that is not parseable
-  JSON is likewise an `evaluator_error`, with the operator's text preserved
-  in the record's reason and the file not clobbered by the engine. Engine-
-  written records carry `source: "engine"` and are replaced on the next
-  grading pass.
+  repeated `bench report` rebuilds never lose it). An operator record that is
+  invalid (mismatched method or missing fields) or not parseable JSON is
+  never clobbered in place: the engine moves the operator's file to
+  `trials/<id>/grading.json.rejected` (bytes preserved) and records an
+  `evaluator_error` in `grading.json`; that recorded error is re-emitted
+  verbatim on later rebuilds (its reason never nests or repeats) until a
+  valid manual record replaces it. Engine-written records carry
+  `source: "engine"` and are replaced on the next grading pass.
 - `modelJudge` — declared-only: this build runs no model judge (grading must
   stay independent of the tested model); the result must also be written as
   a manual grading record.
@@ -280,8 +283,12 @@ Method handling:
   matching the global counts and the `timeoutRate` denominator.
 - `analysis` — present only when `gates` is declared: for each declared
   improvement, the median per-task paired difference and reduction (candidate
-  minus baseline, over tasks with measured data on both sides; zero or
-  missing baselines yield an undefined reduction with an explicit note), a
+  minus baseline, over tasks with measured data on both sides; metric values
+  come only from completed and timed-out trials — timeouts keep their
+  recorded, capped time — while non-timeout failures, cancellations, infra
+  errors and never-started slots are excluded and counted in the per-task
+  exclusion reasons; zero or missing baselines yield an undefined reduction
+  with an explicit note), a
   task-cluster bootstrap percentile interval (recorded iterations and seed;
   all repetitions of a resampled task stay together) and descriptive stats
   (timeout rate, capped/lower-bound timing, labelled success-only medians).
@@ -313,6 +320,7 @@ Under `<output.dir>/<experiment.id>/`:
 | `report.md` | Human-readable rendering of `report.json` (derived from the same object) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
 | `trials/<id>/grading.json` | One trial's grading record (schema v1); engine records carry `source: "engine"`, operator manual records do not |
+| `trials/<id>/grading.json.rejected` | Operator manual record the engine rejected (invalid or unparseable); the engine never overwrites operator bytes in place |
 | `trials/<id>/request.json` | The AP-03 request with `condition.mcp.env` values redacted (names kept; the live request with real values goes only to the host bridge over stdin; a local artifact) |
 | `trials/<id>/adapter/` | `events.ndjson`, `result.json`, `stderr.log` (adapter diagnostics) |
 | `trials/<id>/host.log` | Coordinator-side bridge stderr |

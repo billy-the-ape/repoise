@@ -635,7 +635,7 @@ fn run_bench(opts: &CliOptions) -> Result<ExitCode, String> {
     // worktrees and no agent processes.
     if opts.bench_action.as_deref() == Some("report") {
         let experiment_id = opts.experiment_id.clone().ok_or_else(|| {
-            "bench report requires --experiment <EXPERIMENT_ID> (the id printed by              bench runs; under --output, default repoise-bench)".to_string()
+            "bench report requires --experiment <EXPERIMENT_ID> (the id printed by bench runs; under --output, default repoise-bench)".to_string()
         })?;
         let output = opts
             .output_dir

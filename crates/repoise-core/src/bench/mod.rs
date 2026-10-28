@@ -690,7 +690,7 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
                         .unwrap_or("none"),
                     &format!("evaluator failure: {err}"),
                 );
-                let _ = artifacts::write_json(&trial_dir.join("grading.json"), &record);
+                artifacts::write_json(&trial_dir.join("grading.json"), &record)?;
             }
         }
     }
@@ -986,6 +986,114 @@ mod tests {
         assert!(!unstarted.join("grading.json").exists());
         assert_eq!(report["grading"]["overall"]["pass"], 1);
         assert_eq!(report["counts"]["notGraded"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_preserves_rejected_manual_records_and_stays_byte_stable() {
+        // An invalid operator grading.json is never clobbered in place: the
+        // operator's bytes move to grading.json.rejected, an engine
+        // evaluator_error is recorded in their place, and every subsequent
+        // rebuild re-emits that record verbatim (byte-stable, no reason
+        // nesting) until a valid manual record replaces it.
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-rebuild-rejected-{}",
+            std::process::id()
+        ));
+        let experiment = dir.join("exp");
+        let trial_dir = experiment.join("trials").join("t1");
+        std::fs::create_dir_all(trial_dir.join("adapter")).unwrap();
+
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "humanRubric",
+                    "rubric": "name the failing function"
+                }
+            }],
+            "conditions": [{ "id": "cond", "retrievalMode": "baseline" }],
+            "gates": null,
+            "report": null,
+            "trials": [
+                { "trialId": "t1", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 0 }
+            ]
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        std::fs::write(
+            trial_dir.join("adapter").join("events.ndjson"),
+            r#"{"t":"final","data":{"answer":"parse_header"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            trial_dir.join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t1",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "completed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Operator writes a record whose method does not match the task.
+        let operator_bytes =
+            r#"{"schemaVersion":1,"status":"fail","method":"deterministic","reason":"nope"}"#;
+        std::fs::write(trial_dir.join("grading.json"), operator_bytes).unwrap();
+
+        let rebuild = || {
+            rebuild(&RebuildRequest {
+                output: dir.clone(),
+                experiment_id: "exp".into(),
+                json: false,
+            })
+            .unwrap()
+        };
+
+        // Rebuild 1: operator bytes preserved, evaluator_error recorded.
+        let outcome = rebuild();
+        let rejected = trial_dir.join("grading.json.rejected");
+        assert_eq!(std::fs::read_to_string(&rejected).unwrap(), operator_bytes);
+        let stored_first = std::fs::read_to_string(trial_dir.join("grading.json")).unwrap();
+        let first_record: serde_json::Value = serde_json::from_str(&stored_first).unwrap();
+        assert_eq!(first_record["status"], "evaluator_error");
+        assert_eq!(first_record["source"], "engine");
+        assert_eq!(outcome.payload["grading"]["overall"]["evaluatorError"], 1);
+
+        // Rebuilds 2 and 3: byte-stable record, untouched rejected file,
+        // stable counts.
+        for pass in 2..=3 {
+            let outcome = rebuild();
+            assert_eq!(
+                std::fs::read_to_string(trial_dir.join("grading.json")).unwrap(),
+                stored_first,
+                "rebuild {pass}: the evaluator_error record must be byte-stable"
+            );
+            assert_eq!(std::fs::read_to_string(&rejected).unwrap(), operator_bytes);
+            assert_eq!(outcome.payload["grading"]["overall"]["evaluatorError"], 1);
+        }
+
+        // A valid manual record replaces the error and is kept verbatim.
+        let manual = r#"{"schemaVersion":1,"status":"pass","method":"humanRubric","reason":"named the failing function"}"#;
+        std::fs::write(trial_dir.join("grading.json"), manual).unwrap();
+        let outcome = rebuild();
+        assert_eq!(
+            std::fs::read_to_string(trial_dir.join("grading.json")).unwrap(),
+            manual
+        );
+        assert_eq!(outcome.payload["grading"]["overall"]["pass"], 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

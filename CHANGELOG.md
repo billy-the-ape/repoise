@@ -270,17 +270,23 @@ record.
   Operator-written manual grading records are kept verbatim (never relabeled
   as engine records, so repeated rebuilds never lose them); engine records
   carry `source: "engine"`; an invalid or unparseable manual record is
-  `evaluator_error` (the operator's text is preserved in the record's
-  reason), and that recorded error stays in place across rebuilds until a
-  valid manual record replaces it. An absent answer or artifact fails
-  every check (including `notContains`), so a trial that produced no
-  answer is `fail`.
+  `evaluator_error` and the engine never clobbers the operator's bytes in
+  place - the operator's file is preserved at
+  `trials/<id>/grading.json.rejected` and the recorded error is re-emitted
+  verbatim across rebuilds until a valid manual record replaces it. An
+  absent answer or artifact fails every check (including `notContains`), so
+  a trial that produced no answer is `fail`. Declared artifact files and the
+  adapter event log are read only when they are regular files (symlinks and
+  devices are treated as not produced) and with a size cap.
 - The published report (`report.json`, schema v1) is rendered to `report.md`
   from the same object: status/grading counts (every planned slot lands in
   exactly one bucket), overall/per-condition/per-task grading summaries with
   the held-out split, and - only when `gates` is predeclared - paired
-  per-task analysis (median paired difference/reduction over tasks with data
-  on both sides, zero-baseline undefined-reduction note, task-cluster
+  per-task analysis (median paired difference/reduction over tasks with
+  metric-eligible data on both sides - only completed and timed-out trials
+  contribute values; other trial statuses are excluded and counted in the
+  per-task exclusion reasons - zero-baseline undefined-reduction note,
+  task-cluster
   bootstrap percentile interval with recorded seed/iterations, labelled
   success-only medians, timeout rate) plus the predeclared quality gate
   (`pass`/`fail`/`insufficient_data`/`not_configured`): the overall status
