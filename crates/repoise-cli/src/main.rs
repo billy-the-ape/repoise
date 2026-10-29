@@ -96,6 +96,8 @@ struct CliOptions {
     events: bool,
     suite_path: Option<PathBuf>,
     bench_runner: Option<PathBuf>,
+    bench_action: Option<String>,
+    experiment_id: Option<String>,
     repeat: Option<u32>,
     seed: Option<u64>,
     output_dir: Option<PathBuf>,
@@ -127,6 +129,8 @@ COMMANDS:
     capabilities                  Report version, event-stream protocol, features,
                                   commands, benchmark status and exit codes
     bench [SUITE]                 Run a suite-driven agent benchmark (AP-04; docs/bench.md)
+    bench report                    Re-grade recorded trials and rebuild report.json/report.md
+                                  (requires --experiment <ID>; docs/bench.md)
     help                          Show this help
     version                       Print version information
 
@@ -217,6 +221,7 @@ BENCH OPTIONS:
     --repeat <N>            Override the suite's repetition count
     --seed <N>              Override the suite's seed (deterministic plan)
     --output <DIR>          Override the artifact root (default: repoise-bench)
+    --experiment <ID>       Experiment id for `bench report` (under --output)
     --dry-run               Show the frozen plan and prerequisites only
                             (no worktrees, no agent processes)
                             Exit codes: 0 completed, 1 operational failure,
@@ -263,6 +268,8 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         events: false,
         suite_path: None,
         bench_runner: None,
+        bench_action: None,
+        experiment_id: None,
         repeat: None,
         seed: None,
         output_dir: None,
@@ -435,6 +442,10 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                 i += 1;
                 opts.bench_runner = Some(PathBuf::from(require_value(args, i, "--runner")?));
             }
+            "--experiment" => {
+                i += 1;
+                opts.experiment_id = Some(require_value(args, i, "--experiment")?);
+            }
             "--repeat" => {
                 i += 1;
                 let value = require_value(args, i, "--repeat")?;
@@ -478,12 +489,19 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             | Command::Watch
             | Command::Mcp => opts.root = PathBuf::from(first),
             Command::Bench => {
-                if opts.suite_path.is_some() {
-                    return Err(
-                        "bench takes the suite positionally or via --suite (not both)".into(),
-                    );
+                if first == "report" {
+                    if opts.suite_path.is_some() {
+                        return Err("bench report takes no suite manifest".into());
+                    }
+                    opts.bench_action = Some("report".into());
+                } else {
+                    if opts.suite_path.is_some() {
+                        return Err(
+                            "bench takes the suite positionally or via --suite (not both)".into(),
+                        );
+                    }
+                    opts.suite_path = Some(PathBuf::from(first));
                 }
-                opts.suite_path = Some(PathBuf::from(first));
             }
             Command::Overlay => match first.as_str() {
                 "uninstall" | "update" => {
@@ -612,6 +630,30 @@ fn run_bench(opts: &CliOptions) -> Result<ExitCode, String> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    // `bench report` (AP-05) re-grades recorded trials offline and rebuilds
+    // the report from the frozen manifest and trial artifacts; it starts no
+    // worktrees and no agent processes.
+    if opts.bench_action.as_deref() == Some("report") {
+        let experiment_id = opts.experiment_id.clone().ok_or_else(|| {
+            "bench report requires --experiment <EXPERIMENT_ID> (the id printed by bench runs; under --output, default repoise-bench)".to_string()
+        })?;
+        let output = opts
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("repoise-bench"));
+        let request = repoise_core::bench::RebuildRequest {
+            output,
+            experiment_id,
+            json: opts.json,
+        };
+        let outcome = repoise_core::bench::rebuild(&request).map_err(|err| err.to_string())?;
+        if opts.json {
+            println!("{}", json(&outcome.payload)?);
+        } else {
+            println!("{}", outcome.summary);
+        }
+        return Ok(ExitCode::from(outcome.exit_code));
+    }
     let suite_path = opts.suite_path.clone().ok_or_else(|| {
         "bench requires a suite manifest: bench <SUITE> or bench --suite <PATH>".to_string()
     })?;

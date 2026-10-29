@@ -75,10 +75,14 @@ Cline adapter — see [agent adapters](docs/agent-adapters.md)) are implemented,
 as is AP-04: the benchmark runner (`repoise bench`), which runs isolated,
 suite-driven agent trials with preflight, disposable worktrees, verified
 retrieval conditions, budgets, SIGINT/SIGTERM interruption and artifacts —
-see the [benchmark guide](docs/bench.md). AP-05 through AP-07 (grading and
-reports, pilot/expansion, VS Code UI) are proposed work; no grading, metrics
-or editor extension ships from that plan yet. Start there for implementation
-order, open questions and per-PR acceptance criteria.
+see the [benchmark guide](docs/bench.md) — and AP-05, independent post-trial
+grading (deterministic checks, declared manual rubrics, censored-trial
+handling), per-trial grading records, predeclared paired comparisons with
+task-cluster bootstrap intervals, the predeclared quality gate, the
+published `report.json`/`report.md` and the offline `bench report` rebuild.
+AP-06 and AP-07 (pilot/expansion, VS Code UI) are proposed work; no editor
+extension ships from that plan yet. Start there for implementation order,
+open questions and per-PR acceptance criteria.
 
 ## Read only the context relevant to the task
 

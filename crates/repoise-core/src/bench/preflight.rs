@@ -608,6 +608,21 @@ pub fn dry_run(
             "perTrial": &suite.limits,
             "experimentWallClockMs": suite.budgets.experiment_wall_clock_ms
         },
+        "assessment": {
+            "gates": serde_json::to_value(suite.gates.as_ref()).unwrap_or_default(),
+            "reportSpec": serde_json::to_value(suite.report.as_ref()).unwrap_or_default(),
+            "tasks": suite
+                .tasks
+                .iter()
+                .map(|task| serde_json::json!({
+                    "id": task.id,
+                    "evaluatorMethod": task
+                        .evaluator
+                        .as_ref()
+                        .map(|evaluator| evaluator.method.as_str())
+                }))
+                .collect::<Vec<serde_json::Value>>()
+        },
         "estimatedMaxAgentWallMs": estimated,
         "assumptions": [
             "estimatedMaxAgentWallMs = trials * per-trial wallClockMs; it is an upper bound on timed agent work and excludes setup (worktree/index), setup is not estimated",
@@ -633,6 +648,15 @@ pub fn write_manifest(
     experiment_dir: &Path,
     input: &ManifestInput<'_>,
 ) -> crate::Result<serde_json::Value> {
+    let tasks: Vec<serde_json::Value> = input
+        .suite
+        .tasks
+        .iter()
+        .map(|task| {
+            let provenance = task.provenance()?;
+            serde_json::to_value(provenance).map_err(|err| Error::Json(err.to_string()))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     let manifest = serde_json::json!({
         "schemaVersion": 1,
         "experimentId": input.suite.id,
@@ -719,6 +743,9 @@ pub fn write_manifest(
                 "orderedIndex": trial.ordered_index
             }))
             .collect::<Vec<serde_json::Value>>(),
+        "tasks": tasks,
+        "gates": serde_json::to_value(input.suite.gates.as_ref()).unwrap_or_default(),
+        "report": serde_json::to_value(input.suite.report.as_ref()).unwrap_or_default(),
         "unknowns": unknown_settings(input.suite),
         "isolation": {
             "mechanism": "one disposable linked git worktree per trial, checked out detached at the frozen snapshot",

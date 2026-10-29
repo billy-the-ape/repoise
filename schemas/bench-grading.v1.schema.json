@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://repoise.dev/schemas/bench-grading.v1.schema.json",
+  "title": "Repoise benchmark trial grading record (version 1)",
+  "description": "One grading record per trial (trials/<id>/grading.json). Written by the grading engine (source 'engine') or by an operator for declared manual methods (humanRubric / modelJudge). Engine-written records carry source 'engine'; operator records are validated on read and kept unchanged when valid. Grading is data-only: transcript and repository content are never executed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "method", "reason"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "trialId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "conditionId": { "type": "string", "minLength": 1 },
+    "repetition": { "type": "integer", "minimum": 0 },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "not_graded", "evaluator_error"],
+      "description": "pass/fail are grading outcomes; not_graded covers undeclared evaluators, pending manual review, censored (timed-out) trials and infra failures; evaluator_error means the grading engine itself failed."
+    },
+    "method": {
+      "type": "string",
+      "enum": ["deterministic", "humanRubric", "modelJudge", "none"],
+      "description": "The grading method actually applied (or the declared one when pending); 'none' when the task declared no evaluator."
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "description": "Human-readable reason; required non-empty for valid manual pass/fail records."
+    },
+    "checks": {
+      "type": "array",
+      "description": "Per-check results (deterministic grading only).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "result"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "enum": ["containsAny", "containsAll", "notContains"] },
+          "scope": { "type": "string", "enum": ["answer", "artifact"] },
+          "artifact": { "type": ["string", "null"], "description": "Artifact file name; null for answer-scope checks." },
+          "result": { "type": "string", "enum": ["pass", "fail"] },
+          "detail": { "type": "string" },
+          "note": { "type": ["string", "null"], "description": "The check's assertion note; null when the suite declared none." }
+        }
+      }
+    },
+    "answerPresent": { "type": "boolean" },
+    "source": {
+      "type": "string",
+      "enum": ["engine"],
+      "description": "Provenance marker for engine-written records; operator-written manual records omit it."
+    },
+    "gradedAtUtc": { "type": "string" },
+    "instrumentation": { "type": "string" }
+  }
+}

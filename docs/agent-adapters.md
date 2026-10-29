@@ -106,6 +106,10 @@ reference (2026-10-19); live behavior is not yet measured.
   seconds and is also enforced by the host. `maxToolCalls` is declared
   unenforceable (no per-tool telemetry) and produces a warning, never a
   silent approximation.
+- The agent's final message text (the `done` event's `text`) is recorded
+  on the `final` event as `data.answer` (null when no final text was
+  produced), so deterministic benchmark grading — suite `answerField`,
+  default `answer` — can score the recorded answer without a transcript.
 - The Cline `run_result` (with its `finishReason`) is the sole completion
   signal: `completed` → `completed`, aborts during host cancellation →
   `cancelled`, a CLI failure without `run_result` →
@@ -187,9 +191,11 @@ schemas (validated with ajv).
 - Implemented: protocol v1 schemas, host, conformance fixtures, Cline
   adapter with its tests.
 - Not implemented: `tool_telemetry` and `read_only_restriction` in the Cline
-  CLI (declared false), live Cline verification, and suites/metrics (AP-05).
-  The benchmark runner (AP-04) is implemented and consumes the protocol via
-  the checked-in host bridge; see [bench](bench.md).
+  CLI (declared false), and live Cline verification.
+- The benchmark runner (AP-04) is implemented and consumes the protocol via
+  the checked-in host bridge; independent post-trial grading, paired
+  metrics and reports (AP-05) are implemented as well; see
+  [bench](bench.md).
 - Private evaluation corpora belong in locally configured directories
   (e.g. `~/repoise-eval/`), never in this repository; the repo holds
   synthetic fixtures only.

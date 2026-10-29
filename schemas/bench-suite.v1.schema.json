@@ -74,6 +74,82 @@
             "type": "string",
             "default": "1",
             "description": "Task content version for provenance."
+          },
+          "category": {
+            "type": "string",
+            "enum": ["exact-identifier", "conceptual-discovery", "cross-file-explanation", "debugging", "small-implementation", "documentation-reconciliation", "other"],
+            "description": "AP-05 assessment category of the task."
+          },
+          "heldOut": {
+            "type": "boolean",
+            "default": false,
+            "description": "Development/tuning tasks must stay distinct from held-out tasks: creating a benchmark and then tuning to all of it invalidates a held-out claim."
+          },
+          "allowedPaths": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Path-prefix constraints for write-scope trials (workspace-root relative); empty means no extra change constraint."
+          },
+          "expectedArtifacts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Names (never paths) of files the agent is expected to leave in the trial's adapter artifact directory; artifact checks read adapter/<name> and nothing else."
+          },
+          "evaluator": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": ["deterministic", "humanRubric", "modelJudge"],
+                "default": "deterministic",
+                "description": "deterministic: engine-run checks after the trial; humanRubric: blinded review, the operator writes the grading record; modelJudge: declared only, this build does not run a model judge."
+              },
+              "answerField": {
+                "type": "string",
+                "default": "answer",
+                "description": "Field of the final event's data object holding the answer text."
+              },
+              "rubric": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable rubric; required for humanRubric."
+              },
+              "checks": {
+                "type": "array",
+                "description": "Deterministic checks; required for deterministic, forbidden for humanRubric/modelJudge.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "type", "values"],
+                  "properties": {
+                    "id": { "type": "string", "minLength": 1 },
+                    "scope": {
+                      "type": "string",
+                      "enum": ["answer", "artifact"],
+                      "default": "answer"
+                    },
+                    "artifact": {
+                      "type": "string",
+                      "description": "Artifact file name; required exactly when scope is artifact and must be listed in the task's expectedArtifacts."
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": ["containsAny", "containsAll", "notContains"]
+                    },
+                    "values": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                    "note": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "if": {
+              "properties": { "method": { "const": "humanRubric" } },
+              "required": ["method"]
+            },
+            "then": {
+              "required": ["rubric"]
+            }
           }
         }
       }
@@ -227,6 +303,75 @@
           "type": "integer",
           "minimum": 1,
           "description": "Experiment wall-time cap in milliseconds, checked between trials: a trial already running still completes (bounded by its own wallClockMs); trials not started once the cap passes are recorded as not_started."
+        }
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline"],
+      "description": "Predeclared quality gate (AP-05); thresholds are decided before the experiment, not fitted to its results. Omitted: the report is produced without a gate (qualityGate.status is not_configured) and without paired analysis.",
+      "properties": {
+        "baseline": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Condition id treated as the comparison baseline."
+        },
+        "minCorrectness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1.0,
+          "description": "Every condition with at least one graded trial must have a pass/graded rate of at least this fraction."
+        },
+        "correctnessMargin": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.0,
+          "description": "For an improvement check, the candidate's correctness rate may fall below the baseline's by at most this fraction."
+        },
+        "improvements": {
+          "type": "array",
+          "description": "Declared paired comparisons against the baseline.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["candidate", "metric", "threshold"],
+            "properties": {
+              "candidate": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Condition id compared against the baseline (never the baseline itself)."
+              },
+              "metric": { "type": "string", "enum": ["agentMs", "inputTokens"] },
+              "threshold": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "description": "Practical improvement threshold as a fraction in (0, 1]: the median paired reduction must be at least this large."
+              }
+            }
+          }
+        }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Report analysis configuration (AP-05).",
+      "properties": {
+        "bootstrapIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1000,
+          "description": "Bootstrap resamples for the paired interval estimate (task-cluster: all repetitions of a resampled task are kept together)."
+        },
+        "bootstrapSeed": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Recorded seed so the interval is reproducible."
         }
       }
     },

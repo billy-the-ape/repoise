@@ -350,6 +350,50 @@ impl RunContext {
             );
         }
 
+        // --- Grading (AP-05): independent, data-only, after the agent interval ---
+        let grading = match super::grading::grade_and_write(
+            task,
+            &trial_dir,
+            &trial.trial_id,
+            &trial.condition_id,
+            trial.repetition,
+            &host.status,
+            host.reason.as_deref(),
+        ) {
+            Ok(grading) => grading,
+            Err(err) => {
+                let record = super::grading::evaluator_error_record(
+                    &trial.trial_id,
+                    &trial.task_id,
+                    &trial.condition_id,
+                    trial.repetition,
+                    task.evaluator
+                        .as_ref()
+                        .map(|evaluator| evaluator.method.as_str())
+                        .unwrap_or("none"),
+                    &format!("evaluator failure: {err}"),
+                );
+                if let Err(write_err) =
+                    artifacts::write_json(&trial_dir.join("grading.json"), &record)
+                {
+                    progress(
+                        self.json,
+                        &format!(
+                            "note: could not write grading record for {}: {write_err}",
+                            trial_dir.display()
+                        ),
+                    );
+                }
+                super::grading::Grading {
+                    status: "evaluator_error".into(),
+                    method: "none".into(),
+                    reason: Some(err),
+                    checks: Vec::new(),
+                    answer_present: false,
+                }
+            }
+        };
+
         // --- Cleanup ------------------------------------------------------------
         if !self.keep_workspaces
             && let Err(err) = workspace.remove()
@@ -366,13 +410,14 @@ impl RunContext {
             status: host.status.clone(),
             reason: host.reason.clone(),
             summary: format!(
-                "trial {}/{} {id} ({condition}): {status} {reason} (setup {setup_ms} ms, agent {agent_ms} ms)",
+                "trial {}/{} {id} ({condition}): {status} {reason} (setup {setup_ms} ms, agent {agent_ms} ms, grading {grading})",
                 trial.ordered_index + 1,
                 total,
                 id = trial.trial_id,
                 condition = trial.condition_id,
                 status = host.status,
-                reason = host.reason.as_deref().unwrap_or("")
+                reason = host.reason.as_deref().unwrap_or(""),
+                grading = grading.status
             ),
         })
     }
@@ -413,6 +458,32 @@ impl RunContext {
         });
         let trial_dir = self.layout.trial_dir(&trial.trial_id);
         artifacts::write_json(&trial_dir.join("trial.json"), &record)?;
+        // An infra_error trial was never a completed answer: its grading
+        // record is censored (not graded as a wrong answer), so the report's
+        // grading counts stay honest.
+        let task = self.suite.task(&trial.task_id).expect("validated task id");
+        if let Err(err) = super::grading::grade_and_write(
+            task,
+            &trial_dir,
+            &trial.trial_id,
+            &trial.condition_id,
+            trial.repetition,
+            "infra_error",
+            Some(reason),
+        ) {
+            let record = super::grading::evaluator_error_record(
+                &trial.trial_id,
+                &trial.task_id,
+                &trial.condition_id,
+                trial.repetition,
+                task.evaluator
+                    .as_ref()
+                    .map(|evaluator| evaluator.method.as_str())
+                    .unwrap_or("none"),
+                &format!("evaluator failure: {err}"),
+            );
+            artifacts::write_json(&trial_dir.join("grading.json"), &record)?;
+        }
         if let Some(workspace) = state.workspace
             && !self.keep_workspaces
         {
@@ -467,18 +538,12 @@ fn build_request(
     task: &Task,
     workspace: &Workspace,
 ) -> Result<Value, Error> {
-    let (prompt, task_hash) = match (&task.prompt, &task.prompt_file) {
-        (Some(prompt), None) => (prompt.clone(), crate::hash::sha256_hex(prompt.as_bytes())),
-        (None, Some(file)) => {
-            let path = super::suite::resolve_path(&file.to_string_lossy())?;
-            let contents = artifacts::read_to_string(&path)?;
+    let (prompt, task_hash) = match &task.prompt {
+        Some(prompt) => (prompt.clone(), crate::hash::sha256_hex(prompt.as_bytes())),
+        None => {
+            let contents = task.resolved_prompt()?;
             let task_hash = crate::hash::sha256_hex(contents.as_bytes());
             (contents, task_hash)
-        }
-        _ => {
-            return Err(Error::Config(
-                "suite must set exactly one of prompt/promptFile".into(),
-            ));
         }
     };
 

@@ -248,16 +248,21 @@ it as `npx --no-install repoise`.
 - `repoise bench [OPTIONS] <SUITE>` — run a suite-driven agent benchmark:
   repeated trials over a frozen snapshot in disposable worktrees, against
   declared retrieval conditions, driven through the AP-03 agent adapter
-  protocol (the optional Node host bridge). `--dry-run` inspects the frozen
-  plan without launching agents; `--json` machine output. Exit codes: 0
-  completed, 1 operational failure, 2 usage, 3 preflight/suite failure,
-  4 interrupted. A source-checkout build needs no environment variables;
-  installed npm/native packages do not ship the host bridge and need
-  `REPOISE_BENCH_HOST_BRIDGE`. See [bench](docs/bench.md).
+  protocol (the optional Node host bridge). Completed trials are graded by
+  the task's declared evaluator (AP-05) and the published report
+  (`report.json`/`report.md`) carries grading counts, predeclared paired
+  comparisons and the predeclared quality gate; `bench report`
+  re-grades recorded trials and rebuilds the report offline. `--dry-run`
+  inspects the frozen plan without launching agents; `--json` machine
+  output. Exit codes: 0 completed, 1 operational failure, 2 usage, 3
+  preflight/suite failure, 4 interrupted. A source-checkout build needs no
+  environment variables; installed npm/native packages do not ship the
+  host bridge and need `REPOISE_BENCH_HOST_BRIDGE`. See [bench](docs/bench.md).
 
   ```sh
   repoise bench --dry-run /abs/path/to/suite.json
   repoise bench /abs/path/to/suite.json --output /tmp/bench-out
+  repoise bench report --experiment my-experiment --output /tmp/bench-out
   ```
 
 ## Use with an agent

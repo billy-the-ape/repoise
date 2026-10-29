@@ -1,7 +1,104 @@
 # AP-05: task suites, independent grading and comparison reports
 
-Status: proposed. Depends on [AP-04](04-benchmark-runner.md); co-design schema with
-[AP-03](03-agent-adapters.md). Preserve existing retrieval evaluation separately.
+Status: implemented (2026-10-27). Depends on [AP-04](04-benchmark-runner.md);
+co-design schema with [AP-03](03-agent-adapters.md). Preserve existing
+retrieval evaluation separately. See the [benchmark guide](../../bench.md).
+
+## Implementation notes (AP-05, 2026-10-27)
+
+Shipped in `crates/repoise-core/src/bench/` (`suite.rs` evaluator/gates/report
+validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
+`mod.rs`; CLI `bench report` in `crates/repoise-cli`):
+
+- Suite schema v1 gains optional `tasks[].evaluator` (`deterministic`,
+  `humanRubric`, `modelJudge`), `tasks[].category`/`heldOut`/
+  `allowedPaths`/`expectedArtifacts`, top-level `gates` (baseline,
+  `minCorrectness`, `correctnessMargin`, `improvements`) and `report`
+  (`bootstrapIterations`, `bootstrapSeed`). Additive within v1; the checked-in
+  [suite schema](../../../schemas/bench-suite.v1.schema.json) documents them.
+- Post-trial grading (`trials/<id>/grading.json`, new checked-in
+  [grading schema](../../../schemas/bench-grading.v1.schema.json)): data-only
+  deterministic checks over the recorded answer and declared artifact files
+  (`containsAny`/`containsAll`/`notContains`, case-sensitive substring;
+  alternative correct evidence accepted, exact equality deliberately not the
+  default; an absent answer or artifact fails every check — including
+  `notContains` — so a trial that produced no answer is `fail`); declared
+  artifact files and the adapter event log are read only when they are
+  regular files (symlinks/devices are treated as not produced) and with a
+  size cap; censored
+  (timed-out/failed) trials are `not_graded`, never wrong answers; `humanRubric`/`modelJudge` are declared-only in this build —
+  operator-written manual records are validated and kept verbatim (never
+  relabeled as engine records, so repeated rebuilds never lose them),
+  engine records (`source: "engine"`) are replaced, and invalid or
+  unparseable operator records are `evaluator_error`: the operator's file is
+  preserved at `grading.json.rejected` (never clobbered in place) and the
+  recorded error is re-emitted verbatim across rebuilds until a valid
+  manual record replaces it; the same preservation applies when the engine
+  replaces an operator record left on a censored trial (preserved, not
+  honored — a graded result cannot stand behind a censored trial).
+- Report (`report.json` schema v1 + `report.md` rendered from the same
+  object): status/grading counts (planned/attempted/completed/timed-out/
+  cancelled/invalid/not-started; nothing dropped), overall/per-condition/
+  per-task grading summaries with the held-out split, and — only when `gates`
+  is predeclared — paired per-task analysis (median paired difference and
+  reduction over tasks with metric-eligible data on both sides — only
+  completed and timed-out trials contribute values; other trial statuses
+  are excluded and counted in the per-task exclusion reasons — zero-baseline
+  undefined-
+  reduction note, task-cluster bootstrap percentile interval with recorded
+  seed/iterations, labelled success-only medians, timeout rate) and the
+  predeclared quality gate (`pass`/`fail`/`insufficient_data`/
+  `not_configured`): the overall status is `pass` only when every declared
+  check was evaluated and passed, and a speed gain with insufficient
+  correctness data is `insufficient_data`, never `pass`. Per-condition
+  `attempted` excludes not-started slots (matching the global counts and the
+  `timeoutRate` denominator). Timeouts stay censored; the gate is
+  descriptive evidence against predeclared thresholds, not a product gate.
+- `repoise bench report --experiment <ID> [--output <DIR>] [--json]`
+  re-grades recorded trials and rebuilds the report offline from the frozen
+  manifest and artifacts (no worktrees, no agent processes). Not-started
+  slots are never re-graded (the run never graded them either), so the
+  rebuilt report sees the same counts as the run, and the run's status and
+  `failureReason` carry over from the previous report when one exists.
+- Fixes from the PR review round: a `humanRubric` evaluator without a rubric
+  (or with a blank one) fails suite validation, matching the schema, docs
+  and `Evaluator` doc comment (the checked-in suite schema enforces it with
+  an `if`/`then` rule); the rebuild path re-validates the frozen manifest's
+  task, condition and gate declarations (the manifest is untrusted input — a
+  copied or hand-edited manifest fails with a configuration error instead
+  of panicking a grader or reading outside the trial directory), and
+  structural check-declaration defects (unknown scope/type, artifact scope
+  without a name, non-plain artifact names) degrade to an `evaluator_error`
+  instead of panicking; trials killed by the coordinator's outer watchdog
+  (`infra_error` or `cancelled` with reason `host_watchdog`) are counted as
+  censored timeouts that keep their recorded capped agent time, not as
+  infra failures.
+- Further review fixes: the rebuild path re-validates the manifest's
+  `report` spec too (`report_problems`, shared with `Suite::validate`) — a
+  `bootstrapIterations: 0` spec fails with a configuration error instead of
+  reaching a percentile of an empty bootstrap draw, and `percentile`
+  returns NaN (JSON `null`) on an empty draw as defense in depth. The
+  stale "AP-05 not implemented" boundary line in
+  [agent adapters](../../agent-adapters.md) and a broken relative link in
+  `scripts/eval/RUNBOOK.md` are fixed.
+- Further review fixes: the Cline adapter records the agent's final
+  message text on the `final` event's `data.answer` (null when none), with
+  the convention described in the adapter-events schema and the
+  [agent adapter](../../agent-adapters.md) guide, so deterministic answer
+  grading works end to end with the shipped adapter; the run takes the
+  report's task provenance from the frozen manifest (no prompt-file disk
+  reads at report time), so a prompt file deleted mid-run cannot sink the
+  report; the `docs/bench.md` check description names the required `id`
+  and optional `note` fields and shows an example check.
+
+Deliberately deferred (open decisions before AP-06, per the acceptance
+section): model-judge runtime and calibration, grading-plugin isolation
+beyond worktree isolation, the v1 replay-evidence export path (v1 import
+validation is preserved and untouched; no export offered), repository/model
+expansion (AP-06) and the VS Code UI (AP-07). Synthetic report fixtures cover
+a faster-but-wrong condition, missing telemetry, zero baseline, correlated
+repeats, timeouts, evaluator failure and censored trials; the runbook now
+separates retrieval tests, legacy evidence and live trials.
 
 ## Two complementary evaluation layers
 

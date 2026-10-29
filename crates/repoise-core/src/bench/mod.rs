@@ -9,7 +9,9 @@
 //! the explicit optional companion required to run agent adapters. See
 //! `docs/bench.md`.
 
+pub mod analysis;
 pub mod artifacts;
+pub mod grading;
 pub mod plan;
 pub mod preflight;
 pub mod runner;
@@ -205,7 +207,7 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         trials,
         overrides: &prepared.overrides,
     };
-    preflight::write_manifest(&layout.experiment_dir, &manifest_input)?;
+    let manifest = preflight::write_manifest(&layout.experiment_dir, &manifest_input)?;
 
     let adapter_env = resolve_adapter_env(suite)?;
     let ctx = runner::RunContext {
@@ -234,7 +236,7 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
     for (index, trial) in trials.iter().enumerate() {
         // Interruption: stop scheduling; remaining trials are not_started.
         if interrupted.load(Ordering::SeqCst) {
-            push_not_started(&mut records, trial, "interrupted");
+            push_not_started(&layout, &mut records, trial, "interrupted");
             continue;
         }
         // Experiment wall-time cap: checked between trials (a running trial
@@ -242,14 +244,14 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         if let Some(deadline) = experiment_deadline
             && Instant::now() >= deadline
         {
-            push_not_started(&mut records, trial, "experiment_budget_exceeded");
+            push_not_started(&layout, &mut records, trial, "experiment_budget_exceeded");
             continue;
         }
         // Drift: the frozen inputs must still hold before every trial.
         if let Err(reason) = check_drift(suite_path, suite_hash, suite, preflight) {
-            push_not_started(&mut records, trial, &reason);
+            push_not_started(&layout, &mut records, trial, &reason);
             for remaining in &trials[index + 1..] {
-                push_not_started(&mut records, remaining, &reason);
+                push_not_started(&layout, &mut records, remaining, &reason);
             }
             report_status = "failed";
             failure_reason = Some(reason.clone());
@@ -266,9 +268,9 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
             Ok(outcome) => outcome,
             Err(err) => {
                 let reason = format!("runner_failure: {err}");
-                push_not_started(&mut records, trial, &reason);
+                push_not_started(&layout, &mut records, trial, &reason);
                 for remaining in &trials[index + 1..] {
-                    push_not_started(&mut records, remaining, &reason);
+                    push_not_started(&layout, &mut records, remaining, &reason);
                 }
                 report_status = "failed";
                 failure_reason = Some(reason);
@@ -285,16 +287,38 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         report_status = "interrupted";
     }
 
-    let report = build_report(
-        suite,
+    // The report reads the recorded trial + grading artifacts (the same
+    // sources a later `bench report` rebuild uses). Task provenance comes
+    // from the frozen manifest (preflight hashed the prompt files before
+    // the trial loop): no disk reads at report time, so a prompt file
+    // deleted mid-run cannot sink the report, and the report's provenance
+    // matches what a `bench report` rebuild re-reads.
+    let trial_data = collect_trials(&layout)?;
+    let provenance = provenance_from_manifest(&manifest)?;
+    let input = ReportInput {
+        experiment_id: &suite.id,
         suite_hash,
-        started,
-        &started_at,
+        tasks: &provenance,
+        conditions: &suite.conditions,
+        gates: suite.gates.as_ref(),
+        report_spec: suite.report.as_ref(),
+        planned: trials.len(),
+        trials: &trial_data,
+    };
+    let ended_at = runner::now_utc();
+    let report = assemble_report(
+        &input,
         report_status,
         failure_reason,
-        &records,
+        &started_at,
+        &ended_at,
+        started.elapsed().as_millis(),
     );
     artifacts::write_json(&layout.report_path(), &report)?;
+    artifacts::write_text(
+        &layout.experiment_dir.join("report.md"),
+        &analysis::render_markdown(&report),
+    )?;
     let exit_code = match report_status {
         "interrupted" => EXIT_INTERRUPTED,
         "failed" => EXIT_OPERATIONAL,
@@ -410,15 +434,26 @@ fn patch_drift_error(patch_file: &Path, patch_hash: &str) -> Result<(), String> 
     Ok(())
 }
 
-fn push_not_started(records: &mut Vec<Value>, trial: &plan::Trial, reason: &str) {
-    records.push(record_summary(
+fn push_not_started(
+    layout: &artifacts::Layout,
+    records: &mut Vec<Value>,
+    trial: &plan::Trial,
+    reason: &str,
+) {
+    let record = record_summary(
         trial,
         &runner::TrialOutcome {
             status: "not_started".into(),
             reason: Some(reason.to_string()),
             summary: format!("{reason}: not started"),
         },
-    ));
+    );
+    // Persist the slot so a later `bench report` rebuild sees the same
+    // counts; a failure here must not mask the real failure reason.
+    let dir = layout.trial_dir(&trial.trial_id);
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = artifacts::write_json(&dir.join("trial.json"), &record);
+    records.push(record);
 }
 
 fn record_summary(trial: &plan::Trial, outcome: &runner::TrialOutcome) -> Value {
@@ -434,37 +469,342 @@ fn record_summary(trial: &plan::Trial, outcome: &runner::TrialOutcome) -> Value 
     })
 }
 
-/// The final experiment report (AP-05 owns grading; the quality gate stays
-/// null here).
-fn build_report(
-    suite: &suite::Suite,
-    suite_hash: &str,
-    started: Instant,
-    started_at: &str,
+/// Everything the report needs, decoupled from the live suite so a report
+/// rebuild can work from the frozen manifest alone.
+struct ReportInput<'a> {
+    experiment_id: &'a str,
+    suite_hash: &'a str,
+    tasks: &'a [suite::TaskProvenance],
+    conditions: &'a [suite::Condition],
+    gates: Option<&'a suite::Gates>,
+    report_spec: Option<&'a suite::ReportSpec>,
+    planned: usize,
+    trials: &'a [analysis::TrialData],
+}
+
+/// The final experiment report (AP-05): status/grading counts, per-task and
+/// per-condition grading summaries, the declared paired comparisons (when
+/// gates are predeclared) and the predeclared quality gate. The same value
+/// is written to `report.json`; `report.md` is rendered from it.
+fn assemble_report(
+    input: &ReportInput,
     status: &str,
     failure_reason: Option<String>,
-    records: &[Value],
+    started_at: &str,
+    ended_at: &str,
+    duration_ms: u128,
 ) -> Value {
-    let mut by_status: BTreeMap<String, u64> = BTreeMap::new();
-    for record in records {
-        let key = record["status"].as_str().unwrap_or("unknown").to_string();
-        *by_status.entry(key).or_insert(0) += 1;
-    }
+    let records: Vec<Value> = input
+        .trials
+        .iter()
+        .map(|data| {
+            serde_json::json!({
+                "trialId": data.trial["trialId"],
+                "taskId": data.trial["taskId"],
+                "conditionId": data.trial["conditionId"],
+                "repetition": data.trial["repetition"],
+                "status": data.trial["status"],
+                "reason": data.trial["reason"],
+                "grading": data
+                    .grading
+                    .as_ref()
+                    .and_then(|grading| grading.get("status").cloned())
+                    .unwrap_or(Value::Null),
+                "timings": data.trial.get("timings").cloned().unwrap_or(Value::Null),
+                "usage": data.trial.get("usage").cloned().unwrap_or(Value::Null)
+            })
+        })
+        .collect();
+    let counts = analysis::counts(input.trials, input.planned);
+    let grading = analysis::grading_summary(input.trials, input.tasks);
+    let paired = input.gates.map(|gates| {
+        let spec = input.report_spec.unwrap_or(&suite::ReportSpec {
+            bootstrap_iterations: 1000,
+            bootstrap_seed: 0,
+        });
+        analysis::paired_analysis(input.trials, input.tasks, gates, spec)
+    });
+    let gate = analysis::quality_gate(input.trials, input.conditions, input.gates, paired.as_ref());
     serde_json::json!({
         "schemaVersion": 1,
-        "experimentId": suite.id,
-        "suiteHash": suite_hash,
+        "experimentId": input.experiment_id,
+        "suiteHash": input.suite_hash,
         "status": status,
         "failureReason": failure_reason,
         "startedAtUtc": started_at,
-        "endedAtUtc": runner::now_utc(),
-        "durationMs": started.elapsed().as_millis(),
+        "endedAtUtc": ended_at,
+        "durationMs": duration_ms,
         "trials": records,
-        "byStatus": by_status,
-        "qualityGate": {
-            "status": "not_evaluated",
-            "note": "completion criteria and grading are defined by AP-05; this runner records completion and resources only"
+        "counts": counts,
+        "grading": grading,
+        "analysis": paired,
+        "qualityGate": gate
+    })
+}
+
+/// Collects every recorded trial (`trial.json` plus optional
+/// `grading.json`) from the experiment's trial directories, sorted by
+/// trial id. Directories without a `trial.json` are skipped: a partial
+/// write is the only way one can exist, and the status counts then reflect
+/// the records actually on disk.
+fn collect_trials(layout: &artifacts::Layout) -> Result<Vec<analysis::TrialData>, Error> {
+    let mut collected: Vec<analysis::TrialData> = Vec::new();
+    let entries = std::fs::read_dir(&layout.trials_dir).map_err(Error::Io)?;
+    for entry in entries {
+        let entry = entry.map_err(Error::Io)?;
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
         }
+        let trial_path = entry.path().join("trial.json");
+        let Some(trial) = artifacts::read_json(&trial_path).ok() else {
+            continue;
+        };
+        let grading = artifacts::read_json(&entry.path().join("grading.json")).ok();
+        collected.push(analysis::TrialData { trial, grading });
+    }
+    collected.sort_by(|a, b| {
+        a.trial["trialId"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b.trial["trialId"].as_str().unwrap_or(""))
+    });
+    Ok(collected)
+}
+
+/// Task provenance from the frozen manifest. The manifest's task entries
+/// were hashed at preflight, so report assembly never re-reads prompt
+/// files from disk.
+fn provenance_from_manifest(manifest: &Value) -> Result<Vec<suite::TaskProvenance>, Error> {
+    manifest["tasks"]
+        .as_array()
+        .ok_or_else(|| Error::Config("manifest has no tasks array".into()))?
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| Error::Json(err.to_string()))
+}
+
+/// `repoise bench report` (AP-05): re-grades recorded trials offline
+/// (deterministic checks re-run; manual grading records are picked up when
+/// written) and reassembles `report.json`/`report.md` from the frozen
+/// manifest and the trial artifacts. The run facts (start/end/duration,
+/// status) carry over from the previous report when present.
+pub struct RebuildRequest {
+    pub output: PathBuf,
+    pub experiment_id: String,
+    pub json: bool,
+}
+
+pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
+    let output_root = suite::resolve_path(&request.output.to_string_lossy())?;
+    let experiment_dir = output_root.join(&request.experiment_id);
+    let manifest = artifacts::read_json(&experiment_dir.join("manifest.json")).map_err(|_| {
+        Error::Config(format!(
+            "no experiment manifest for '{}' under {}; the experiment has not been run (or the \
+             output root is wrong)",
+            request.experiment_id,
+            output_root.display()
+        ))
+    })?;
+    let manifest_error = |field: &str| -> Error {
+        Error::Config(format!(
+            "manifest for experiment '{}' is missing or invalid field '{field}'",
+            request.experiment_id
+        ))
+    };
+    let tasks: Vec<suite::TaskProvenance> = manifest["tasks"]
+        .as_array()
+        .ok_or_else(|| manifest_error("tasks"))?
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| Error::Json(err.to_string()))?;
+    let conditions: Vec<suite::Condition> = manifest["conditions"]
+        .as_array()
+        .ok_or_else(|| manifest_error("conditions"))?
+        .iter()
+        .cloned()
+        .map(serde_json::from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| Error::Json(err.to_string()))?;
+    let gates: Option<suite::Gates> = if manifest["gates"].is_null() {
+        None
+    } else {
+        Some(
+            serde_json::from_value(manifest["gates"].clone())
+                .map_err(|err| Error::Json(err.to_string()))?,
+        )
+    };
+    let report_spec: Option<suite::ReportSpec> = if manifest["report"].is_null() {
+        None
+    } else {
+        Some(
+            serde_json::from_value(manifest["report"].clone())
+                .map_err(|err| Error::Json(err.to_string()))?,
+        )
+    };
+    // The manifest is untrusted input on the rebuild path: a copied or
+    // hand-edited manifest must fail the same semantic rules the run
+    // validated, instead of panicking the graders or escaping the trial
+    // directory through an artifact name.
+    let mut problems: Vec<String> = Vec::new();
+    if tasks.is_empty() {
+        problems.push("manifest declares no tasks".into());
+    }
+    let mut seen_task_ids: Vec<&str> = Vec::new();
+    for task in &tasks {
+        if !task.id.is_empty() {
+            if seen_task_ids.contains(&task.id.as_str()) {
+                problems.push(format!("duplicate task id '{}'", task.id));
+            } else {
+                seen_task_ids.push(&task.id);
+            }
+        }
+        problems.extend(suite::task_problems(&task.grading_task()));
+    }
+    if conditions.is_empty() {
+        problems.push("manifest declares no conditions".into());
+    }
+    problems.extend(suite::condition_problems(&conditions));
+    if let Some(gates) = &gates {
+        problems.extend(suite::gates_problems(gates, &conditions));
+    }
+    if let Some(report_spec) = &report_spec {
+        problems.extend(suite::report_problems(report_spec));
+    }
+    if !problems.is_empty() {
+        return Err(Error::Config(format!(
+            "manifest for experiment '{}' failed validation: {}",
+            request.experiment_id,
+            problems.join("; ")
+        )));
+    }
+
+    let planned = manifest["trials"]
+        .as_array()
+        .map(|trials| trials.len())
+        .unwrap_or(0);
+
+    // Re-grade every recorded trial offline: deterministic checks re-run,
+    // valid manual grading records are picked up, engine failures are
+    // recorded as evaluator_error.
+    let layout = artifacts::Layout {
+        experiment_dir: experiment_dir.clone(),
+        cache_dir: experiment_dir.join("cache"),
+        workspaces_dir: experiment_dir.join("workspaces"),
+        trials_dir: experiment_dir.join("trials"),
+    };
+    let entries = std::fs::read_dir(&layout.trials_dir).map_err(Error::Io)?;
+    for entry in entries {
+        let entry = entry.map_err(Error::Io)?;
+        let trial_dir = entry.path();
+        if !trial_dir.join("trial.json").exists() {
+            continue;
+        }
+        let trial = artifacts::read_json(&trial_dir.join("trial.json")).ok();
+        let Some(trial) = trial else {
+            continue;
+        };
+        let task_id = trial["taskId"].as_str().unwrap_or("");
+        let task = match tasks.iter().find(|task| task.id == task_id) {
+            Some(task) => task,
+            None => continue,
+        };
+        let trial_id = trial["trialId"].as_str().unwrap_or(task_id);
+        let condition_id = trial["conditionId"].as_str().unwrap_or("");
+        let repetition = trial["repetition"].as_u64().unwrap_or(0) as u32;
+        let status = trial["status"].as_str().unwrap_or("");
+        let reason = trial["reason"].as_str().map(str::to_string);
+        // `run()` never grades not-started slots (no answer was produced);
+        // grading them here would inflate notGraded between run and rebuild.
+        if status != "not_started" {
+            let grading_task = task.grading_task();
+            if let Err(err) = grading::grade_and_write(
+                &grading_task,
+                &trial_dir,
+                trial_id,
+                condition_id,
+                repetition,
+                status,
+                reason.as_deref(),
+            ) {
+                let record = grading::evaluator_error_record(
+                    trial_id,
+                    task_id,
+                    condition_id,
+                    repetition,
+                    task.evaluator
+                        .as_ref()
+                        .map(|evaluator| evaluator.method.as_str())
+                        .unwrap_or("none"),
+                    &format!("evaluator failure: {err}"),
+                );
+                artifacts::write_json(&trial_dir.join("grading.json"), &record)?;
+            }
+        }
+    }
+
+    let trials = collect_trials(&layout)?;
+    // Run facts carry over from the previous report (it recorded the
+    // experiment run, not the analysis); the analysis itself is always
+    // recomputed.
+    let previous = artifacts::read_json(&layout.report_path()).ok();
+    let (started_at, ended_at, duration_ms, status, failure_reason) = match previous {
+        Some(report) => (
+            report["startedAtUtc"].as_str().unwrap_or("").to_string(),
+            report["endedAtUtc"].as_str().unwrap_or("").to_string(),
+            report["durationMs"].as_u64().unwrap_or(0) as u128,
+            report["status"].as_str().unwrap_or("unknown").to_string(),
+            report["failureReason"].as_str().map(str::to_string),
+        ),
+        None => (
+            manifest["startedAtUtc"].as_str().unwrap_or("").to_string(),
+            runner::now_utc(),
+            0,
+            "unknown".into(),
+            None,
+        ),
+    };
+    let suite_hash = manifest["suiteHash"].as_str().unwrap_or("");
+    let input = ReportInput {
+        experiment_id: &request.experiment_id,
+        suite_hash,
+        tasks: &tasks,
+        conditions: &conditions,
+        gates: gates.as_ref(),
+        report_spec: report_spec.as_ref(),
+        planned,
+        trials: &trials,
+    };
+    let report = assemble_report(
+        &input,
+        &status,
+        failure_reason,
+        &started_at,
+        &ended_at,
+        duration_ms,
+    );
+    artifacts::write_json(&layout.report_path(), &report)?;
+    artifacts::write_text(
+        &layout.experiment_dir.join("report.md"),
+        &analysis::render_markdown(&report),
+    )?;
+    let gate_status = report["qualityGate"]["status"]
+        .as_str()
+        .unwrap_or("?")
+        .to_string();
+    Ok(BenchOutcome {
+        exit_code: EXIT_OK,
+        payload: report,
+        summary: format!(
+            "report rebuilt for experiment '{}': {} trial(s), quality gate {}; report {}",
+            request.experiment_id,
+            trials.len(),
+            gate_status,
+            layout.report_path().display()
+        ),
     })
 }
 
@@ -485,6 +825,11 @@ mod tests {
                 prompt: Some("do it".into()),
                 prompt_file: None,
                 version: "1".into(),
+                category: None,
+                held_out: false,
+                allowed_paths: Vec::new(),
+                expected_artifacts: Vec::new(),
+                evaluator: None,
             }],
             conditions: vec![suite::Condition {
                 id: "baseline".into(),
@@ -516,6 +861,8 @@ mod tests {
             },
             limits: suite::Limits::default(),
             budgets: suite::Budgets::default(),
+            gates: None,
+            report: None,
             output: suite::OutputSpec::default(),
         }
     }
@@ -572,5 +919,409 @@ mod tests {
         assert!(patch_drift_error(&patch, &hash).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `bench report` rebuild re-grades recorded slots but must not grade
+    /// not-started ones (matching the run's own counts), and must carry the
+    /// run's status/failure reason into the rebuilt report.
+    #[test]
+    fn rebuild_skips_not_started_slots_and_carries_run_facts() {
+        let dir =
+            std::env::temp_dir().join(format!("repoise-bench-rebuild-{}", std::process::id()));
+        let experiment = dir.join("exp");
+        let trials_dir = experiment.join("trials");
+        std::fs::create_dir_all(trials_dir.join("t-completed").join("adapter")).unwrap();
+        std::fs::create_dir_all(trials_dir.join("t-unstarted")).unwrap();
+
+        // Frozen manifest: one deterministic task, one condition, two
+        // planned slots (one completed, one never started).
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [{
+                        "id": "c1",
+                        "type": "containsAll",
+                        "values": ["ok"]
+                    }]
+                }
+            }],
+            "conditions": [{ "id": "cond", "retrievalMode": "baseline" }],
+            "gates": null,
+            "report": null,
+            "trials": [
+                { "trialId": "t-completed", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 0 },
+                { "trialId": "t-unstarted", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 1 }
+            ]
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        // Completed trial with a final answer; unstarted slot without events.
+        let completed = trials_dir.join("t-completed");
+        std::fs::write(
+            completed.join("adapter").join("events.ndjson"),
+            r#"{"t":"final","data":{"answer":"ok"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            completed.join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t-completed",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "completed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let unstarted = trials_dir.join("t-unstarted");
+        std::fs::write(
+            unstarted.join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t-unstarted",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "not_started",
+                "reason": "budget_exceeded"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // The run's report recorded a failure; the rebuild must carry the
+        // reason over instead of dropping it.
+        std::fs::write(
+            experiment.join("report.json"),
+            serde_json::to_string(&serde_json::json!({
+                "status": "failed",
+                "failureReason": "budget exceeded before all trials ran",
+                "startedAtUtc": "2026-01-01T00:00:00Z",
+                "endedAtUtc": "2026-01-01T00:05:00Z",
+                "durationMs": 300000
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let outcome = rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        })
+        .unwrap();
+        let report = outcome.payload;
+        assert_eq!(report["status"], "failed");
+        assert_eq!(
+            report["failureReason"],
+            "budget exceeded before all trials ran"
+        );
+        assert_eq!(report["counts"]["planned"], 2);
+        assert_eq!(report["counts"]["attempted"], 1);
+        assert_eq!(report["counts"]["notStarted"], 1);
+        // The completed slot is re-graded; the unstarted slot is not graded
+        // at all (no grading.json, and it lands in no grading bucket).
+        assert!(completed.join("grading.json").exists());
+        assert!(!unstarted.join("grading.json").exists());
+        assert_eq!(report["grading"]["overall"]["pass"], 1);
+        assert_eq!(report["counts"]["notGraded"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_preserves_rejected_manual_records_and_stays_byte_stable() {
+        // An invalid operator grading.json is never clobbered in place: the
+        // operator's bytes move to grading.json.rejected, an engine
+        // evaluator_error is recorded in their place, and every subsequent
+        // rebuild re-emits that record verbatim (byte-stable, no reason
+        // nesting) until a valid manual record replaces it.
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-rebuild-rejected-{}",
+            std::process::id()
+        ));
+        let experiment = dir.join("exp");
+        let trial_dir = experiment.join("trials").join("t1");
+        std::fs::create_dir_all(trial_dir.join("adapter")).unwrap();
+
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "humanRubric",
+                    "rubric": "name the failing function"
+                }
+            }],
+            "conditions": [{ "id": "cond", "retrievalMode": "baseline" }],
+            "gates": null,
+            "report": null,
+            "trials": [
+                { "trialId": "t1", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 0 }
+            ]
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        std::fs::write(
+            trial_dir.join("adapter").join("events.ndjson"),
+            r#"{"t":"final","data":{"answer":"parse_header"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            trial_dir.join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t1",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "completed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Operator writes a record whose method does not match the task.
+        let operator_bytes =
+            r#"{"schemaVersion":1,"status":"fail","method":"deterministic","reason":"nope"}"#;
+        std::fs::write(trial_dir.join("grading.json"), operator_bytes).unwrap();
+
+        let rebuild = || {
+            rebuild(&RebuildRequest {
+                output: dir.clone(),
+                experiment_id: "exp".into(),
+                json: false,
+            })
+            .unwrap()
+        };
+
+        // Rebuild 1: operator bytes preserved, evaluator_error recorded.
+        let outcome = rebuild();
+        let rejected = trial_dir.join("grading.json.rejected");
+        assert_eq!(std::fs::read_to_string(&rejected).unwrap(), operator_bytes);
+        let stored_first = std::fs::read_to_string(trial_dir.join("grading.json")).unwrap();
+        let first_record: serde_json::Value = serde_json::from_str(&stored_first).unwrap();
+        assert_eq!(first_record["status"], "evaluator_error");
+        assert_eq!(first_record["source"], "engine");
+        assert_eq!(outcome.payload["grading"]["overall"]["evaluatorError"], 1);
+
+        // Rebuilds 2 and 3: byte-stable record, untouched rejected file,
+        // stable counts.
+        for pass in 2..=3 {
+            let outcome = rebuild();
+            assert_eq!(
+                std::fs::read_to_string(trial_dir.join("grading.json")).unwrap(),
+                stored_first,
+                "rebuild {pass}: the evaluator_error record must be byte-stable"
+            );
+            assert_eq!(std::fs::read_to_string(&rejected).unwrap(), operator_bytes);
+            assert_eq!(outcome.payload["grading"]["overall"]["evaluatorError"], 1);
+        }
+
+        // A valid manual record replaces the error and is kept verbatim.
+        let manual = r#"{"schemaVersion":1,"status":"pass","method":"humanRubric","reason":"named the failing function"}"#;
+        std::fs::write(trial_dir.join("grading.json"), manual).unwrap();
+        let outcome = rebuild();
+        assert_eq!(
+            std::fs::read_to_string(trial_dir.join("grading.json")).unwrap(),
+            manual
+        );
+        assert_eq!(outcome.payload["grading"]["overall"]["pass"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_refuses_a_zero_bootstrap_report_spec() {
+        // Suite::validate rejects bootstrapIterations == 0; the rebuild
+        // path must fail the same semantic check instead of letting
+        // paired_analysis take a percentile of an empty bootstrap sample
+        // (which panics).
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-rebuild-reportspec-{}",
+            std::process::id()
+        ));
+        let experiment = dir.join("exp");
+        std::fs::create_dir_all(experiment.join("trials")).unwrap();
+
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [{ "id": "c1", "type": "containsAll", "values": ["ok"] }]
+                }
+            }],
+            "conditions": [
+                { "id": "baseline", "retrievalMode": "baseline" },
+                { "id": "candidate", "retrievalMode": "repoise", "searchMode": "lexical" }
+            ],
+            "gates": {
+                "baseline": "baseline",
+                "improvements": [{ "candidate": "candidate", "metric": "agentMs", "threshold": 0.10 }]
+            },
+            "report": { "bootstrapIterations": 0 },
+            "trials": []
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let err = match rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("rebuild of a zero-iteration report spec must fail"),
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("bootstrapIterations must be at least 1"),
+            "{}",
+            message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_refuses_a_corrupt_manifest_without_panic() {
+        // A manifest a validated run would never have written: an unknown
+        // check type and an artifact name that escapes the adapter
+        // directory. The rebuild must fail preflight instead of panicking
+        // the grader or reading outside the trial directory.
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-rebuild-corrupt-{}",
+            std::process::id()
+        ));
+        let experiment = dir.join("exp");
+        let trials_dir = experiment.join("trials");
+        std::fs::create_dir_all(trials_dir.join("t-1").join("adapter")).unwrap();
+
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "expectedArtifacts": ["../../escape.txt"],
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [
+                        { "id": "c1", "type": "regex", "values": ["ok"] },
+                        {
+                            "id": "c2",
+                            "scope": "artifact",
+                            "type": "containsAll",
+                            "artifact": "../../escape.txt",
+                            "values": ["x"]
+                        }
+                    ]
+                }
+            }],
+            "conditions": [{ "id": "cond", "retrievalMode": "baseline" }],
+            "gates": null,
+            "report": null,
+            "trials": [
+                { "trialId": "t-1", "taskId": "task-a", "conditionId": "cond", "repetition": 0, "orderedIndex": 0 }
+            ]
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            trials_dir.join("t-1").join("trial.json"),
+            serde_json::to_string(&serde_json::json!({
+                "trialId": "t-1",
+                "taskId": "task-a",
+                "conditionId": "cond",
+                "repetition": 0,
+                "status": "completed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            trials_dir.join("t-1").join("adapter").join("events.ndjson"),
+            r#"{"t":"final","data":{"answer":"ok"}}"#,
+        )
+        .unwrap();
+
+        let err = match rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("rebuild of a corrupt manifest must fail"),
+        };
+        let message = err.to_string();
+        assert!(message.contains("failed validation"), "{}", message);
+        assert!(message.contains("regex"), "{}", message);
+        assert!(message.contains("plain file name"), "{}", message);
+        assert!(
+            !trials_dir.join("t-1").join("grading.json").exists(),
+            "a corrupt manifest must not be graded"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn report_provenance_comes_from_the_frozen_manifest() {
+        // run() takes the report's task provenance from the manifest
+        // preflight wrote (prompt files hashed before the trial loop), so
+        // a prompt file deleted mid-run cannot sink the report: no disk
+        // read happens on this path.
+        let manifest = serde_json::json!({
+            "tasks": [{
+                "id": "task-a",
+                "version": "1",
+                "heldOut": false,
+                "promptHash": "hash-a",
+                "evaluator": {
+                    "method": "deterministic",
+                    "answerField": "answer",
+                    "checks": [{ "id": "c1", "type": "containsAll", "values": ["ok"] }]
+                }
+            }]
+        });
+        let provenance = provenance_from_manifest(&manifest).unwrap();
+        assert_eq!(provenance.len(), 1);
+        assert_eq!(provenance[0].id, "task-a");
+        assert_eq!(provenance[0].prompt_hash, "hash-a");
+
+        // A manifest without a tasks array is a configuration error, never a panic.
+        let err = provenance_from_manifest(&serde_json::json!({})).unwrap_err();
+        assert!(err.to_string().contains("tasks array"), "{}", err);
     }
 }

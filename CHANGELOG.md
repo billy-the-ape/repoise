@@ -247,6 +247,101 @@ from the NUL-separated origin field). See
 `docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 
+### Benchmark grading and reports (AP-05)
+
+`repoise bench` now grades completed trials and publishes a report
+(AP-05; the runner, preflight and artifact layout from AP-04 are unchanged).
+
+- Suite schema v1 gains optional fields: `tasks[].evaluator`
+  (`deterministic` checks over the recorded answer and declared artifact
+  files; `humanRubric`/`modelJudge` declared-only), `tasks[].category`/
+  `heldOut`/`allowedPaths`/`expectedArtifacts`, top-level `gates`
+  (baseline, `minCorrectness`, `correctnessMargin`, declared `improvements`)
+  and `report` (task-cluster bootstrap iterations/seed). The checked-in
+  suite schema documents them; the new grading record schema is checked in at
+  `schemas/bench-grading.v1.schema.json`.
+- Post-trial grading writes `trials/<id>/grading.json` (data-only; nothing
+  read from transcripts or the repository is ever executed; a trial's own
+  assertions and exit code are never treated as correctness). Deterministic
+  checks are literal-substring assertions (`containsAny`/`containsAll`/
+  `notContains`, case-sensitive; alternative correct evidence accepted, exact
+  equality deliberately not the default). Censored trials (timeout, adapter
+  failure, cancellation) are `not_graded`, never graded as wrong answers.
+  Operator-written manual grading records are kept verbatim (never relabeled
+  as engine records, so repeated rebuilds never lose them); engine records
+  carry `source: "engine"`; an invalid or unparseable manual record is
+  `evaluator_error` and the engine never clobbers the operator's bytes in
+  place - the operator's file is preserved at
+  `trials/<id>/grading.json.rejected` and the recorded error is re-emitted
+  verbatim across rebuilds until a valid manual record replaces it; the
+  same preservation applies when the engine replaces an operator record
+  left on a censored trial (preserved, not honored - a graded result
+  cannot stand behind a censored trial). An
+  absent answer or artifact fails every check (including `notContains`), so
+  a trial that produced no answer is `fail`. Declared artifact files and the
+  adapter event log are read only when they are regular files (symlinks and
+  devices are treated as not produced) and with a size cap.
+- The published report (`report.json`, schema v1) is rendered to `report.md`
+  from the same object: status/grading counts (every planned slot lands in
+  exactly one bucket), overall/per-condition/per-task grading summaries with
+  the held-out split, and - only when `gates` is predeclared - paired
+  per-task analysis (median paired difference/reduction over tasks with
+  metric-eligible data on both sides - only completed and timed-out trials
+  contribute values; other trial statuses are excluded and counted in the
+  per-task exclusion reasons - zero-baseline undefined-reduction note,
+  task-cluster
+  bootstrap percentile interval with recorded seed/iterations, labelled
+  success-only medians, timeout rate) plus the predeclared quality gate
+  (`pass`/`fail`/`insufficient_data`/`not_configured`): the overall status
+  is `pass` only when every declared check was evaluated and passed; a
+  speed gain with insufficient correctness data is `insufficient_data`,
+  never `pass`. The gate is descriptive evidence against predeclared
+  thresholds, not a product gate.
+- `repoise bench report --experiment <ID> [--output <DIR>] [--json]` re-grades
+  recorded trials and rebuilds the report offline from the frozen manifest
+  and trial artifacts (no worktrees, no agent processes, no network);
+  `not_started` slots are persisted as `trial.json` so rebuilds see the same
+  counts (not-started slots are never re-graded, matching the run), and the
+  run's status and `failureReason` carry over from the previous report.
+  Exit `0` on success, `1` when the experiment is missing or incomplete.
+- Fixes from the PR review round: a `humanRubric` evaluator without a rubric
+  (or with a blank one) now fails suite validation, matching the schema,
+  docs and `Evaluator` doc comment (the checked-in suite schema enforces it
+  with an `if`/`then` rule); the `bench report` rebuild path re-validates
+  the frozen manifest's task, condition and gate declarations - the
+  manifest is untrusted input, so a copied or hand-edited manifest fails
+  with a configuration error instead of panicking a grader or reading
+  outside the trial directory - and structural check-declaration defects
+  (unknown scope/type, artifact scope without a name, non-plain artifact
+  names) degrade to an `evaluator_error` instead of panicking; trials
+  killed by the coordinator's outer watchdog (`infra_error` or `cancelled`
+  with reason `host_watchdog`) are counted as censored timeouts that keep
+  their recorded capped agent time, not as infra failures.
+- Further review fixes: the `bench report` rebuild path now also re-validates
+  the manifest's `report` spec, so a `bootstrapIterations: 0` spec fails
+  with a configuration error instead of reaching a percentile of an empty
+  bootstrap sample (the percentile helper now returns NaN - JSON `null` - on
+  an empty draw as defense in depth); a broken relative link in
+  `scripts/eval/RUNBOOK.md` and the stale "AP-05 not implemented" boundary
+  line in `docs/agent-adapters.md` are fixed.
+- Further review fixes: the Cline adapter now records the agent's final
+  message text on the `final` event's `data.answer` (null when no final
+  text was produced) - the convention is described in the adapter-events
+  schema and the agent adapter guide - so deterministic answer grading
+  works end to end with the shipped adapter; `repoise bench` now takes the
+  report's task provenance from the frozen manifest instead of re-reading
+  prompt files after the trial loop, so a prompt file deleted mid-run
+  cannot prevent the report from being published; the `docs/bench.md`
+  check description names the required `id` and optional `note` fields and
+  shows an example check.
+
+Declared limitations: `modelJudge` has no model-judge runtime (the tested
+model never grades itself); worktree isolation is not a security sandbox for
+hidden tests; no v1 replay-evidence export is offered (the existing import
+validation is unchanged). See [docs/bench.md](docs/bench.md) and
+`docs/plans/agent-platform/05-suites-metrics-reports.md` for the
+implementation record.
+
 ### Cross-worktree cache reuse
 
 Linked worktrees of one local Git repository now share reusable parse
