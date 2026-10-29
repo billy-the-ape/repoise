@@ -21,7 +21,7 @@ remains unexecuted.
   original `0011d07` selection and before the first trial run). The
   Repoise config reaches the trial worktrees through a recorded patch
   snapshot (`snapshot.kind: "patch"`, `revision: "HEAD"`, patch sha256
-  `4efe85894b16653cd8c23d49c5e9046bf2511bd9824fc663549e1333951a15a8`);
+  `a198850cd9577ca3a472a0d77917a38778ccbfe010d11a4ab5284ea4d17c80b8`);
   the trial worktrees are disposable and the consumer repository is never
   reset or modified.
 - **Repoise build**: `repoise 0.1.0-alpha.1`, release build of main
@@ -37,15 +37,20 @@ remains unexecuted.
   is staged for the SIGINT cancellation check. The suite, patch and config
   live outside the benchmarked repository in the operator's local private
   directory (`~/bench-pilot/`); no suite content is committed to Repoise.
-- **Config** (patched into trial worktrees, untracked at the consumer
-  root): preset `hybrid`, embedding scope `all` (docs+code — the bench
-  hybrid preflight requires complete corpus-wide vector coverage),
-  explicit input profile `embeddinggemma-2:1`, model `embeddinggemma-2`,
+- **Config** (patched into trial worktrees, gitignored at the consumer
+  root): preset `hybrid`, embedding scope `all` (docs+code), explicit
+  input profile `embeddinggemma-2:1`, model `embeddinggemma-2`,
   768 dimensions, a lenient 10-minute per-batch timeout with 4 retries
   and a 10M-character per-build input budget, endpoint and key via
-  `env:` references only, and one corpus exclusion
-  (`src/routes/chat.ts`, see limitations). Config sha256
-  `626c1d1014abe2cb4ca1e855cdba5ef29cf93cf9c48f6a2c2d2b85c9c499a3e9`.
+  `env:` references only, one corpus exclusion (`src/routes/chat.ts`,
+  see limitations), and role mappings that place `*.json`/`*.yml`/
+  `*.yaml` files in the docs corpus (`current-doc` role) — required
+  because the embedding scope covers docs+code only (the config corpus
+  is outside every embedding scope), so without the remap the corpus
+  could never reach full vector coverage and the bench hybrid
+  preflight would be structurally unreachable (see limitations).
+  Config sha256
+  `5aa4601c3b9c4de259365310dc80dd395a7c892c5561d2343d309f072d49c28f`.
 - **Harness/profile**: Cline CLI 3.0.61 (`cline` npm package, Node
   v22.22.1), adapter `agent-adapter-cline 0.1.0-alpha.1` over the
   AP-03 host bridge (protocol 1), provider `lmstudio` against the
@@ -93,6 +98,16 @@ remains unexecuted.
     hits; cache writes are transactional per build, so a killed build
     loses its in-flight vectors). A build stopped by the 1M-character
     default input budget published 908/9673 vectors with zero failures.
+  - Corpus remap (generation 7, later 2026-10-29): the config's role
+    mappings reclassified all 76 config files as docs (the config corpus
+    became empty; docs+code = 9437 chunks fully embedded). The 142
+    remapped chunks then failed against a crashing embedding upstream
+    (llama-swap `upstream command exited prematurely` — `embeddinggemma-2`
+    had been evicted when a concurrent `Gemma-4-E4B` coding task loaded
+    alongside the resident 27B model, and it could not reload; even a
+    2-token probe failed at the time). A single index run completes
+    coverage once the embedding model can load again (only ~142 new
+    embeddings; the rest are cache hits).
   - `bench --dry-run` preflight correctly refuses hybrid conditions
     without verified corpus-wide vector coverage (observed on every
     partial-coverage generation).
@@ -113,9 +128,22 @@ remains unexecuted.
 ## Run steps
 
 The 8192 per-input limit is live and verified (4500- and 5500-token
-probes accepted). Everything is staged; the remaining steps run on the
-operator machine (all artifacts live under `/home/cline-agent/bench-pilot/`
-and must be run as that user, e.g. via `sudo -u cline-agent`):
+probes accepted), and 9437/9579 chunks are embedded (docs+code complete;
+the 142 remapped config chunks are the only gap). One prerequisite
+remains before the chain: the `embeddinggemma-2` server must be loadable
+again — it was evicted by a concurrent `Gemma-4-E4B` coding task and
+currently crashes on load. Pause that task (or restart the gateway),
+then verify with a tiny probe:
+
+```sh
+curl -s http://127.0.0.1:8080/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "embeddinggemma-2", "input": ["probe"]}'
+```
+
+Everything is staged; the remaining steps run on the operator machine
+(all artifacts live under `/home/cline-agent/bench-pilot/` and must be
+run as that user, e.g. via `sudo -u cline-agent`):
 
 1. **Smoke chain** (one command; logs in `run-smoke.log` and
    `index-root.log`):
@@ -166,3 +194,10 @@ state is modified.
   model is used, but the original `nomic-embed-text-v1.5` selection from
   the preset could not be loaded alongside the coding model under the
   current llama-swap configuration.
+- **Engine gap (follow-up)**: `status` and the bench hybrid preflight
+  compute vector pending across the entire corpus (docs+code+config),
+  while the embedding scope covers docs+code only — so any corpus
+  containing config files has permanently non-zero pending and the
+  hybrid preflight is unreachable without a corpus policy (the role
+  remap above) or an engine fix (scope-aware coverage). Flagged for a
+  separate engine PR; it does not change retrieval behavior.
