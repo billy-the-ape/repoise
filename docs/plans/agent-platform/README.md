@@ -2,10 +2,14 @@
 
 Status: proposed implementation program. AP-01 (workspace and CI foundation),
 AP-02 (CLI automation contracts) and AP-03 (agent adapter protocol with the
-first Cline adapter) are implemented; the remaining cards below remain
-proposed. Recorded October 19, 2026 (America/Denver); AP-01 implementation
-recorded October 20, 2026; AP-02 implementation recorded October 26, 2026;
-AP-03 implementation recorded October 26, 2026.
+first Cline adapter) are implemented; AP-04 and AP-05 are implemented; AP-06's
+first smoke experiment is prepared and verified, execution pending (the
+ai-gateway pilot on the AP-04/AP-05 harness — see the
+[pilot status guide](../../pilot.md)); its execution, expansion and
+AP-07 remain proposed. Recorded October 19, 2026 (America/Denver); AP-01
+implementation recorded October 20, 2026; AP-02 implementation recorded
+October 26, 2026; AP-03 implementation recorded October 26, 2026; AP-06 smoke
+preparation recorded October 29, 2026.
 
 ## Purpose
 
@@ -52,7 +56,7 @@ reviewable scope, retaining the same interfaces and acceptance requirements.
 | AP-03 | [Agent adapter protocol](03-agent-adapters.md)              | AP-01, AP-02                            | External runner protocol, conformance fixtures and first Cline adapter            | Implemented (2026-10-26, [#38](https://github.com/billy-the-ape/repoise/pull/38))                          |
 | AP-04 | [Benchmark execution](04-benchmark-runner.md)               | AP-02, AP-03                            | Isolated trials and verified retrieval conditions with budgets/artifacts          | Implemented (2026-10-27)                 |
 | AP-05 | [Suites, metrics and reports](05-suites-metrics-reports.md) | AP-04; define schema with AP-03         | Independent grading, per-trial records and comparable reports                     | Implemented (2026-10-27)                 |
-| AP-06 | [Pilot and expansion](06-pilot-and-expansion.md)            | AP-04, AP-05                            | ai-gateway pilot, then broader repository/model/harness experiments               | Proposed                       |
+| AP-06 | [Pilot and expansion](06-pilot-and-expansion.md)            | AP-04, AP-05                            | ai-gateway pilot, then broader repository/model/harness experiments               | Smoke prepared and verified (2026-10-29, [status](../../pilot.md)); execution and expansion pending |
 | AP-07 | [VS Code extension](07-vscode-extension.md)                 | AP-01, AP-02; bench UI also AP-04/AP-05 | Thin workspace UI and supervised watch/MCP setup                                  | Proposed                       |
 
 AP-07 watch/status UI can land before the benchmark UI, but no editor-specific

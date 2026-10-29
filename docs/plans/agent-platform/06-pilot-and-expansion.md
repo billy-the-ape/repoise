@@ -1,6 +1,9 @@
 # AP-06: ai-gateway pilot and broader experiments
 
-Status: proposed execution/integration PR, after [AP-04](04-benchmark-runner.md)
+Status: first smoke experiment prepared and verified 2026-10-29 on the
+AP-04/AP-05 harness, execution pending a single llama-swap change (see the
+[pilot status guide](../../pilot.md)); the expansion below remains
+proposed execution/integration work, after [AP-04](04-benchmark-runner.md)
 and [AP-05](05-suites-metrics-reports.md). Consumer tasks/configuration belong in
 a separate ai-gateway PR or an explicitly selected private suite location. This
 plan does not authorize running hundreds of agents or changing inference servers.
