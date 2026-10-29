@@ -4,23 +4,26 @@ Status: first smoke experiment **prepared and verified, execution pending**
 (2026-10-29, America/Denver) on the AP-04/AP-05 harness against the real
 consumer `ai-gateway`. Every component — suite, config, patch snapshot,
 harness, adapter, embedding endpoint and preflight gates — is staged and
-validated; a single operator-side llama-swap change (per-input batch size)
-is the only remaining blocker (see
-[Blocker](#blocker-pending-operator-action)). No trial has run and nothing
-here claims speed, token or correctness results. The 15–20-task expansion
-described in
+validated. The blocking llama-swap change (per-input batch size 8192)
+was applied by the operator on 2026-10-29 and verified by probe
+(4500- and 5500-token inputs accepted); the run is ready to execute
+(see [Run steps](#run-steps)). No trial has run and nothing here claims
+speed, token or correctness results. The 15–20-task expansion described in
 [06-pilot-and-expansion.md](plans/agent-platform/06-pilot-and-expansion.md)
 remains unexecuted.
 
 ## What was prepared
 
 - **Consumer**: `ai-gateway` at immutable commit
-  `0011d07c8137dacf50793fc454965ad3d6c863f1` (local working-tree HEAD; the
-  tree was clean at selection). The Repoise config reaches the trial
-  worktrees through a recorded patch snapshot
-  (`snapshot.kind: "patch"`, patch sha256
+  `9cfba6aa726043f4059c5cf38c11ed90c48fb247` (local working-tree HEAD;
+  working tree fully clean — the consumer added `.gitignore` entries for
+  `repoise.config.*` and `.repoise/*` in this commit, rebased after the
+  original `0011d07` selection and before the first trial run). The
+  Repoise config reaches the trial worktrees through a recorded patch
+  snapshot (`snapshot.kind: "patch"`, `revision: "HEAD"`, patch sha256
   `4efe85894b16653cd8c23d49c5e9046bf2511bd9824fc663549e1333951a15a8`);
-  the consumer repository itself was not committed to or modified.
+  the trial worktrees are disposable and the consumer repository is never
+  reset or modified.
 - **Repoise build**: `repoise 0.1.0-alpha.1`, release build of main
   `c2e7f4a12ad8e484b568d4d83ed2cdf413af2c22` from the source worktree
   (host bridge and Cline adapter resolved from that checkout).
@@ -79,8 +82,9 @@ remains unexecuted.
   - `embeddinggemma-2` through the gateway: 768 dims; a 32-input batch of
     short inputs in ~0.2–2.7 s; co-resident with the 27B coding model.
     Per-input token limit: 512 under the default `--ubatch-size`, raised
-    to 2048 by an operator llama-swap change mid-preparation (probed:
-    ~490 tokens OK / 513 failed before; 1500 tokens OK after).
+    to 2048 and then to 8192 by two operator llama-swap changes
+    (probed: ~490 tokens OK / 513 failed at the 512 limit; 1500 tokens OK
+    at 2048; 4500 and 5500 tokens OK at 8192).
   - `nomic-embed-text-v1.5`: batch latency exceeded the per-batch timeout
     while the coding model was resident (and it cannot co-load at all
     under the current llama-swap configuration); replaced, not used.
@@ -92,12 +96,12 @@ remains unexecuted.
   - `bench --dry-run` preflight correctly refuses hybrid conditions
     without verified corpus-wide vector coverage (observed on every
     partial-coverage generation).
-- **Failed/flagged**:
-  - Complete corpus coverage is impossible at the current 2048-token
-    per-input limit: the largest embeddable symbol chunk (`runController`,
-    ~5k tokens) exceeds it, so several chunks in
-    `src/orchestrator/`, `src/tools/github.ts`, `src/video/mediaStore.ts`
-    and one test fixture would fail.
+- **Failed/flagged** (during preparation; first item since resolved):
+  - At the 2048-token per-input limit, complete corpus coverage was
+    impossible: the largest embeddable symbol chunk (`runController`,
+    ~5k tokens) exceeded it. Resolved by the operator's 8192 per-input
+    change; with 8192 every remaining chunk should fit (largest estimated
+    ~5k tokens; not yet probed chunk-by-chunk).
   - One chunk is over the model's entire 8192-token context:
     `chatRoutes` in `src/routes/chat.ts` (57,909 chars, ~14.5k tokens).
     That file is excluded from the corpus (recorded confound).
@@ -106,22 +110,37 @@ remains unexecuted.
   cross-repository effects, cold-cache behavior, and any
   speed/token improvement claims.
 
-## Blocker (pending operator action)
+## Run steps
 
-Raise the `embeddinggemma-2` llama-server in the llama-swap model config
-to the context size: `--batch-size 8192 --ubatch-size 8192`
-(`-c 8192` already matches). With that change every remaining chunk should
-fit the per-input limit (largest estimated ~5k tokens; not yet probed at
-the 8192 limit). Completion is then a single staged command on the
-operator machine:
+The 8192 per-input limit is live and verified (4500- and 5500-token
+probes accepted). Everything is staged; the remaining steps run on the
+operator machine (all artifacts live under `/home/cline-agent/bench-pilot/`
+and must be run as that user, e.g. via `sudo -u cline-agent`):
 
-```sh
-bash ~/bench-pilot/run-smoke.sh   # index -> status -> dry-run -> bench
-```
+1. **Smoke chain** (one command; logs in `run-smoke.log` and
+   `index-root.log`):
 
-followed by the one-trial cancellation suite
-(`~/bench-pilot/suite-cancel.json`). Benchmark artifacts are disposable
-local files; no repository or device state is modified.
+   ```sh
+   sudo -u cline-agent bash /home/cline-agent/bench-pilot/run-smoke.sh
+   ```
+
+   It runs `index` (resumes from the embedding cache and embeds the
+   remaining chunks), `status` (expect 0 pending vectors),
+   `bench --dry-run` (the hybrid preflight must now pass), and
+   `bench suite.json` (12 trials; artifacts in
+   `/home/cline-agent/bench-pilot/out/ap06-smoke/`).
+2. **Cancellation check**: run `bench suite-cancel.json` in the
+   foreground with the same three environment variables the chain
+   exports (`REPOISE_EMBED_ENDPOINT`, `REPOISE_EMBED_API_KEY`,
+   `LMSTUDIO_API_KEY`), send SIGINT (Ctrl-C) mid-trial, and expect a
+   cooperative cancellation and exit code 4; artifacts in
+   `out/ap06-cancel/`.
+3. **Record results**: `python3 /home/cline-agent/bench-pilot/summarize.py
+   /home/cline-agent/bench-pilot/out ap06-smoke` (and `ap06-cancel`), then
+   fill in the results sections of this document.
+
+Benchmark artifacts are disposable local files; no repository or device
+state is modified.
 
 ## Limitations
 
