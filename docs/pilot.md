@@ -4,10 +4,14 @@ Status: first smoke experiment **prepared and verified, execution pending**
 (2026-10-29, America/Denver) on the AP-04/AP-05 harness against the real
 consumer `ai-gateway`. Every component — suite, config, patch snapshot,
 harness, adapter, embedding endpoint and preflight gates — is staged and
-validated. The blocking llama-swap change (per-input batch size 8192)
-was applied by the operator on 2026-10-29 and verified by probe
-(4500- and 5500-token inputs accepted); the run is ready to execute
-(see [Run steps](#run-steps)). No trial has run and nothing here claims
+validated (the embedding endpoint's 8192 configuration is probe-verified;
+the `embeddinggemma-2` server itself was evicted by a concurrent coding
+task and must be loadable again before the run). The blocking llama-swap
+change (per-input batch size 8192) was applied by the operator on
+2026-10-29 and verified by probe (4500- and 5500-token inputs
+accepted); the run is ready to execute once `embeddinggemma-2` is
+loadable again (see [Run steps](#run-steps)). No trial has run and nothing
+here claims
 speed, token or correctness results. The 15–20-task expansion described in
 [06-pilot-and-expansion.md](plans/agent-platform/06-pilot-and-expansion.md)
 remains unexecuted.
@@ -173,7 +177,7 @@ state is modified.
 ## Limitations
 
 - **Not a completed experiment**: no trial has run; this document records
-  preparation, verification evidence and the exact remaining step. It is
+  preparation, verification evidence and the exact remaining steps. It is
   an execution record, not a results report.
 - **Corpus exclusion confound**: `src/routes/chat.ts` is excluded from
   the Repoise corpus in all conditions (its largest symbol chunk exceeds
