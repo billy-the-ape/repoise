@@ -110,8 +110,9 @@ remains unexecuted.
 
 Raise the `embeddinggemma-2` llama-server in the llama-swap model config
 to the context size: `--batch-size 8192 --ubatch-size 8192`
-(`-c 8192` already matches). With that change every remaining chunk fits
-the per-input limit. Completion is then a single staged command on the
+(`-c 8192` already matches). With that change every remaining chunk should
+fit the per-input limit (largest estimated ~5k tokens; not yet probed at
+the 8192 limit). Completion is then a single staged command on the
 operator machine:
 
 ```sh
