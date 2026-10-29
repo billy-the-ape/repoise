@@ -21,7 +21,7 @@ remains unexecuted.
   (`snapshot.kind: "patch"`, patch sha256
   `4efe85894b16653cd8c23d49c5e9046bf2511bd9824fc663549e1333951a15a8`);
   the consumer repository itself was not committed to or modified.
-- **Repose build**: `repoise 0.1.0-alpha.1`, release build of main
+- **Repoise build**: `repoise 0.1.0-alpha.1`, release build of main
   `c2e7f4a12ad8e484b568d4d83ed2cdf413af2c22` from the source worktree
   (host bridge and Cline adapter resolved from that checkout).
 - **Suite**: frozen smoke suite, sha256
