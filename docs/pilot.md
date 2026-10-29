@@ -71,7 +71,7 @@ remains unexecuted.
 | Isolation (disposable worktrees, no reset of the user checkout) | Not executed; staged |
 | Independently correct grading (deterministic checks outside agent visibility) | Not executed; staged |
 | Usage accounting (tokens per trial, cumulative fold) | Not executed; staged |
-| Actual hybrid calls (vectors served by the trial MCP, no silent lexical degradation) | Not executed; blocked on coverage |
+| Actual hybrid calls (vectors served by the trial MCP, no silent lexical degradation) | Not executed; staged (needs full vector coverage from the `index` step) |
 | Degradation handling | Not executed; staged |
 | MCP scope (read-only server bound to the trial worktree) | Not executed; staged |
 | Cancellation (SIGINT, cooperative `cancel`, exit 4) | Not executed; suite staged |
