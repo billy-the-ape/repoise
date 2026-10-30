@@ -265,9 +265,9 @@ state is modified.
 - **Private artifacts**: the suite, patch snapshot, config and staged
   runner live in the operator's local private directory and are not
   committed; the sha256 values above pin them for reproduction.
-- **Single repetition, no statistics**: even once executed, the smoke run
-  (4 tasks × 3 conditions × 1 repeat) verifies mechanics only; it does
-  not estimate effects. The expansion run defines the measurement.
+- **Single repetition, no statistics**: the smoke run
+  (4 tasks × 3 conditions × 1 repeat) does not estimate effects — the
+  expansion run defines the measurement.
 - **Shared inference resource**: trials and the operator's coding sessions
   share one GPU/gateway; embedding batches were observed to fail or slow
   under concurrent load, which is why budgets are lenient and runs are
