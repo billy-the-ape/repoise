@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Versioned component-impact map bridging repository paths (including non-package inputs) into CI check sets. See docs/plans/agent-platform/01-workspace-and-ci.md. Unknown paths, missing merge bases, empty diffs and selection failures all resolve to the full check set; this map never produces a no-op success.",
+  "description": "Versioned component-impact map bridging repository paths (including non-package inputs) into CI check sets. See docs/plans/complete/agent-platform/01-workspace-and-ci.md. Unknown paths, missing merge bases, empty diffs and selection failures all resolve to the full check set; this map never produces a no-op success.",
   "jobs": {
     "check": [
       "Check (ubuntu-24.04)",

@@ -121,7 +121,7 @@ depend on the interface. Adding a daemon or network control API is out of scope.
 
 Implemented as one reviewable PR against `main`
 ([#37](https://github.com/billy-the-ape/repoise/pull/37)). Current-state guide:
-[docs/automation.md](../../../docs/automation.md).
+[docs/automation.md](../../../../docs/automation.md).
 
 Settled decisions:
 
@@ -217,6 +217,19 @@ Post-review fixes (2026-10-26, PR #37 review):
   instead of a fixed 80 ms sleep: the fixed sleep failed on a loaded macOS
   runner where heartbeat-thread start latency exceeded the window (CI run
   40285589778).
+
+Flake fix (2026-10-30, `scan_skips_entries_that_vanish_mid_scan`):
+
+- The filesystem scan now retries a non-root entry probe once when the first
+  failure does not confirm the entry is gone (a `probe_entry` helper): the
+  `entry_gone` re-check itself could race with a concurrent writer that
+  recreated the entry in between, on which the scan wrongly failed — the
+  Windows CI flake of `scan_skips_entries_that_vanish_mid_scan` behind #41.
+  A retry that succeeds includes the entry, a second confirmed-gone outcome
+  skips it, and a second genuine failure still fails the scan. Root
+  semantics are unchanged (a vanished root stays fatal). The new
+  deterministic test `probe_entry_decision_table_is_deterministic` pins the
+  skip/retry/fail decision table without relying on timing.
 
 Deferred / not shipped with this PR:
 

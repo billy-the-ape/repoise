@@ -2,7 +2,7 @@
 
 Status: implemented (2026-10-20); see the [implementation record](#implementation-record-2026-10-20)
 at the end of this document for the shipped design, validation and deferred items.
-Parent: [program index](README.md).
+Parent: [program index](../../agent-platform/README.md).
 
 ## Outcome and recommendation
 

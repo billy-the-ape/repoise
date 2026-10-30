@@ -12,7 +12,7 @@ Shipped as the `repoise bench` command in `crates/repoise-core/src/bench/`
 with the Node host bridge
 `packages/agent-adapter-protocol/bin/adapter-host-run.mjs` (tested by
 `packages/agent-adapter-protocol/test/bridge.test.mjs`). The current-state
-guide is [docs/bench.md](../../bench.md). Shipped behavior:
+guide is [docs/bench.md](../../../bench.md). Shipped behavior:
 
 - Suite manifest (schema v1, `schemas/bench-suite.v1.schema.json`), strictly
   parsed; suite/prompt files must live outside the benchmarked repository.
