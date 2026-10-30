@@ -5,13 +5,14 @@
 //! never touches mutable files. Detached HEAD is an explicit, supported state.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::adapter::{
-    AdapterError, Capabilities, Capability, ReuseFamily, Revision, RevisionId, SnapshotMode,
-    SourceAdapter, SourceEntry, SourceKind,
-    filesystem::{read_within_root, scan_directory},
+    AdapterError, CandidateFile, Capabilities, Capability, ReuseFamily, Revision, RevisionId,
+    SnapshotIntake, SnapshotMode, SourceAdapter, SourceEntry, SourceKind,
+    filesystem::{read_bounded_within_root, read_within_root, scan_directory},
     normalize_relative, to_posix,
 };
 use crate::hash;
@@ -132,6 +133,68 @@ impl GitAdapter {
         let blob = blob.trim().to_string();
         self.run_git(&["cat-file", "blob", &blob])
             .map(|text| text.into_bytes())
+    }
+
+    /// Exact bytes of `commit:path` with a hard read bound of
+    /// `max_bytes + 1` bytes. The Git child is killed once the bound is
+    /// reached, so an oversized blob can neither block the pipe nor grow
+    /// memory; the bounded prefix is returned so the caller can apply the
+    /// size policy.
+    fn blob_at_bounded(
+        &self,
+        commit: &str,
+        relative: &Path,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AdapterError> {
+        let relative = normalize_relative(relative)?;
+        let spec = super::to_posix(&relative);
+        let blob = match self.run_git(&["rev-parse", "--verify", &format!("{commit}:{spec}")]) {
+            Ok(value) => value,
+            Err(_) => return Err(AdapterError::MissingFile(relative)),
+        };
+        let blob = blob.trim().to_string();
+        let limit = max_bytes.saturating_add(1);
+        let mut child = Command::new("git")
+            .args(["cat-file", "blob", &blob])
+            .current_dir(&self.root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(AdapterError::Io)?;
+        let mut bytes = Vec::new();
+        {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| AdapterError::Other("git cat-file stdout was not piped".into()))?;
+            stdout
+                .take(limit)
+                .read_to_end(&mut bytes)
+                .map_err(AdapterError::Io)?;
+        }
+        if bytes.len() as u64 == limit {
+            // The bound was reached: stop the child (it may still be writing)
+            // and report the bounded prefix.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(bytes);
+        }
+        let status = child.wait().map_err(AdapterError::Io)?;
+        if !status.success() {
+            let stderr = child
+                .stderr
+                .take()
+                .map(|mut stderr| {
+                    let mut text = String::new();
+                    let _ = stderr.read_to_string(&mut text);
+                    text
+                })
+                .unwrap_or_default();
+            return Err(AdapterError::Other(format!(
+                "git cat-file blob failed: {stderr}"
+            )));
+        }
+        Ok(bytes)
     }
 
     /// Lists `(path, blob sha)` for every blob in the tree (NUL-safe).
@@ -653,6 +716,58 @@ impl SourceAdapter for GitAdapter {
         }
     }
 
+    fn intake(
+        &self,
+        revision: &Revision,
+        mode: SnapshotMode,
+    ) -> Result<SnapshotIntake, AdapterError> {
+        match mode {
+            SnapshotMode::WorkingTree => {
+                let mut intake = super::filesystem::intake_scan(&self.canonical_root)?;
+                let exclude_lines = git_exclude_lines(&self.canonical_root);
+                if !exclude_lines.is_empty() {
+                    intake.native.push((
+                        PathBuf::new(),
+                        PathBuf::from(".git/info/exclude"),
+                        exclude_lines,
+                    ));
+                }
+                intake.native.sort_by(|a, b| a.1.cmp(&b.1));
+                Ok(intake)
+            }
+            SnapshotMode::Committed => {
+                let commit = self.resolve_commit(&revision.id)?;
+                committed_intake(self, &commit)
+            }
+            SnapshotMode::PlainDirectory => Err(AdapterError::UnsupportedOperation {
+                operation: "plain directory snapshot",
+                capability: Capability::AtomicSnapshots,
+            }),
+        }
+    }
+
+    fn read_bounded(
+        &self,
+        revision: &Revision,
+        mode: SnapshotMode,
+        relative: &Path,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AdapterError> {
+        match mode {
+            SnapshotMode::Committed => {
+                let commit = self.resolve_commit(&revision.id)?;
+                self.blob_at_bounded(&commit, relative, max_bytes)
+            }
+            SnapshotMode::WorkingTree => {
+                read_bounded_within_root(&self.canonical_root, relative, max_bytes)
+            }
+            SnapshotMode::PlainDirectory => Err(AdapterError::UnsupportedOperation {
+                operation: "plain directory snapshot",
+                capability: Capability::AtomicSnapshots,
+            }),
+        }
+    }
+
     fn remote_identity(&self) -> Result<Option<String>, AdapterError> {
         let Ok(url) = self.run_git(&["remote", "get-url", "origin"]) else {
             return Ok(None);
@@ -667,6 +782,61 @@ pub fn git_exclude_lines(root: &Path) -> Vec<String> {
         Ok(text) => text.lines().map(str::to_string).collect(),
         Err(_) => Vec::new(),
     }
+}
+
+/// Committed-snapshot intake: `git ls-tree -r -z -l` lists blob metadata
+/// (path plus size) without reading object data. `.gitignore` blobs are the
+/// only blobs read during intake — they are explicitly small policy files;
+/// all other blob content is read later, one bounded read per accepted
+/// candidate, by shared discovery.
+fn committed_intake(adapter: &GitAdapter, commit: &str) -> Result<SnapshotIntake, AdapterError> {
+    let output = adapter.run_git(&["ls-tree", "-r", "-z", "-l", commit])?;
+    let mut native: Vec<(PathBuf, PathBuf, Vec<String>)> = Vec::new();
+    let mut candidates: Vec<CandidateFile> = Vec::new();
+    for entry in output.split('\0') {
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((metadata, path)) = entry.split_once('\t') else {
+            continue;
+        };
+        // metadata: "<mode> SP <type> SP <sha> SP <size>" (the size column
+        // is space-padded, so split on whitespace runs)
+        let mut parts = metadata.split_whitespace();
+        let _mode = parts.next();
+        let object_type = parts.next();
+        let Some(sha) = parts.next() else {
+            continue;
+        };
+        if object_type != Some("blob") {
+            continue;
+        }
+        let size = parts
+            .next()
+            .and_then(|size| size.parse::<u64>().ok())
+            .unwrap_or(0);
+        let relative = PathBuf::from(path);
+        if relative.file_name() == Some(std::ffi::OsStr::new(".gitignore")) {
+            // Policy file: a legitimate bounded intake read.
+            let bytes = adapter.run_git(&["cat-file", "blob", sha])?.into_bytes();
+            let lines = String::from_utf8_lossy(&bytes)
+                .lines()
+                .map(str::to_string)
+                .collect();
+            let base = relative
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf();
+            native.push((base, relative.clone(), lines));
+        }
+        candidates.push(CandidateFile {
+            path: relative,
+            size,
+        });
+    }
+    native.sort_by(|a, b| a.1.cmp(&b.1));
+    candidates.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(SnapshotIntake { native, candidates })
 }
 
 /// Bounded local mainline history collection (card K5) for the Git adapter.
