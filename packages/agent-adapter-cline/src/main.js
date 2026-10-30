@@ -250,6 +250,47 @@ export async function main() {
     `${JSON.stringify({ mcpServers: invocation.mcpServers }, null, 2)}\n`,
   );
 
+  // Provider endpoint: the profile's optional endpoint (e.g. an
+  // OpenAI-compatible base URL) is materialized in the Cline per-trial
+  // provider settings, so the CLI does not fall back to its built-in
+  // default host. The credential never enters this file (the `-k` flag
+  // supplies it).
+  const provider = request.profile.provider;
+  if (
+    provider &&
+    typeof provider.endpoint === "string" &&
+    provider.endpoint.length > 0
+  ) {
+    const settingsDir = join(dataDir, "settings");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "providers.json"),
+      `${JSON.stringify(
+        {
+          version: 1,
+          lastUsedProvider: provider.id,
+          modes: {},
+          providers: {
+            [provider.id]: {
+              settings: {
+                provider: provider.id,
+                baseUrl: provider.endpoint,
+                // Mirrors the verified operator setting: a 10-minute
+                // per-request cap for local 27B inference. The per-trial
+                // wall-clock backstop remains the authoritative bound.
+                timeout: 600000,
+              },
+              updatedAt: new Date().toISOString(),
+              tokenSource: "manual",
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  }
+
   // The immutable effective configuration for this trial: every effective
   // guidance, skill, MCP server, model, limit and state location, with
   // credential values redacted (names only).
@@ -297,6 +338,10 @@ export async function main() {
                 ? request.profile.provider.credentialRef
                 : null,
             credentialPresent: invocation.credential !== null,
+            endpoint:
+              typeof request.profile.provider.endpoint === "string"
+                ? request.profile.provider.endpoint
+                : null,
           }
         : null,
       reasoning: request.profile.reasoning ?? null,

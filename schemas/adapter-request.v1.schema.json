@@ -120,6 +120,10 @@
             "credentialRef": {
               "type": ["string", "null"],
               "description": "Opt-in credential reference of the form env:VAR_NAME. The coordinator passes the resolved value to the adapter through its process environment; the raw value never appears in this document or in any manifest."
+            },
+            "endpoint": {
+              "type": ["string", "null"],
+              "description": "Optional provider endpoint (e.g. an OpenAI-compatible base URL). The adapter materializes it in its own configuration surface (for the Cline adapter, the per-trial provider settings' baseUrl)."
             }
           }
         },

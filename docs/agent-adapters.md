@@ -111,6 +111,13 @@ trailing positional argument.
   seconds and is also enforced by the host. `maxToolCalls` is declared
   unenforceable (no per-tool telemetry) and produces a warning, never a
   silent approximation.
+- The optional `profile.provider.endpoint` (e.g. an OpenAI-compatible base
+  URL) is materialized in the Cline per-trial provider settings
+  (`data/settings/providers.json` under the isolated state dir) as
+  `baseUrl` with a 10-minute per-request timeout, so the CLI does not fall
+  back to its built-in default host (`localhost:1234`); the endpoint is
+  recorded in the effective-config artifact, and the credential never
+  enters that file.
 - The agent's final message text (the `done` event's `text`) is recorded
   on the `final` event as `data.answer` (null when no final text was
   produced), so deterministic benchmark grading — suite `answerField`,

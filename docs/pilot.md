@@ -30,12 +30,14 @@ remains unexecuted.
   `c2e7f4a12ad8e484b568d4d83ed2cdf413af2c22` from the source worktree
   (host bridge and Cline adapter resolved from that checkout).
 - **Suite**: frozen smoke suite, sha256
-  `1b46da799b126ed8746cab458b84e886d2951ac1edd2bd2de4344db8f54ebcfd`:
+  `d8d8c96af74bde0be932fd39d0ac0f703bbf7c02e4258c9342512e2cd4583978`:
   four tasks (two development, two held-out), three conditions
   (`baseline`, `repoise-lexical`, `repoise-hybrid`), one repetition,
   seed 20261029, per-trial 15-minute wall clock and 60-iteration cap,
-  3-hour experiment budget. A separate one-trial suite
-  (sha256 `dbffc4b8529cd915f760ccf5e8c20b73c035faa97e34f632a9dce3bb44102dcd`)
+  3-hour experiment budget, and the provider endpoint
+  `http://127.0.0.1:8080/v1` (required since the Cline CLI's built-in
+  default host is `localhost:1234`). A separate one-trial suite
+  (sha256 `50f1209627eafb75bee2662e0ded6e765ff78c07b8bf3c89ffac158489a5e2dc`)
   is staged for the SIGINT cancellation check. Both suites' adapter env
   sets `CLINE_NO_AUTO_UPDATE=1`, but the Cline adapter's child
   environment allowlist does not currently forward that variable, so
@@ -72,8 +74,9 @@ remains unexecuted.
   Cline runtime/model profile, held fixed across all conditions;
   condition order randomized per task/repetition block with the
   recorded seed; trials sequential. Isolated per-trial Cline state is
-  pre-seeded so provider selection never falls back to a default
-  provider mid-trial.
+  seeded from the suite profile — the provider endpoint becomes the
+  per-trial provider settings `baseUrl`, so the provider never falls
+  back to the CLI's default host mid-trial.
 - **Embedding controls**: embedding model `embeddinggemma-2` (768 dims,
   explicit `embeddinggemma-2:1` profile from the evaluated
   local-inference preset), served through the same llama-swap gateway on
@@ -141,6 +144,20 @@ remains unexecuted.
     conformance 23/23 pass). This was the first live run of the adapter
     against the real CLI. The failed runs' artifacts were removed again
     so the experiment ids can be reused.
+  - Third trial attempt (2026-10-30): the prompt fix worked (the agent
+    loop started on every trial), but all 13 trials failed with
+    `finish_reason_error` after ~15 s with zero tokens — the Cline
+    `lmstudio` provider fell back to its built-in default host
+    (`localhost:1234`) instead of the gateway at `127.0.0.1:8080`, because
+    the per-trial provider settings carried no endpoint and the suite had
+    no field to declare one. Fixed in the engine contract: the suite
+    profile's provider gained an optional `endpoint` (schemas,
+    `ProviderSpec`, request forwarding), and the Cline adapter now
+    materializes it in the per-trial provider settings as `baseUrl`
+    (with a 10-minute per-request timeout, mirroring the operator's
+    verified setting); the suites declare
+    `http://127.0.0.1:8080/v1` (new hashes above), and the engine
+    rebuilds from the fixed worktree commit.
   - `bench --dry-run` preflight correctly refuses hybrid conditions
     without verified corpus-wide vector coverage (observed on every
     partial-coverage generation).

@@ -853,6 +853,7 @@ mod tests {
                 provider: Some(suite::ProviderSpec {
                     id: "fake-provider".into(),
                     credential_ref: Some(format!("env:{CRED_VAR}")),
+                    endpoint: None,
                 }),
                 model: None,
                 reasoning: None,
@@ -896,6 +897,22 @@ mod tests {
         // An unset credential variable is a config error, not a silent drop.
         let suite = suite_with_credential_ref();
         assert!(resolve_adapter_env_with(&suite, &|_| None).is_err());
+    }
+
+    /// The optional provider endpoint round-trips through suite
+    /// (de)serialization: present when declared, omitted otherwise.
+    #[test]
+    fn provider_endpoint_round_trips_and_stays_optional() {
+        let with: suite::ProviderSpec = serde_json::from_str(
+            r#"{"id":"p","credentialRef":null,"endpoint":"http://127.0.0.1:8080/v1"}"#,
+        )
+        .unwrap();
+        assert_eq!(with.endpoint.as_deref(), Some("http://127.0.0.1:8080/v1"),);
+
+        let without: suite::ProviderSpec = serde_json::from_str(r#"{"id":"p"}"#).unwrap();
+        assert_eq!(without.endpoint, None);
+        let serialized = serde_json::to_string(&without).unwrap();
+        assert!(!serialized.contains("endpoint"), "{serialized}");
     }
 
     /// A recorded patch snapshot must not drift mid-experiment: an edited or
