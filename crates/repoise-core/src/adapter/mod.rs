@@ -177,6 +177,32 @@ pub struct SourceEntry {
     pub size: u64,
 }
 
+/// One candidate file observed by a metadata-only intake walk: path plus
+/// observed size, with no content read or hashed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateFile {
+    /// Relative path from the adapter root, normalized (no `..`, no leading `/`).
+    pub path: PathBuf,
+    /// Observed size in bytes (0 when the adapter cannot report it).
+    pub size: u64,
+}
+
+/// Policy-aware intake of one snapshot: adapter-native ignore files plus
+/// candidate file metadata, collected before any corpus content I/O.
+///
+/// Shared discovery owns the policy: it applies the effective policy to
+/// `candidates` before reading or hashing anything. Only explicitly small
+/// policy files (e.g. `.gitignore`) and adapter-required VCS metadata are
+/// legitimate reads during intake.
+#[derive(Clone, Debug)]
+pub struct SnapshotIntake {
+    /// Adapter-owned native ignore files as (base dir, relative label, raw
+    /// lines), sorted by relative label.
+    pub native: Vec<(PathBuf, PathBuf, Vec<String>)>,
+    /// Candidate regular files (metadata only), sorted by relative path.
+    pub candidates: Vec<CandidateFile>,
+}
+
 /// Explicit adapter failures.
 #[derive(Debug)]
 pub enum AdapterError {
@@ -324,6 +350,36 @@ pub trait SourceAdapter {
         mode: SnapshotMode,
     ) -> Result<Vec<SourceEntry>, AdapterError>;
 
+    /// Collects native ignore files and candidate file metadata for one
+    /// snapshot without reading or hashing corpus content.
+    ///
+    /// Implementations must report candidates sorted by relative path, must
+    /// not follow symlinks, and must treat only explicitly small policy
+    /// files (e.g. `.gitignore`) and adapter-required VCS metadata as
+    /// legitimate intake reads. Shared discovery applies the effective
+    /// policy to `candidates` before any content read or hash.
+    fn intake(
+        &self,
+        revision: &Revision,
+        mode: SnapshotMode,
+    ) -> Result<SnapshotIntake, AdapterError> {
+        // Default for adapters without a cheap metadata path (synthetic
+        // fixtures): derive candidates from `enumerate`; they own no
+        // native ignore files.
+        let raw = self.enumerate(revision, mode)?;
+        let candidates = raw
+            .into_iter()
+            .map(|entry| CandidateFile {
+                path: entry.path,
+                size: entry.size,
+            })
+            .collect();
+        Ok(SnapshotIntake {
+            native: Vec::new(),
+            candidates,
+        })
+    }
+
     /// Reads the exact content of one relative path within the snapshot.
     fn read(
         &self,
@@ -331,6 +387,26 @@ pub trait SourceAdapter {
         mode: SnapshotMode,
         relative: &Path,
     ) -> Result<Vec<u8>, AdapterError>;
+
+    /// Reads the content of one relative path with a hard bound:
+    /// implementations must stop consuming input once `max_bytes + 1` bytes
+    /// have been observed, so a file that grows after the metadata check
+    /// can never pull unbounded content into memory. Returned bytes longer
+    /// than `max_bytes` mean the content exceeded the bound at read time.
+    fn read_bounded(
+        &self,
+        revision: &Revision,
+        mode: SnapshotMode,
+        relative: &Path,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AdapterError> {
+        let mut bytes = self.read(revision, mode, relative)?;
+        let limit = max_bytes as usize + 1;
+        if bytes.len() > limit {
+            bytes.truncate(limit);
+        }
+        Ok(bytes)
+    }
 
     /// Sanitized optional remote identity (host plus path, no credentials).
     fn remote_identity(&self) -> Result<Option<String>, AdapterError> {

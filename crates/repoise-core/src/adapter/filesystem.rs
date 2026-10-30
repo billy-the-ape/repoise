@@ -1,11 +1,12 @@
 //! Filesystem source adapter for plain directories (and Git working trees).
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::adapter::{
-    AdapterError, Capabilities, Revision, RevisionId, SnapshotMode, SourceAdapter, SourceEntry,
-    SourceKind, normalize_relative,
+    AdapterError, CandidateFile, Capabilities, Revision, RevisionId, SnapshotIntake, SnapshotMode,
+    SourceAdapter, SourceEntry, SourceKind, normalize_relative,
 };
 use crate::hash;
 
@@ -101,6 +102,36 @@ impl SourceAdapter for FilesystemAdapter {
         }
         read_within_root(&self.canonical_root, relative)
     }
+
+    fn intake(
+        &self,
+        _revision: &Revision,
+        mode: SnapshotMode,
+    ) -> Result<SnapshotIntake, AdapterError> {
+        match mode {
+            SnapshotMode::PlainDirectory => intake_scan(&self.canonical_root),
+            _ => Err(AdapterError::UnsupportedOperation {
+                operation: "committed snapshot",
+                capability: crate::adapter::Capability::AtomicSnapshots,
+            }),
+        }
+    }
+
+    fn read_bounded(
+        &self,
+        _revision: &Revision,
+        mode: SnapshotMode,
+        relative: &Path,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AdapterError> {
+        if mode != SnapshotMode::PlainDirectory {
+            return Err(AdapterError::UnsupportedOperation {
+                operation: "committed snapshot",
+                capability: crate::adapter::Capability::AtomicSnapshots,
+            });
+        }
+        read_bounded_within_root(&self.canonical_root, relative, max_bytes)
+    }
 }
 
 /// Reads `relative` from `canonical_root` after containment validation.
@@ -122,6 +153,141 @@ pub fn read_within_root(canonical_root: &Path, relative: &Path) -> Result<Vec<u8
         }
         Err(err) => Err(AdapterError::Io(err)),
     }
+}
+
+/// Reads `relative` from `canonical_root` after containment validation,
+/// consuming at most `max_bytes + 1` bytes. A file that vanishes between the
+/// metadata check and the open maps to `MissingFile`; any other I/O failure
+/// is a genuine error.
+pub fn read_bounded_within_root(
+    canonical_root: &Path,
+    relative: &Path,
+    max_bytes: u64,
+) -> Result<Vec<u8>, AdapterError> {
+    let relative = normalize_relative(relative)?;
+    if relative.as_os_str().is_empty() {
+        return Err(AdapterError::MissingFile(PathBuf::from(".")));
+    }
+    let target = canonical_root.join(&relative);
+    let resolved = match fs::canonicalize(&target) {
+        Ok(resolved) => resolved,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AdapterError::MissingFile(relative));
+        }
+        Err(err) => return Err(AdapterError::Io(err)),
+    };
+    if !resolved.starts_with(canonical_root) {
+        return Err(AdapterError::Containment(relative));
+    }
+    match probe_entry(&resolved, || {
+        let file = fs::File::open(&resolved)?;
+        let mut bytes = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }) {
+        Ok(Some(bytes)) => Ok(bytes),
+        Ok(None) => Err(AdapterError::MissingFile(relative)),
+        Err(err) => Err(err),
+    }
+}
+
+/// Metadata-only intake scan of the tree rooted at `canonical_root`:
+/// collects adapter-native ignore files (`.gitignore`) and candidate file
+/// metadata (path plus observed size) without reading or hashing corpus
+/// content. Symlinks are never followed. A missing root is fatal (a
+/// vanished root must fail the intake, not yield an empty inventory);
+/// entries that vanish mid-walk are tolerated; genuine persistent failures
+/// on entries are errors.
+pub fn intake_scan(canonical_root: &Path) -> Result<SnapshotIntake, AdapterError> {
+    let mut native: Vec<(PathBuf, PathBuf, Vec<String>)> = Vec::new();
+    let mut candidates: Vec<CandidateFile> = Vec::new();
+    intake_walk(
+        canonical_root,
+        canonical_root,
+        true,
+        &mut native,
+        &mut candidates,
+    )?;
+    native.sort_by(|a, b| a.1.cmp(&b.1));
+    candidates.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(SnapshotIntake { native, candidates })
+}
+
+fn intake_walk(
+    canonical_root: &Path,
+    dir: &Path,
+    is_root: bool,
+    native: &mut Vec<(PathBuf, PathBuf, Vec<String>)>,
+    candidates: &mut Vec<CandidateFile>,
+) -> Result<(), AdapterError> {
+    // Same race contract as the content scan: the root stays fatal, entries
+    // that vanish mid-walk are skipped, other failures are real.
+    let read_dir = if is_root {
+        Some(fs::read_dir(dir).map_err(AdapterError::Io)?)
+    } else {
+        probe_entry(dir, || fs::read_dir(dir))?
+    };
+    let Some(read_dir) = read_dir else {
+        return Ok(());
+    };
+    for result in read_dir {
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(err) if !is_root && entry_gone(dir, &err) => continue,
+            Err(err) => return Err(AdapterError::Io(err)),
+        };
+        let path = entry.path();
+        let Some(file_type) = probe_entry(&path, || entry.file_type())? else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            // Never follow symlinks (security and determinism).
+            continue;
+        }
+        if file_type.is_dir() {
+            // Traversal conservatively continues below excluded directories:
+            // nested `.gitignore` policy files still contribute to the
+            // shared policy. No corpus content below is ever read or hashed.
+            intake_walk(canonical_root, &path, false, native, candidates)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(canonical_root)
+            .map_err(|_| AdapterError::Containment(path.clone()))?
+            .to_path_buf();
+        // A `.gitignore` is an explicitly small policy file: reading it is a
+        // legitimate intake read, independent of corpus policy.
+        if path.file_name() == Some(std::ffi::OsStr::new(".gitignore")) {
+            match probe_entry(&path, || fs::read(&path)) {
+                Ok(Some(bytes)) => {
+                    let lines = String::from_utf8_lossy(&bytes)
+                        .lines()
+                        .map(str::to_string)
+                        .collect();
+                    let base = relative
+                        .parent()
+                        .unwrap_or_else(|| Path::new(""))
+                        .to_path_buf();
+                    native.push((base, relative.clone(), lines));
+                }
+                Ok(None) => {} // vanished mid-walk
+                Err(err) => return Err(err),
+            }
+        }
+        // Metadata only: no content read, no hash.
+        let Some(metadata) = probe_entry(&path, || entry.metadata())? else {
+            continue;
+        };
+        candidates.push(CandidateFile {
+            path: relative,
+            size: metadata.len(),
+        });
+    }
+    Ok(())
 }
 
 /// Recursively scans `dir` (never following symlinks) into sorted entries.
