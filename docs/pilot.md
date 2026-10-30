@@ -37,11 +37,12 @@ remains unexecuted.
   3-hour experiment budget. A separate one-trial suite
   (sha256 `dbffc4b8529cd915f760ccf5e8c20b73c035faa97e34f632a9dce3bb44102dcd`)
   is staged for the SIGINT cancellation check. Both suites' adapter env
-  sets `CLINE_NO_AUTO_UPDATE=1` so the Cline CLI's background
-  auto-update cannot change the harness version mid-run. The suite,
-  patch and config live outside the benchmarked repository in the
-  operator's local private directory (`~/bench-pilot/`); no suite
-  content is committed to Repoise.
+  sets `CLINE_NO_AUTO_UPDATE=1`, but the Cline adapter's child
+  environment allowlist does not currently forward that variable, so
+  this is an unenforced pin (see limitations). The suite, patch and
+  config live outside the benchmarked repository in the operator's
+  local private directory (`~/bench-pilot/`); no suite content is
+  committed to Repoise.
 - **Config** (patched into trial worktrees, gitignored at the consumer
   root): preset `hybrid`, embedding scope `all` (docs+code), explicit
   input profile `embeddinggemma-2:1`, model `embeddinggemma-2`,
@@ -63,8 +64,11 @@ remains unexecuted.
   `qwen3.8-27b-gsq-iq3s` (quantized GGUF, 262144-token context window,
   resident on the shared GPU). The CLI auto-updates in the background:
   the recorded prep-time version was 3.0.61, and the pilot machine's
-  global install was 3.0.74 at first trial attempt, so the suites pin
-  the version for the run via `CLINE_NO_AUTO_UPDATE=1`. One
+  global install was 3.0.74 at first trial attempt; the suite-level
+  `CLINE_NO_AUTO_UPDATE=1` does not reach the CLI (the adapter's
+  child-environment allowlist drops it — see limitations), so the
+  operator must confirm `cline --version` before and after the run
+  (each trial's adapter events also record the exact CLI version). One
   Cline runtime/model profile, held fixed across all conditions;
   condition order randomized per task/repetition block with the
   recorded seed; trials sequential. Isolated per-trial Cline state is
@@ -122,9 +126,10 @@ remains unexecuted.
     passed, but all 12 trials recorded `spawn_failed` — `sudo`'s secure
     PATH lacks `~/.local/bin` (where `cline` lives), and the bench passes
     PATH through to the agent bridge. Fixed in the staging script (PATH
-    export); the suites now also pin the Cline CLI version via
-    `CLINE_NO_AUTO_UPDATE=1`, and the failed run's artifacts were removed
-    so the experiment ids can be reused.
+    export). Both suites now set `CLINE_NO_AUTO_UPDATE=1` in the adapter
+    env — an unenforced pin, because the adapter's child-environment
+    allowlist does not forward it (see limitations) — and the failed
+    run's artifacts were removed so the experiment ids can be reused.
   - `bench --dry-run` preflight correctly refuses hybrid conditions
     without verified corpus-wide vector coverage (observed on every
     partial-coverage generation).
@@ -205,6 +210,14 @@ state is modified.
   share one GPU/gateway; embedding batches were observed to fail or slow
   under concurrent load, which is why budgets are lenient and runs are
   sequential.
+- **Cline version pin not enforced**: the Cline adapter spawns the CLI
+  with a fixed environment allowlist ([agent adapters](agent-adapters.md))
+  that does not include `CLINE_NO_AUTO_UPDATE`, so the suites' pin does
+  not reach the CLI and a background auto-update could change the
+  version mid-run. Mitigations: each trial's adapter events record the
+  exact CLI version (`harness_version`), and the operator confirms
+  `cline --version` before and after the run. Forwarding the variable
+  is a follow-up adapter change.
 - **Local inference preset not fully exercised**: the evaluated preset's
   model is used, but the original `nomic-embed-text-v1.5` selection from
   the preset could not be loaded alongside the coding model under the

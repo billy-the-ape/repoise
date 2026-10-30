@@ -85,9 +85,8 @@ harness) is prepared and verified, with execution pending — all
 prerequisites are in place (root index complete, hybrid preflight
 passed); see the [pilot status guide](docs/pilot.md); its
 execution, expansion and AP-07 (VS Code UI) remain proposed work; no editor
-extension
-ships from that plan yet. Start there for implementation order, open questions
-and per-PR acceptance criteria.
+extension ships from that plan yet. Start there for implementation order,
+open questions and per-PR acceptance criteria.
 
 ## Read only the context relevant to the task
 
