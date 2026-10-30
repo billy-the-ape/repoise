@@ -48,16 +48,19 @@ repoise read --source-id <ID> [ROOT]  # exact read-back of a search result
 repoise related --source-id <ID> [ROOT]  # structural links from a source chunk
 repoise check [OPTIONS] [ROOT]        # offline coverage/freshness check (stable exit codes)
 repoise init [ROOT]                   # idempotent, non-interactive configuration
-repoise watch [OPTIONS] [ROOT]        # incremental watch loop (Ctrl+C to stop)
+repoise watch [OPTIONS] [ROOT]        # incremental watch loop (SIGINT/SIGTERM stop it)
 repoise overlay <uninstall|update> [ROOT]  # manage the agent-guidance overlay
 repoise purge                         # remove generated cache data (--all or one scope)
 repoise mcp [ROOT]                    # stdio MCP server (JSON-RPC 2.0; --allow-refresh to expose refresh)
+repoise capabilities                 # machine handshake: version, event stream, features, exit codes
 repoise greet | help | version
 ```
 
 Global options: `--json` (machine-readable output), `--config <PATH>` and
 `--local-config <PATH>` (explicit config locations), `--max-file-bytes <N>`,
-`--committed` (use the committed Git snapshot instead of the working tree).
+`--committed` (use the committed Git snapshot instead of the working tree),
+`--events` (NDJSON event stream on stdout for `index` and `watch`; see
+[automation.md](automation.md)).
 Search options: `--path-filter <GLOB>`, `--role <ROLE>`, `--max-results <N>`
 (default 5, cap 20), `--max-output-tokens <N>`, `--cursor <TOKEN>`,
 `--mode <lexical|hybrid|vectors-only>` (default lexical), `--rrf-k <N>`,

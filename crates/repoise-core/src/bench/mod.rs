@@ -282,7 +282,8 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         runner::progress(ctx.json, &outcome.summary);
     }
 
-    // Interrupted after the loop: mark anything left as not_started.
+    // If the run was interrupted, flip the report status; every trial was
+    // already recorded (left ones as not_started) when the loop passed them.
     if interrupted.load(Ordering::SeqCst) && report_status == "completed" {
         report_status = "interrupted";
     }

@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  writeFileSync,
   chmodSync,
   existsSync,
   statSync,
@@ -393,6 +394,42 @@ test("a non-env credentialRef is rejected before any effective-config", async ()
   });
   assert.equal(result.status, "protocol_error");
   assert.equal(result.reason, "invalid_request");
+});
+
+test("a leading-dash inline prompt is rejected before spawn", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: {
+      task: { prompt: "-say hello", promptFile: null },
+    },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "invalid_request");
+  const warning = result.events.find(
+    (e) =>
+      e.t === "warning" &&
+      e.code === "invalid_request_field" &&
+      e.message.includes("task.prompt"),
+  );
+  assert.ok(warning, "the invalid-request warning must name the prompt field");
+});
+
+test("a leading-dash prompt file is rejected before spawn", async () => {
+  const { workspace, artifacts } = makeRoot();
+  mkdirSync(artifacts, { recursive: true });
+  const promptFile = join(artifacts, "prompt.txt");
+  writeFileSync(promptFile, "-say hello\n");
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: {
+      task: { prompt: null, promptFile },
+    },
+  });
+  assert.equal(result.status, "adapter_error");
+  assert.equal(result.reason, "prompt_leading_dash");
 });
 
 test("a credential echoed by the CLI is scrubbed from all events", async () => {

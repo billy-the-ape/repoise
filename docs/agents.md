@@ -110,8 +110,11 @@ For automatic refresh after eligible changes, run this in a separate terminal:
 repoise watch /absolute/path/to/checkout
 ```
 
-Watch is a long-running process: stop it with Ctrl+C. It is not installed as
-a daemon by init or MCP. Without a healthy watch loop, run index after changes.
+Watch is a long-running process: stop it with SIGINT or SIGTERM (Ctrl+C sends
+SIGINT). It is not installed as a daemon by init or MCP. Machine automation can
+run it with the `--events` NDJSON stream, and its advisory writer-ownership
+marker is surfaced by `status` (see the [automation guide](automation.md)).
+Without a healthy watch loop, run index after changes.
 Check freshness after publication before relying on changed evidence. Watch
 publishes through the shared incremental index operation with the configured
 embedding session: each publication embeds only changed/new chunk inputs and
