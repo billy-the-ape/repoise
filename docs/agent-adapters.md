@@ -75,7 +75,10 @@ trailing events are detected and rejected.
 
 `packages/agent-adapter-cline` drives the installed Cline headless CLI
 (`cline --json -c <workspace> ...`), verified against the Cline CLI
-reference (2026-10-19); live behavior is not yet measured.
+reference (2026-10-19) and re-verified against the installed CLI 3.0.74
+(2026-10-30): that CLI rejects stdin-only invocations ("JSON output mode
+requires a prompt argument or piped stdin"), so the prompt travels as the
+trailing positional argument.
 
 - One trial per invocation; `hello` is emitted before anything else.
 - Trial state is isolated under `outputs.artifactDir/cline/`:
@@ -83,11 +86,15 @@ reference (2026-10-19); live behavior is not yet measured.
   (`CLINE_MCP_SETTINGS_PATH`), `CLINE_LOG_PATH`, and an
   **effective-config artifact** recording every effective guidance, skill,
   MCP server, model, limit and state location with credential values
-  redacted (names only).
+  redacted (names only) and the prompt absent from the recorded argv
+  (a `<prompt>` placeholder; the prompt is recorded as `promptLength`
+  and `promptSha256` under `task`).
 - `repoise` mode configures the trial's single MCP server
   (`condition.mcp`); `baseline` mode gets an empty server list. The
   isolated `--config` dir guarantees no global servers leak in.
-- The prompt travels on stdin; the credential (from
+- The prompt travels as the trailing positional argument (the 3.0.74 CLI
+  rejects stdin-only invocations; the child's stdin is closed without
+  data); the credential (from
   `provider.credentialRef`, only `env:` references are honored) travels
   through the `-k` flag at spawn time and never through the request, the
   effective-config artifact, or any event. Note the `-k` value is visible in
@@ -106,6 +113,13 @@ reference (2026-10-19); live behavior is not yet measured.
   seconds and is also enforced by the host. `maxToolCalls` is declared
   unenforceable (no per-tool telemetry) and produces a warning, never a
   silent approximation.
+- The optional `profile.provider.endpoint` (e.g. an OpenAI-compatible base
+  URL) is materialized in the Cline per-trial provider settings
+  (`data/settings/providers.json` under the isolated state dir) as
+  `baseUrl` with a 10-minute per-request timeout, so the CLI does not fall
+  back to its built-in default host (`localhost:1234`); the endpoint is
+  recorded in the effective-config artifact, and the credential never
+  enters that file.
 - The agent's final message text (the `done` event's `text`) is recorded
   on the `final` event as `data.answer` (null when no final text was
   produced), so deterministic benchmark grading — suite `answerField`,
@@ -176,7 +190,8 @@ of the protocol's own happy path (request plus every event) by the
 checked-in schemas (validated with ajv). The adapter suite drives the
 real Cline adapter through the real host with a stub Cline CLI, asserting
 the exact argv/env the harness observed, per-trial MCP settings,
-effective-config redaction, status mapping for cancellation and failure,
+effective-config redaction (credential and prompt), status mapping for
+cancellation and failure,
 rejection of non-`env:` credential references, credential scrubbing from
 forwarded CLI output (including a key straddling the unparsed-line
 truncation boundary), a `cancel` control line arriving in the same stdin

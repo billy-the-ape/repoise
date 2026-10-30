@@ -245,6 +245,10 @@
             "credentialRef": {
               "type": "string",
               "description": "Opt-in credential reference of the form 'env:VAR_NAME'."
+            },
+            "endpoint": {
+              "type": "string",
+              "description": "Optional provider endpoint (e.g. an OpenAI-compatible base URL), forwarded to the adapter, which materializes it in its own configuration surface."
             }
           }
         },

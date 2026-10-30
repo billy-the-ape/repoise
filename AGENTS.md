@@ -80,7 +80,12 @@ grading (deterministic checks, declared manual rubrics, censored-trial
 handling), per-trial grading records, predeclared paired comparisons with
 task-cluster bootstrap intervals, the predeclared quality gate, the
 published `report.json`/`report.md` and the offline `bench report` rebuild.
-AP-06 and AP-07 (pilot/expansion, VS Code UI) are proposed work; no editor
+AP-06's first smoke experiment (the ai-gateway pilot on the AP-04/AP-05
+harness) executed 2026-10-30: all 12 smoke trials completed and passed
+deterministic grading, and the SIGINT cancellation check passed
+(cooperative cancel, exit 4) — see the [pilot status guide](docs/pilot.md);
+the smoke run verifies mechanics only (one repetition, no statistics); its
+expansion and AP-07 (VS Code UI) remain proposed work; no editor
 extension ships from that plan yet. Start there for implementation order,
 open questions and per-PR acceptance criteria.
 
@@ -100,6 +105,7 @@ open questions and per-PR acceptance criteria.
 | CLI automation (capabilities, `--events`, exit codes, signals, ownership) | [Automation contracts](docs/automation.md)                                                              |
 | Agent adapter protocol, conformance and the Cline adapter | [Agent adapters](docs/agent-adapters.md)                                                          |
 | Benchmark runner (`repoise bench`), suites, artifacts, interruption | [Benchmark guide](docs/bench.md)                                                              |
+| AP-06 pilot status (ai-gateway smoke experiment)                     | [Pilot status](docs/pilot.md)                                                               |
 | Agent setup, CLI/MCP retrieval workflow and worktrees | [Agent setup](docs/agents.md)                                                                                     |
 | Portable consumer skill and one-command installation | [Agent skill](skills/repoise/SKILL.md); [installation](docs/agents.md#install-the-agent-skill) |
 | Build/CI integration and consumer guide            | [Build/CI guide](docs/build-ci.md)                                                                                   |

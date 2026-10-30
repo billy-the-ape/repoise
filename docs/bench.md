@@ -127,8 +127,12 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   `PATH`). `env` values may be `env:VAR_NAME` references, resolved at
   preflight; only names ever reach artifacts.
 - `profile` — mirrors the AP-03 request `profile` group (harness, provider
-  with opt-in `credentialRef`, model, reasoning, compaction, free-form
-  sampling).
+  with opt-in `credentialRef` and optional `endpoint`, model, reasoning,
+  compaction, free-form sampling). The provider `endpoint` (e.g. an
+  OpenAI-compatible base URL) is forwarded verbatim to the adapter, which
+  materializes it in its own configuration surface — the Cline adapter
+  writes it as the per-trial provider settings `baseUrl`, because without
+  it the CLI falls back to its built-in default host (`localhost:1234`).
 - `limits` — per-trial caps forwarded to the adapter (`wallClockMs` is always
   enforced by the coordinator regardless of adapter support; the coordinator
   applies a 15-minute default — 900000 ms — when the suite omits it).

@@ -67,7 +67,11 @@ function makeRequest({
     },
     profile: {
       harness: { name: "cline", revision: null },
-      provider: { id: "stub-provider", credentialRef: "env:STUB_API_KEY" },
+      provider: {
+        id: "stub-provider",
+        credentialRef: "env:STUB_API_KEY",
+        endpoint: "http://127.0.0.1:9999/v1",
+      },
       model: { id: "stub-model" },
       reasoning: { level: "low" },
       compaction: { mode: "basic" },
@@ -184,7 +188,16 @@ test("repoise mode: isolated state, MCP config, effective-config, usage", async 
   assert.equal(
     manifest.prompt,
     "Say hello to the workspace",
-    "prompt travels on stdin",
+    "prompt travels as the trailing positional argument",
+  );
+  assert.equal(
+    argv[argv.length - 1],
+    "Say hello to the workspace",
+    "the positional prompt must be the final argv element",
+  );
+  assert.ok(
+    keyIndex < argv.length - 1,
+    "the credential flag must precede the positional prompt",
   );
   assert.ok(manifest.mcpSettingsPath.startsWith(artifacts));
 
@@ -214,7 +227,34 @@ test("repoise mode: isolated state, MCP config, effective-config, usage", async 
     "Say hello to the workspace".length,
   );
   assert.ok(/^sha256:/.test("sha256:" + effective.task.promptSha256));
+  assert.equal(
+    effective.invocation.argv[effective.invocation.argv.length - 1],
+    "<prompt>",
+    "the recorded argv must end in a placeholder, not the prompt",
+  );
+  assert.ok(
+    !effectiveText.includes("Say hello to the workspace"),
+    "the prompt text must not appear in the effective-config artifact",
+  );
   assert.equal(effective.profile.provider.credentialPresent, true);
+  assert.equal(effective.profile.provider.endpoint, "http://127.0.0.1:9999/v1");
+
+  // The provider endpoint is materialized in the per-trial Cline provider
+  // settings (baseUrl), never with the credential value.
+  const providerSettingsText = readFileSync(
+    join(artifacts, "cline", "data", "settings", "providers.json"),
+    "utf8",
+  );
+  const providerSettings = JSON.parse(providerSettingsText);
+  assert.equal(
+    providerSettings.providers["stub-provider"].settings.baseUrl,
+    "http://127.0.0.1:9999/v1",
+    "the endpoint becomes the per-trial provider settings baseUrl",
+  );
+  assert.ok(
+    !providerSettingsText.includes("test-key-123"),
+    "the credential value must not enter the provider settings",
+  );
 
   // The version probe surfaces the harness revision as a note.
   const versionNote = result.events.find(

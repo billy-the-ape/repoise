@@ -344,6 +344,11 @@ pub struct ProviderSpec {
     pub id: String,
     /// Opt-in credential reference of the form `env:VAR_NAME`.
     pub credential_ref: Option<String>,
+    /// Optional provider endpoint (e.g. an OpenAI-compatible base URL),
+    /// forwarded to the adapter, which materializes it in its own
+    /// configuration surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

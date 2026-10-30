@@ -250,6 +250,47 @@ export async function main() {
     `${JSON.stringify({ mcpServers: invocation.mcpServers }, null, 2)}\n`,
   );
 
+  // Provider endpoint: the profile's optional endpoint (e.g. an
+  // OpenAI-compatible base URL) is materialized in the Cline per-trial
+  // provider settings, so the CLI does not fall back to its built-in
+  // default host. The credential never enters this file (the `-k` flag
+  // supplies it).
+  const provider = request.profile.provider;
+  if (
+    provider &&
+    typeof provider.endpoint === "string" &&
+    provider.endpoint.length > 0
+  ) {
+    const settingsDir = join(dataDir, "settings");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(
+      join(settingsDir, "providers.json"),
+      `${JSON.stringify(
+        {
+          version: 1,
+          lastUsedProvider: provider.id,
+          modes: {},
+          providers: {
+            [provider.id]: {
+              settings: {
+                provider: provider.id,
+                baseUrl: provider.endpoint,
+                // Mirrors the verified operator setting: a 10-minute
+                // per-request cap for local 27B inference. The per-trial
+                // wall-clock backstop remains the authoritative bound.
+                timeout: 600000,
+              },
+              updatedAt: new Date().toISOString(),
+              tokenSource: "manual",
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  }
+
   // The immutable effective configuration for this trial: every effective
   // guidance, skill, MCP server, model, limit and state location, with
   // credential values redacted (names only).
@@ -297,6 +338,10 @@ export async function main() {
                 ? request.profile.provider.credentialRef
                 : null,
             credentialPresent: invocation.credential !== null,
+            endpoint:
+              typeof request.profile.provider.endpoint === "string"
+                ? request.profile.provider.endpoint
+                : null,
           }
         : null,
       reasoning: request.profile.reasoning ?? null,
@@ -304,7 +349,10 @@ export async function main() {
     },
     limits: request.limits ?? {},
     invocation: {
-      argv: invocation.argv,
+      // Redacted: the recorded argv must not carry the prompt text (it is
+      // hashed under task.promptSha256); the spawn vector below still
+      // carries the real prompt as the trailing element.
+      argv: [...invocation.argv.slice(0, -1), "<prompt>"],
       credentialFlag: invocation.credential ? "-k" : null,
       envNames: Object.keys(invocation.env),
       mcpSettingsPath,
@@ -327,8 +375,16 @@ export async function main() {
   });
 
   // --- child lifecycle -------------------------------------------------
+  // The prompt is the trailing positional argument of invocation.argv and
+  // must remain the final element, so the credential flag is inserted
+  // before it, never after.
   const spawnArgv = invocation.credential
-    ? [...invocation.argv, "-k", process.env[invocation.credential.name]]
+    ? [
+        ...invocation.argv.slice(0, -1),
+        "-k",
+        process.env[invocation.credential.name],
+        ...invocation.argv.slice(-1),
+      ]
     : invocation.argv;
 
   // Forwarded Cline output can echo the credential (e.g. an invalid-key
@@ -389,12 +445,11 @@ export async function main() {
         // Best-effort backstop only.
       }
     }
-    // Async stdin write failures (EPIPE / destroyed stream after a failed
-    // spawn) surface as "error" events, not synchronous throws.
+    // The prompt travels on argv, not stdin: close stdin without data so
+    // the child sees EOF immediately instead of waiting for input.
     child.stdin.on("error", (error) => {
-      emitFinal("adapter_error", `stdin_write_failed: ${error.message}`);
+      emitFinal("adapter_error", `stdin_closed_failed: ${error.message}`);
     });
-    child.stdin.write(invocation.prompt);
     child.stdin.end();
   } catch (error) {
     emitFinal("adapter_error", `spawn_failed: ${error.message}`);
