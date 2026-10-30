@@ -3,9 +3,9 @@
 Status: proposed implementation program. AP-01 (workspace and CI foundation),
 AP-02 (CLI automation contracts) and AP-03 (agent adapter protocol with the
 first Cline adapter) are implemented; AP-04 and AP-05 are implemented; AP-06's
-first smoke experiment is prepared and verified, execution pending — one
-operator prerequisite remains (the embedding server must load) — (the
-ai-gateway pilot on the AP-04/AP-05 harness — see the
+first smoke experiment is prepared and verified, execution pending — all
+prerequisites in place (root index complete, hybrid preflight passed) —
+(the ai-gateway pilot on the AP-04/AP-05 harness — see the
 [pilot status guide](../../pilot.md)); its execution, expansion and
 AP-07 remain proposed. Recorded October 19, 2026 (America/Denver); AP-01
 implementation recorded October 20, 2026; AP-02 implementation recorded

@@ -1,17 +1,15 @@
 # AP-06 pilot: ai-gateway smoke experiment (status)
 
 Status: first smoke experiment **prepared and verified, execution pending**
-(2026-10-29, America/Denver) on the AP-04/AP-05 harness against the real
+(2026-10-29/30, America/Denver) on the AP-04/AP-05 harness against the real
 consumer `ai-gateway`. Every component — suite, config, patch snapshot,
 harness, adapter, embedding endpoint and preflight gates — is staged and
-validated (the embedding endpoint's 8192 configuration is probe-verified;
-the `embeddinggemma-2` server itself was evicted by a concurrent coding
-task and must be loadable again before the run). The blocking llama-swap
-change (per-input batch size 8192) was applied by the operator on
-2026-10-29 and verified by probe (4500- and 5500-token inputs
-accepted); the run is ready to execute once `embeddinggemma-2` is
-loadable again (see [Run steps](#run-steps)). No trial has run and nothing
-here claims
+validated; the root index is complete (generation 9, 9579/9579 vectors)
+and the hybrid preflight has passed, so the run is ready to execute
+(see [Run steps](#run-steps)). The blocking llama-swap change (per-input
+batch size 8192) was applied by the operator on 2026-10-29 and verified
+by probe (4500- and 5500-token inputs accepted). No trial has run and
+nothing here claims
 speed, token or correctness results. The 15–20-task expansion described in
 [06-pilot-and-expansion.md](plans/agent-platform/06-pilot-and-expansion.md)
 remains unexecuted.
@@ -32,15 +30,18 @@ remains unexecuted.
   `c2e7f4a12ad8e484b568d4d83ed2cdf413af2c22` from the source worktree
   (host bridge and Cline adapter resolved from that checkout).
 - **Suite**: frozen smoke suite, sha256
-  `87fdb866cdbb53bf2446c48d8cb3150c29fe0367f18cf1fe3799d984ed13e4ea`:
+  `1b46da799b126ed8746cab458b84e886d2951ac1edd2bd2de4344db8f54ebcfd`:
   four tasks (two development, two held-out), three conditions
   (`baseline`, `repoise-lexical`, `repoise-hybrid`), one repetition,
   seed 20261029, per-trial 15-minute wall clock and 60-iteration cap,
   3-hour experiment budget. A separate one-trial suite
-  (sha256 `47cc77dbfbccfabc21c8b84d21c9d393a3bc59f0aeb6f58ef33c4535c3e000e1`)
-  is staged for the SIGINT cancellation check. The suite, patch and config
-  live outside the benchmarked repository in the operator's local private
-  directory (`~/bench-pilot/`); no suite content is committed to Repoise.
+  (sha256 `dbffc4b8529cd915f760ccf5e8c20b73c035faa97e34f632a9dce3bb44102dcd`)
+  is staged for the SIGINT cancellation check. Both suites' adapter env
+  sets `CLINE_NO_AUTO_UPDATE=1` so the Cline CLI's background
+  auto-update cannot change the harness version mid-run. The suite,
+  patch and config live outside the benchmarked repository in the
+  operator's local private directory (`~/bench-pilot/`); no suite
+  content is committed to Repoise.
 - **Config** (patched into trial worktrees, gitignored at the consumer
   root): preset `hybrid`, embedding scope `all` (docs+code), explicit
   input profile `embeddinggemma-2:1`, model `embeddinggemma-2`,
@@ -55,16 +56,20 @@ remains unexecuted.
   preflight would be structurally unreachable (see limitations).
   Config sha256
   `5aa4601c3b9c4de259365310dc80dd395a7c892c5561d2343d309f072d49c28f`.
-- **Harness/profile**: Cline CLI 3.0.61 (`cline` npm package, Node
+- **Harness/profile**: Cline CLI 3.0.74 (`cline` npm package, Node
   v22.22.1), adapter `agent-adapter-cline 0.1.0-alpha.1` over the
   AP-03 host bridge (protocol 1), provider `lmstudio` against the
   local llama-swap gateway `http://127.0.0.1:8080/v1`, model
   `qwen3.8-27b-gsq-iq3s` (quantized GGUF, 262144-token context window,
-  resident on the shared GPU). One Cline runtime/model profile, held
-  fixed across all conditions; condition order randomized per
-  task/repetition block with the recorded seed; trials sequential.
-  Isolated per-trial Cline state is pre-seeded so provider selection
-  never falls back to a default provider mid-trial.
+  resident on the shared GPU). The CLI auto-updates in the background:
+  the recorded prep-time version was 3.0.61, and the pilot machine's
+  global install was 3.0.74 at first trial attempt, so the suites pin
+  the version for the run via `CLINE_NO_AUTO_UPDATE=1`. One
+  Cline runtime/model profile, held fixed across all conditions;
+  condition order randomized per task/repetition block with the
+  recorded seed; trials sequential. Isolated per-trial Cline state is
+  pre-seeded so provider selection never falls back to a default
+  provider mid-trial.
 - **Embedding controls**: embedding model `embeddinggemma-2` (768 dims,
   explicit `embeddinggemma-2:1` profile from the evaluated
   local-inference preset), served through the same llama-swap gateway on
@@ -112,6 +117,14 @@ remains unexecuted.
     2-token probe failed at the time). A single index run completes
     coverage once the embedding model can load again (only ~142 new
     embeddings; the rest are cache hits).
+  - First trial attempt (2026-10-30): the index completed (generation 9,
+    9579/9579 vectors, zero failed/pending) and the hybrid preflight
+    passed, but all 12 trials recorded `spawn_failed` — `sudo`'s secure
+    PATH lacks `~/.local/bin` (where `cline` lives), and the bench passes
+    PATH through to the agent bridge. Fixed in the staging script (PATH
+    export); the suites now also pin the Cline CLI version via
+    `CLINE_NO_AUTO_UPDATE=1`, and the failed run's artifacts were removed
+    so the experiment ids can be reused.
   - `bench --dry-run` preflight correctly refuses hybrid conditions
     without verified corpus-wide vector coverage (observed on every
     partial-coverage generation).
@@ -132,12 +145,10 @@ remains unexecuted.
 ## Run steps
 
 The 8192 per-input limit is live and verified (4500- and 5500-token
-probes accepted), and 9437/9579 chunks are embedded (docs+code complete;
-the 142 remapped config chunks are the only gap). One prerequisite
-remains before the chain: the `embeddinggemma-2` server must be loadable
-again — it was evicted by a concurrent `Gemma-4-E4B` coding task and
-currently crashes on load. Pause that task (or restart the gateway),
-then verify with a tiny probe:
+probes accepted), and the root index is complete: generation 9,
+9579/9579 vectors (the final 142 remapped chunks embedded 2026-10-30,
+zero failed/pending) with the hybrid preflight passed. No prerequisite
+remains; an optional pre-check that the embedding endpoint is serving:
 
 ```sh
 curl -s http://127.0.0.1:8080/v1/embeddings \
