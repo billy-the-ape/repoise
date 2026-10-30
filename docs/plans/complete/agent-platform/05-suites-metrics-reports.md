@@ -2,7 +2,7 @@
 
 Status: implemented (2026-10-27). Depends on [AP-04](04-benchmark-runner.md);
 co-design schema with [AP-03](03-agent-adapters.md). Preserve existing
-retrieval evaluation separately. See the [benchmark guide](../../bench.md).
+retrieval evaluation separately. See the [benchmark guide](../../../bench.md).
 
 ## Implementation notes (AP-05, 2026-10-27)
 
@@ -15,9 +15,9 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   `allowedPaths`/`expectedArtifacts`, top-level `gates` (baseline,
   `minCorrectness`, `correctnessMargin`, `improvements`) and `report`
   (`bootstrapIterations`, `bootstrapSeed`). Additive within v1; the checked-in
-  [suite schema](../../../schemas/bench-suite.v1.schema.json) documents them.
+  [suite schema](../../../../schemas/bench-suite.v1.schema.json) documents them.
 - Post-trial grading (`trials/<id>/grading.json`, new checked-in
-  [grading schema](../../../schemas/bench-grading.v1.schema.json)): data-only
+  [grading schema](../../../../schemas/bench-grading.v1.schema.json)): data-only
   deterministic checks over the recorded answer and declared artifact files
   (`containsAny`/`containsAll`/`notContains`, case-sensitive substring;
   alternative correct evidence accepted, exact equality deliberately not the
@@ -79,12 +79,12 @@ validation, `grading.rs`, `analysis.rs`, report assembly and `rebuild` in
   reaching a percentile of an empty bootstrap draw, and `percentile`
   returns NaN (JSON `null`) on an empty draw as defense in depth. The
   stale "AP-05 not implemented" boundary line in
-  [agent adapters](../../agent-adapters.md) and a broken relative link in
+  [agent adapters](../../../agent-adapters.md) and a broken relative link in
   `scripts/eval/RUNBOOK.md` are fixed.
 - Further review fixes: the Cline adapter records the agent's final
   message text on the `final` event's `data.answer` (null when none), with
   the convention described in the adapter-events schema and the
-  [agent adapter](../../agent-adapters.md) guide, so deterministic answer
+  [agent adapter](../../../agent-adapters.md) guide, so deterministic answer
   grading works end to end with the shipped adapter; the run takes the
   report's task provenance from the frozen manifest (no prompt-file disk
   reads at report time), so a prompt file deleted mid-run cannot sink the

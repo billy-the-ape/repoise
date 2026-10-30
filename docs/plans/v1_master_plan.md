@@ -26,11 +26,16 @@ Follow-on program (proposed October 19, 2026): the
 [agent platform roadmap](agent-platform/README.md) records the workspace/CI
 transition, CLI lifecycle contracts, consumer-owned agent adapters, live benchmark
 execution/grading/reporting, staged cross-repository/model/harness experiments,
-and VS Code extension. AP-01 through AP-04 are implemented: the workspace/CI
+and VS Code extension. AP-01 through AP-05 are implemented: the workspace/CI
 foundation, the CLI automation contracts, the versioned agent adapter protocol
-with its host, conformance fixtures and first Cline adapter, and the benchmark
+with its host, conformance fixtures and first Cline adapter, the benchmark
 runner (`repoise bench`: isolated trials, verified retrieval conditions,
-budgets, interruption and artifacts — [bench guide](../bench.md)).
+budgets, interruption and artifacts — [bench guide](../bench.md)) and the
+independent post-trial grading, paired comparisons and published reports of
+AP-05. AP-06's first smoke experiment executed 2026-10-30 (all 12 trials
+passed deterministic grading; SIGINT cancellation verified — see
+[pilot status](../pilot.md)); its expansion and the AP-07 VS Code UI remain
+proposed work.
 These plans extend this document without changing section 11 adoption gates or
 claiming shipped commands, completed benchmarks, or an implemented extension.
 
@@ -528,7 +533,11 @@ history horizon, remote enrichment, and retention. Unknown keys and invalid budg
 Secrets resolve only via environment references. Endpoint/model settings are operator-selected;
 there is no mandatory cloud provider.
 
-### Proposed CLI (not available today)
+### Proposed CLI (historical; superseded by the shipped CLI)
+
+The native CLI is implemented; the shipped command/flag surface is documented
+in the [README](../../README.md#cli-commands), not in this plan. The names
+below are the original proposal and differ in places.
 
 `repoise init --dry-run`, `doctor`, `explain <path>`,
 `index --mode working-tree [--paths ...]`, `index --ref HEAD`, `watch`, `check --fresh`,
@@ -852,8 +861,9 @@ reads and freshness, fingerprinted embeddings with RRF fusion, structural
 TypeScript/JavaScript code chunks with symbols and syntactic reference edges, and a
 bounded local history lane with optional verified GitHub enrichment. Packed-install
 release acceptance (offline functional fixture, MCP, platform matrix) now runs in the
-CI/release matrices. Measured adoption gates (benchmarks), the evaluation harness and
-the pilot remain pending. Initial build evidence is linked in the
+CI/release matrices. Measured adoption gates (benchmarks), the hybrid
+evaluation and the owner-approved live agent pilot remain pending. Initial
+build evidence is linked in the
 [alpha execution record](../publish/alpha-0-status.md) (historical) and
 [preview readiness](../publish/alpha-1-readiness.md); no agent task/token gains are measured.
 

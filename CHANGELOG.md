@@ -8,7 +8,7 @@ The development tooling became a Cargo + pnpm workspace. pnpm 12.3.4 is pinned b
 
 CI now selects affected check sets for pull requests through `scripts/ci/impact-map.json` and `scripts/ci/select-checks.mjs` (unknown paths, empty diffs and selection failures run the full suite), and a stable aggregate `CI gate` job enforces expected results, failures and cancellations. Pushes to main always run the full suite, and the required `Check (OS)` job names are unchanged.
 
-Release tooling resolves the real npm CLI even when pnpm points `npm_execpath` at pnpm's own CLI. Registry packing/staging semantics, the published packages and consumer installation are unchanged; no consumer migration is required. See `docs/plans/agent-platform/01-workspace-and-ci.md` for the implementation record.
+Release tooling resolves the real npm CLI even when pnpm points `npm_execpath` at pnpm's own CLI. Registry packing/staging semantics, the published packages and consumer installation are unchanged; no consumer migration is required. See `docs/plans/complete/agent-platform/01-workspace-and-ci.md` for the implementation record.
 
 ### CLI automation contracts (AP-02)
 
@@ -59,7 +59,7 @@ The CLI gained machine-automation surfaces without changing existing
 No new environment variables are required (`REPOISE_EVENTS_HEARTBEAT_MS`
 is an optional override); no migration or deployment actions. See
 [docs/automation.md](docs/automation.md) and
-`docs/plans/agent-platform/02-cli-contracts.md` for the implementation
+`docs/plans/complete/agent-platform/02-cli-contracts.md` for the implementation
 record.
 
 ### Agent adapter protocol and first adapter (AP-03)
@@ -118,7 +118,7 @@ the real host), wired into CI through per-package `test` scripts run by
 are required for the protocol host itself; the Cline adapter honors
 `CLINE_EXECUTABLE` and the documented `CLONE_*` passthrough namespace. See
 [docs/agent-adapters.md](docs/agent-adapters.md) and
-`docs/plans/agent-platform/03-agent-adapters.md` for the implementation
+`docs/plans/complete/agent-platform/03-agent-adapters.md` for the implementation
 record.
 
 ### Benchmark runner (AP-04)
@@ -244,7 +244,7 @@ no longer C-quoted into unrecognizable entries that made the runner's own
 artifacts count as dirt on every run after the first (renames are parsed
 from the NUL-separated origin field). See
 [docs/bench.md](docs/bench.md) and
-`docs/plans/agent-platform/04-benchmark-runner.md` for the implementation
+`docs/plans/complete/agent-platform/04-benchmark-runner.md` for the implementation
 record.
 
 ### Benchmark grading and reports (AP-05)
@@ -339,7 +339,7 @@ Declared limitations: `modelJudge` has no model-judge runtime (the tested
 model never grades itself); worktree isolation is not a security sandbox for
 hidden tests; no v1 replay-evidence export is offered (the existing import
 validation is unchanged). See [docs/bench.md](docs/bench.md) and
-`docs/plans/agent-platform/05-suites-metrics-reports.md` for the
+`docs/plans/complete/agent-platform/05-suites-metrics-reports.md` for the
 implementation record.
 
 ### Cross-worktree cache reuse

@@ -1,5 +1,5 @@
 # JS/TS workspace membership is explicit. See
-# docs/plans/agent-platform/01-workspace-and-ci.md for ownership and reserved
+# docs/plans/complete/agent-platform/01-workspace-and-ci.md for ownership and reserved
 # homes. Generated native-package staging (dist/), evaluation fixtures and
 # consumer examples never join the workspace. The root package is listed so
 # Turborepo schedules its declared development and native-bridge tasks; pnpm

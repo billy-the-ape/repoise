@@ -251,7 +251,7 @@ affected check sets through `scripts/ci/impact-map.json` and
 `scripts/ci/select-checks.mjs`; pushes to main, unknown paths, empty diffs and
 selection failures run the full suite, and an aggregate `CI gate` job enforces
 the expected results (see the
-[agent platform workspace plan](plans/agent-platform/01-workspace-and-ci.md)).
+[agent platform workspace plan](plans/complete/agent-platform/01-workspace-and-ci.md)).
 The manually dispatched
 **Build native artifacts** workflow produces binaries for Linux x86_64 GNU, macOS ARM64 and
 Windows x86_64 MSVC, retained for seven days. These are engineering artifacts: no installer,

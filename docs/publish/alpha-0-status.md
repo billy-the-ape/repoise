@@ -70,7 +70,7 @@ and Windows consumer smoke passed. npm support review is pending; no ticket ID r
 - [ ] Reject unused main bootstrap after real launcher publication.
 - [ ] Exercise OIDC staging on a later new reviewed version.
 
-Follow [initial-alpha completion](npm.md#complete-the-initial-alpha-after-windows-clearance).
+Follow [initial-alpha completion](npm.md#complete-the-initial-alpha-after-windows-clearance-historical).
 Do not rerun all-package staging for this version or recreate its public native release.
 Native distribution is complete; npm onboarding remains partial. Indexing/search/persistence,
 embeddings/MCP/watch, benchmarks and ai-gateway consumer integration have not shipped.

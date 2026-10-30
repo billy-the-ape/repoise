@@ -10,7 +10,7 @@ checked-in NDJSON schemas under `schemas/`) and the Cline adapter in
 `packages/agent-adapter-cline/`, with 23 protocol conformance tests and 13
 adapter tests (stub-CLI driven through the real host). Implemented decisions
 and deviations from the proposals below are documented in
-[docs/agent-adapters.md](../../agent-adapters.md):
+[docs/agent-adapters.md](../../../agent-adapters.md):
 
 - The adapter executable override is `CLINE_EXECUTABLE` (not the proposed
   `REPOISE_BENCH_RUNNER`, which remains a runner-level proposal for AP-04).
