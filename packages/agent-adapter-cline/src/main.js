@@ -245,6 +245,13 @@ export async function main() {
     emitFinal("adapter_error", "prompt_file_missing");
     return;
   }
+  // A prompt-file may contain a dash-prefixed prompt even when the inline
+  // one was validated: reject before spawn, because the Cline CLI would
+  // parse it as an option (it does not honour a `--` guard).
+  if (invocation.prompt.startsWith("-")) {
+    emitFinal("adapter_error", "prompt_leading_dash");
+    return;
+  }
   writeFileSync(
     mcpSettingsPath,
     `${JSON.stringify({ mcpServers: invocation.mcpServers }, null, 2)}\n`,

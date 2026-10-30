@@ -13,6 +13,7 @@ Layout under the cache root:
 | --- | --- |
 | `repos/<repoId>/worktrees/<worktreeId>/index.sqlite` | All index tables for one scope |
 | `repos/<repoId>/worktrees/<worktreeId>/state.json` | Versioned integration manifest; the database remains canonical |
+| `repos/<repoId>/worktrees/<worktreeId>/owner.json` | Advisory writer-ownership marker for the scope (AP-02): owner pid, operation and last-refresh time, published atomically; exposed read-only by `status` and removed when the scope is purged (see [automation.md](automation.md)) |
 | `repos/<repoId>/embedding-cache/` | Checkout-local content-addressed embedding cache (`embeddings.sqlite`), used when no reuse family is available (plain directories, sharing opted out, or fallback): input-hash plus profile-fingerprint keyed vectors, reference-counted against retained generations |
 | `repos/<repoId>/host-cache/<host>.json` | Verified remote host records for history enrichment (ETag plus bounded payload per key, with an optional paged-list continuation); invalidated on remote permission denial; removed when the repository scope is purged (`purge --all`), not by a worktree-scoped purge |
 

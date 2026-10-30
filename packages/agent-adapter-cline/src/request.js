@@ -47,8 +47,16 @@ export function validateRequest(request) {
   else {
     const hasPrompt = isNonEmptyString(task.prompt);
     const hasPromptFile = isNonEmptyString(task.promptFile);
-    if (hasPrompt === hasPromptFile)
+    if (hasPrompt === hasPromptFile) {
       errors.push("task must set exactly one of prompt or promptFile");
+    } else if (hasPrompt && task.prompt.startsWith("-")) {
+      // The prompt travels as a trailing positional argv element; Cline
+      // 3.0.74 does not honour a `--` end-of-options guard and rejects
+      // dash-prefixed prompts ("Unknown command or unquoted prompt").
+      errors.push(
+        "task.prompt must not start with '-' (it would be parsed as a Cline CLI option)",
+      );
+    }
   }
   const condition = request.condition;
   if (typeof condition !== "object" || condition === null)

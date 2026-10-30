@@ -104,6 +104,15 @@ trailing positional argument.
   before any truncation so a key straddling a truncation boundary cannot
   leak; the mapped `finishReason` passed into `final.reason` goes through
   the same redaction.
+- Dash-prefixed prompts are rejected before spawn: Cline 3.0.74 does not
+  honour a `--` end-of-options guard and itself rejects them ("Unknown
+  command or unquoted prompt"). An inline `task.prompt` starting with `-`
+  fails as `protocol_error`/`invalid_request`; a `promptFile` whose content
+  starts with `-` fails as `adapter_error`/`prompt_leading_dash`.
+- Because the prompt is a single argv element, OS argv limits apply to large
+  `promptFile` content (Linux: ~128 KiB per argument; Windows: ~32,767
+  characters for the whole command line): beyond them the spawn fails and
+  the trial ends as `adapter_error`/`spawn_failed`.
 - Cline's `--auto-approve` is always on (trials need unattended operation);
   therefore `read_only_restriction` is declared `false` in the hello — the
   runner must enforce workspace boundaries, and adapters that lack the

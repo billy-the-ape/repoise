@@ -125,7 +125,11 @@ export function buildInvocation(
   }
 
   // The prompt travels as the trailing positional argument (the CLI reads
-  // the last positional), never on stdin.
+  // the last positional), never on stdin. Dash-prefixed prompts are rejected
+  // before spawn (request validation for inline prompts; `prompt_leading_dash`
+  // for prompt-file content in main.js): Cline 3.0.74 does not honour a
+  // `--` end-of-options guard and rejects them ("Unknown command or unquoted
+  // prompt"), verified against the installed CLI on 2026-10-30.
   let prompt;
   if (typeof request.task.prompt === "string") {
     prompt = request.task.prompt;

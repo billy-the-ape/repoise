@@ -112,7 +112,9 @@ process always sees the latest source.
 - **`watch` (separately started).** `repoise watch` is an explicitly started loop that
   debounces eligible file/config changes, coalesces per-path content, publishes at most
   one generation per step and rescans after branch switches. It is not installed as a
-  system daemon and cancels safely on SIGINT. If `watch` is unavailable or unhealthy,
+  system daemon and cancels safely on SIGINT or SIGTERM (machine consumers can follow
+  the run through the optional `--events` NDJSON stream; see the
+  [automation guide](automation.md)). If `watch` is unavailable or unhealthy,
   invoke the incremental `repoise index` for the affected paths and reconcile before
   declaring fresh. When embedding is configured, each watch publication runs the
   same cache-first embedding pass as `repoise index`: changed/new chunk inputs are
