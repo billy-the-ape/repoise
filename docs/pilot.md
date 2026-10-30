@@ -1,16 +1,15 @@
 # AP-06 pilot: ai-gateway smoke experiment (status)
 
-Status: first smoke experiment **prepared and verified, execution pending**
-(2026-10-29/30, America/Denver) on the AP-04/AP-05 harness against the real
-consumer `ai-gateway`. Every component — suite, config, patch snapshot,
-harness, adapter, embedding endpoint and preflight gates — is staged and
-validated; the root index is complete (generation 9, 9579/9579 vectors)
-and the hybrid preflight has passed, so the run is ready to execute
-(see [Run steps](#run-steps)). The blocking llama-swap change (per-input
-batch size 8192) was applied by the operator on 2026-10-29 and verified
-by probe (4500- and 5500-token inputs accepted). No trial has run and
-nothing here claims
-speed, token or correctness results. The 15–20-task expansion described in
+Status: first smoke experiment **executed** (2026-10-29/30,
+America/Denver) on the AP-04/AP-05 harness against the real consumer
+`ai-gateway`. The smoke chain ran 2026-10-30: all 12 trials completed and
+passed deterministic grading, and the SIGINT cancellation check passed
+(cooperative cancellation, exit 4) — see [Results](#results-2026-10-30).
+Three trial attempts were needed; the first two failed (adapter PATH and
+prompt transport, then the provider endpoint falling back to the Cline
+CLI's default host) and were fixed in the worktree. The run verifies
+mechanics only — one repetition, no statistics — and nothing here claims
+speed, token or correctness effects. The 15–20-task expansion described in
 [06-pilot-and-expansion.md](plans/agent-platform/06-pilot-and-expansion.md)
 remains unexecuted.
 
@@ -89,13 +88,45 @@ remains unexecuted.
 
 | Objective | Status |
 | --------- | ------ |
-| Isolation (disposable worktrees, no reset of the user checkout) | Not executed; staged |
-| Independently correct grading (deterministic checks outside agent visibility) | Not executed; staged |
-| Usage accounting (tokens per trial, cumulative fold) | Not executed; staged |
-| Actual hybrid calls (vectors served by the trial MCP, no silent lexical degradation) | Not executed; staged (needs full vector coverage from the `index` step) |
-| Degradation handling | Not executed; staged |
-| MCP scope (read-only server bound to the trial worktree) | Not executed; staged |
-| Cancellation (SIGINT, cooperative `cancel`, exit 4) | Not executed; suite staged |
+| Isolation (disposable worktrees, no reset of the user checkout) | Executed 2026-10-30; all 12 trials ran in disposable worktrees, the operator's checkout was untouched |
+| Independently correct grading (deterministic checks outside agent visibility) | Executed; all 12 trials graded `pass` by deterministic checks |
+| Usage accounting (tokens per trial, cumulative fold) | Executed; per-trial input/output tokens recorded in the report |
+| Actual hybrid calls (vectors served by the trial MCP, no silent lexical degradation) | Executed; 4 hybrid trials ran in the pinned hybrid mode (runtime degradation is unobservable — the adapter declares no tool telemetry, see limitations) |
+| Degradation handling | Not triggered by this run (full vector coverage); the preflight refusal of partial coverage was observed during preparation |
+| MCP scope (read-only server bound to the trial worktree) | Executed; read-only trial-bound servers for all `repoise` conditions |
+| Cancellation (SIGINT, cooperative `cancel`, exit 4) | Executed; cooperative cancellation recorded, exit 4 |
+
+## Results (2026-10-30)
+
+Executed as the `cline-agent` user (engine at `5508a70`, Cline CLI 3.0.74 on
+every trial, suite hash `d8d8c96a…` as pinned above). The smoke chain
+finished in 421 s (12 trials) and the cancellation check passed:
+
+| Trial | Condition | Setup ms | Agent ms | In tokens | Out tokens | Grading |
+| ----- | --------- | -------: | -------: | --------: | ---------: | ------- |
+| t1 | repoise-lexical | 68400 | 44179 | 35237 | 883 | pass |
+| t1 | baseline | 58 | 21891 | 38879 | 579 | pass |
+| t1 | repoise-hybrid | 3464 | 17753 | 16654 | 212 | pass |
+| t2 | repoise-lexical | 3442 | 41100 | 31522 | 1195 | pass |
+| t2 | baseline | 58 | 30419 | 48274 | 715 | pass |
+| t2 | repoise-hybrid | 3430 | 30991 | 31661 | 725 | pass |
+| t3 | baseline | 56 | 19138 | 14659 | 396 | pass |
+| t3 | repoise-hybrid | 3488 | 15021 | 17434 | 386 | pass |
+| t3 | repoise-lexical | 3563 | 21293 | 17440 | 397 | pass |
+| t4 | repoise-lexical | 3549 | 42969 | 69444 | 1272 | pass |
+| t4 | repoise-hybrid | 3528 | 25318 | 35079 | 523 | pass |
+| t4 | baseline | 57 | 15298 | 24219 | 369 | pass |
+
+Condition totals (agent interval / input tokens): baseline 86.7 s / 126k,
+repoise-lexical 149.5 s / 154k, repoise-hybrid 89.1 s / 101k. No trial was
+censored (no errors, timeouts or cancellations); the lexical condition was
+slowest on every task in this single repetition — an observation, not an
+estimate (one repetition, randomized condition order).
+
+**Cancellation check** (`run-cancel.sh`, SIGINT mid-trial): trial
+`t-c1-r0-baseline` recorded `cancelled` / `host_requested` after 2475 ms of
+agent time, the experiment status is `interrupted`, and the bench exited
+with code 4 as documented.
 
 ## Measured vs unmeasured gates
 
@@ -170,10 +201,9 @@ remains unexecuted.
   - One chunk is over the model's entire 8192-token context:
     `chatRoutes` in `src/routes/chat.ts` (57,909 chars, ~14.5k tokens).
     That file is excluded from the corpus (recorded confound).
-- **Unmeasured**: all trial-level gates (the 12 smoke trials),
-  cancellation behavior, model comparisons, harness comparisons,
-  cross-repository effects, cold-cache behavior, and any
-  speed/token improvement claims.
+- **Unmeasured**: model comparisons, harness comparisons, cross-repository
+  effects, cold-cache behavior, and any speed/token improvement claims
+  (the smoke run's single repetition cannot estimate effects).
 
 ## Run steps
 
@@ -189,9 +219,10 @@ curl -s http://127.0.0.1:8080/v1/embeddings \
   -d '{"model": "embeddinggemma-2", "input": ["probe"]}'
 ```
 
-Everything is staged; the remaining steps run on the operator machine
-(all artifacts live under `/home/cline-agent/bench-pilot/` and must be
-run as that user, e.g. via `sudo -u cline-agent`):
+Executed on 2026-10-30 by the operator's `cline-agent` user (the
+cancellation step via the staged `run-cancel.sh`, which sends SIGINT once
+the trial's Cline CLI has spawned). The commands are recorded below for
+reproduction (run as that user, e.g. via `sudo -u cline-agent`):
 
 1. **Smoke chain** (one command; logs in `run-smoke.log` and
    `index-root.log`):
@@ -220,9 +251,10 @@ state is modified.
 
 ## Limitations
 
-- **Not a completed experiment**: no trial has run; this document records
-  preparation, verification evidence and the exact remaining steps. It is
-  an execution record, not a results report.
+- **Smoke only, not a completed experiment**: the smoke run executed
+  2026-10-30 and all 12 trials passed, but a single repetition verifies
+  mechanics only — model comparisons, harness comparisons and the
+  expansion run remain unmeasured.
 - **Corpus exclusion confound**: `src/routes/chat.ts` is excluded from
   the Repoise corpus in all conditions (its largest symbol chunk exceeds
   the embedding model's context). The baseline condition can still read

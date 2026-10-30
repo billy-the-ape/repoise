@@ -81,10 +81,11 @@ handling), per-trial grading records, predeclared paired comparisons with
 task-cluster bootstrap intervals, the predeclared quality gate, the
 published `report.json`/`report.md` and the offline `bench report` rebuild.
 AP-06's first smoke experiment (the ai-gateway pilot on the AP-04/AP-05
-harness) is prepared and verified, with execution pending — all
-prerequisites are in place (root index complete, hybrid preflight
-passed); see the [pilot status guide](docs/pilot.md); its
-execution, expansion and AP-07 (VS Code UI) remain proposed work; no editor
+harness) executed 2026-10-30: all 12 smoke trials completed and passed
+deterministic grading, and the SIGINT cancellation check passed
+(cooperative cancel, exit 4) — see the [pilot status guide](docs/pilot.md);
+the smoke run verifies mechanics only (one repetition, no statistics); its
+expansion and AP-07 (VS Code UI) remain proposed work; no editor
 extension ships from that plan yet. Start there for implementation order,
 open questions and per-PR acceptance criteria.
 
