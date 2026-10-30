@@ -23,6 +23,9 @@ is fatal, entries that vanish mid-walk are tolerated, and genuine
 persistent failures on eligible files remain errors. `index`, `status` and
 `watch` share the same inventory path as before; manifests, hashes, skip
 diagnostics and scope isolation are unchanged for unchanged trees.
+`inheritGitIgnores: false` is honored by the inventory exactly as before
+(native ignore files are still collected but contribute no policy rules,
+matching `explain`/`doctor`).
 
 ### Workspace and CI foundation (AP-01)
 

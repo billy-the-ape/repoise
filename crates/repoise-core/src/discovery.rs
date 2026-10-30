@@ -90,7 +90,16 @@ pub fn inventory(
     // no corpus content read or hashed. Excluded or oversized files below
     // never incur any content I/O.
     let intake = adapter.intake(&revision, mode)?;
-    let policy = Policy::build(eff, &intake.native)?;
+    // Honor the config flag exactly as `native_ignore_files` does for
+    // explain/doctor: with inheritance disabled the collected native ignore
+    // files contribute no policy rules (they are still collected, since they
+    // are explicitly small policy reads).
+    let native: &[(PathBuf, PathBuf, Vec<String>)] = if eff.inherit_git_ignores {
+        &intake.native
+    } else {
+        &[]
+    };
+    let policy = Policy::build(eff, native)?;
     let role_rules: Vec<RoleRule> = eff
         .document_roles
         .iter()

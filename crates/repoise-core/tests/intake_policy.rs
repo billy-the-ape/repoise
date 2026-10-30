@@ -607,3 +607,80 @@ fn policy_precedence_and_reinclusion_drive_intake() {
     // Excluded paths leave no skip diagnostics.
     assert!(skip_reasons(&inv).is_empty());
 }
+
+#[test]
+fn inventory_honors_inherit_git_ignores_false() {
+    let root = temp_dir("inherit-false");
+    write(&root.join(".gitignore"), "ignored.md\n");
+    write(&root.join("ignored.md"), "native ignored\n");
+    write(&root.join("docs/guide.md"), "hello\n");
+    let adapter = FilesystemAdapter::new(&root).unwrap();
+
+    // Default (inherit enabled): the native rule excludes the file.
+    let eff_on = effective(1_000_000, Vec::new(), Vec::new());
+    let inv_on = inventory(&adapter, SnapshotMode::PlainDirectory, &eff_on, None).unwrap();
+    assert_eq!(file_paths(&inv_on), vec![".gitignore", "docs/guide.md"]);
+
+    // Inheritance disabled: native ignore files contribute no policy rules,
+    // so the natively ignored file enters the corpus.
+    let mut eff_off = effective(1_000_000, Vec::new(), Vec::new());
+    eff_off.inherit_git_ignores = false;
+    let inv_off = inventory(&adapter, SnapshotMode::PlainDirectory, &eff_off, None).unwrap();
+    assert_eq!(
+        file_paths(&inv_off),
+        vec![".gitignore", "docs/guide.md", "ignored.md"]
+    );
+
+    // explain_path must report the same policy the inventory applies.
+    let explained = repoise_core::discovery::explain_path(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &eff_off,
+        Path::new("ignored.md"),
+    )
+    .unwrap();
+    assert!(explained.included);
+    assert!(explained.winning_rule.is_none());
+}
+
+#[test]
+fn git_inherit_git_ignores_false_ignores_gitignore_and_local_excludes() {
+    let root = temp_dir("git-inherit-false");
+    write(&root.join(".gitignore"), "ignored.md\n");
+    write(&root.join("ignored.md"), "native ignored\n");
+    write(&root.join("docs/guide.md"), "hello\n");
+    run_git(&root, &["init", "-b", "main"]);
+    run_git(&root, &["add", "."]);
+    run_git(
+        &root,
+        &[
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-m",
+            "one",
+        ],
+    );
+    // Local (non-committed) excludes are part of the native intake for
+    // working-tree snapshots.
+    write(&root.join(".git/info/exclude"), "local.md\n");
+    write(&root.join("local.md"), "locally excluded\n");
+    let adapter = GitAdapter::new(&root).unwrap();
+
+    // With inheritance disabled, neither the committed .gitignore nor the
+    // local .git/info/exclude contributes policy rules.
+    let mut eff = effective(1_000_000, Vec::new(), Vec::new());
+    eff.inherit_git_ignores = false;
+    let inv = inventory(&adapter, SnapshotMode::WorkingTree, &eff, None).unwrap();
+    assert_eq!(
+        file_paths(&inv),
+        vec![".gitignore", "docs/guide.md", "ignored.md", "local.md"]
+    );
+
+    // With inheritance enabled (default), both native sources apply.
+    let eff_on = effective(1_000_000, Vec::new(), Vec::new());
+    let inv_on = inventory(&adapter, SnapshotMode::WorkingTree, &eff_on, None).unwrap();
+    assert_eq!(file_paths(&inv_on), vec![".gitignore", "docs/guide.md"]);
+}

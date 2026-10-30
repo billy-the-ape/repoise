@@ -162,15 +162,16 @@ impl GitAdapter {
             .spawn()
             .map_err(AdapterError::Io)?;
         let mut bytes = Vec::new();
-        {
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| AdapterError::Other("git cat-file stdout was not piped".into()))?;
-            stdout
-                .take(limit)
-                .read_to_end(&mut bytes)
-                .map_err(AdapterError::Io)?;
+        let bounded = match child.stdout.take() {
+            Some(stdout) => stdout.take(limit).read_to_end(&mut bytes),
+            None => Err(std::io::Error::other("git cat-file stdout was not piped")),
+        };
+        if let Err(err) = bounded {
+            // A pipe failure: stop and reap the child before reporting, so it
+            // is never left running.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AdapterError::Io(err));
         }
         if bytes.len() as u64 == limit {
             // The bound was reached: stop the child (it may still be writing)
