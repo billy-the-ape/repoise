@@ -27,7 +27,7 @@ remains unexecuted.
   the trial worktrees are disposable and the consumer repository is never
   reset or modified.
 - **Repoise build**: `repoise 0.1.0-alpha.1`, release build of main
-  `c2e7f4a12ad8e484b568d4d83ed2cdf413af2c22` from the source worktree
+  `5508a702823583673702166a1270050078a72089` from the source worktree
   (host bridge and Cline adapter resolved from that checkout).
 - **Suite**: frozen smoke suite, sha256
   `d8d8c96af74bde0be932fd39d0ac0f703bbf7c02e4258c9342512e2cd4583978`:
