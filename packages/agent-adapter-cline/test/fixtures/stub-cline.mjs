@@ -31,12 +31,15 @@ if (process.argv[2] === "version") {
 
 const mode = process.env.CLONE_STUB_MODE ?? process.env.STUB_MODE ?? "ok";
 
-const prompt = await new Promise((resolve) => {
-  let data = "";
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => (data += chunk));
-  process.stdin.on("end", () => resolve(data));
-});
+// The adapter passes the prompt as the trailing positional argument (the
+// real CLI rejects stdin-only invocations); stdin is closed without data.
+const prompt = process.argv[process.argv.length - 1];
+if (typeof prompt !== "string") {
+  process.stderr.write(
+    `{"type":"error","message":"prompt positional argument missing"}\n`,
+  );
+  process.exit(1);
+}
 
 // The adapter passes a minimal environment, so the stub records what it
 // observed in the workspace cwd (the adapter sets cwd to workspace.root).

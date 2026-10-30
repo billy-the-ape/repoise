@@ -1,11 +1,14 @@
 // Building and resolving the Cline CLI invocation for one trial.
 //
 // Flag mapping follows the Cline headless CLI reference (verified
-// 2026-10-19): `--json` NDJSON output, `-c` workspace, `--config`/
+// 2026-10-19, re-verified against the installed CLI 3.0.74 on 2026-10-30):
+// `--json` NDJSON output, `-c` workspace, `--config`/
 // `--data-dir` for isolated trial state, `CLINE_MCP_SETTINGS_PATH` for the
 // per-trial MCP server list, `--auto-approve`, `-m`/`-P` model/provider,
 // `--thinking`, `--compaction`, `-t` wall-clock backstop in seconds, `-k`
-// per-run API key. The prompt travels on stdin, never argv.
+// per-run API key. The prompt travels as the trailing positional
+// argument, never on stdin: the 3.0.74 CLI rejects stdin-only invocations
+// with "JSON output mode requires a prompt argument or piped stdin".
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -121,7 +124,8 @@ export function buildInvocation(
     };
   }
 
-  // The prompt goes on stdin (documented CLI pattern), never argv.
+  // The prompt travels as the trailing positional argument (the CLI reads
+  // the last positional), never on stdin.
   let prompt;
   if (typeof request.task.prompt === "string") {
     prompt = request.task.prompt;
@@ -149,5 +153,8 @@ export function buildInvocation(
   env.CLINE_LOG_PATH = join(dataDir, "logs", "cline.log");
   if (credential) env[credential.name] = process.env[credential.name];
 
+  // Append last so the positional prompt is always the final argv element;
+  // the caller inserts the credential `-k` flag before it at spawn time.
+  argv.push(prompt);
   return { argv, env, prompt, mcpServers, credential };
 }

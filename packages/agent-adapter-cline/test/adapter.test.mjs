@@ -184,7 +184,16 @@ test("repoise mode: isolated state, MCP config, effective-config, usage", async 
   assert.equal(
     manifest.prompt,
     "Say hello to the workspace",
-    "prompt travels on stdin",
+    "prompt travels as the trailing positional argument",
+  );
+  assert.equal(
+    argv[argv.length - 1],
+    "Say hello to the workspace",
+    "the positional prompt must be the final argv element",
+  );
+  assert.ok(
+    keyIndex < argv.length - 1,
+    "the credential flag must precede the positional prompt",
   );
   assert.ok(manifest.mcpSettingsPath.startsWith(artifacts));
 

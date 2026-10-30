@@ -327,8 +327,16 @@ export async function main() {
   });
 
   // --- child lifecycle -------------------------------------------------
+  // The prompt is the trailing positional argument of invocation.argv and
+  // must remain the final element, so the credential flag is inserted
+  // before it, never after.
   const spawnArgv = invocation.credential
-    ? [...invocation.argv, "-k", process.env[invocation.credential.name]]
+    ? [
+        ...invocation.argv.slice(0, -1),
+        "-k",
+        process.env[invocation.credential.name],
+        ...invocation.argv.slice(-1),
+      ]
     : invocation.argv;
 
   // Forwarded Cline output can echo the credential (e.g. an invalid-key
@@ -389,12 +397,11 @@ export async function main() {
         // Best-effort backstop only.
       }
     }
-    // Async stdin write failures (EPIPE / destroyed stream after a failed
-    // spawn) surface as "error" events, not synchronous throws.
+    // The prompt travels on argv, not stdin: close stdin without data so
+    // the child sees EOF immediately instead of waiting for input.
     child.stdin.on("error", (error) => {
-      emitFinal("adapter_error", `stdin_write_failed: ${error.message}`);
+      emitFinal("adapter_error", `stdin_closed_failed: ${error.message}`);
     });
-    child.stdin.write(invocation.prompt);
     child.stdin.end();
   } catch (error) {
     emitFinal("adapter_error", `spawn_failed: ${error.message}`);

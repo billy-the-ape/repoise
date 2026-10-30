@@ -130,6 +130,17 @@ remains unexecuted.
     env — an unenforced pin, because the adapter's child-environment
     allowlist does not forward it (see limitations) — and the failed
     run's artifacts were removed so the experiment ids can be reused.
+  - Second trial attempt (2026-10-30): the PATH fix worked (the CLI
+    spawned), but all 13 trials failed with `no_run_result
+    (exitCode=1)`: Cline CLI 3.0.74 changed prompt transport — it rejects
+    stdin-only invocations ("JSON output mode requires a prompt argument
+    or piped stdin"), while the adapter (verified against the 3.0.61-era
+    headless reference) passed the prompt on stdin. Fixed in the adapter:
+    the prompt now travels as the trailing positional argument (verified
+    against the installed 3.0.74; adapter suite 13/13 and protocol
+    conformance 23/23 pass). This was the first live run of the adapter
+    against the real CLI. The failed runs' artifacts were removed again
+    so the experiment ids can be reused.
   - `bench --dry-run` preflight correctly refuses hybrid conditions
     without verified corpus-wide vector coverage (observed on every
     partial-coverage generation).

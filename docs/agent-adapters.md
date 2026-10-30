@@ -75,7 +75,10 @@ trailing events are detected and rejected.
 
 `packages/agent-adapter-cline` drives the installed Cline headless CLI
 (`cline --json -c <workspace> ...`), verified against the Cline CLI
-reference (2026-10-19); live behavior is not yet measured.
+reference (2026-10-19) and re-verified against the installed CLI 3.0.74
+(2026-10-30): that CLI rejects stdin-only invocations ("JSON output mode
+requires a prompt argument or piped stdin"), so the prompt travels as the
+trailing positional argument.
 
 - One trial per invocation; `hello` is emitted before anything else.
 - Trial state is isolated under `outputs.artifactDir/cline/`:
@@ -87,7 +90,9 @@ reference (2026-10-19); live behavior is not yet measured.
 - `repoise` mode configures the trial's single MCP server
   (`condition.mcp`); `baseline` mode gets an empty server list. The
   isolated `--config` dir guarantees no global servers leak in.
-- The prompt travels on stdin; the credential (from
+- The prompt travels as the trailing positional argument (the 3.0.74 CLI
+  rejects stdin-only invocations; the child's stdin is closed without
+  data); the credential (from
   `provider.credentialRef`, only `env:` references are honored) travels
   through the `-k` flag at spawn time and never through the request, the
   effective-config artifact, or any event. Note the `-k` value is visible in
