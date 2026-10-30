@@ -227,6 +227,15 @@ test("repoise mode: isolated state, MCP config, effective-config, usage", async 
     "Say hello to the workspace".length,
   );
   assert.ok(/^sha256:/.test("sha256:" + effective.task.promptSha256));
+  assert.equal(
+    effective.invocation.argv[effective.invocation.argv.length - 1],
+    "<prompt>",
+    "the recorded argv must end in a placeholder, not the prompt",
+  );
+  assert.ok(
+    !effectiveText.includes("Say hello to the workspace"),
+    "the prompt text must not appear in the effective-config artifact",
+  );
   assert.equal(effective.profile.provider.credentialPresent, true);
   assert.equal(effective.profile.provider.endpoint, "http://127.0.0.1:9999/v1");
 

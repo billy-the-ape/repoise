@@ -349,7 +349,10 @@ export async function main() {
     },
     limits: request.limits ?? {},
     invocation: {
-      argv: invocation.argv,
+      // Redacted: the recorded argv must not carry the prompt text (it is
+      // hashed under task.promptSha256); the spawn vector below still
+      // carries the real prompt as the trailing element.
+      argv: [...invocation.argv.slice(0, -1), "<prompt>"],
       credentialFlag: invocation.credential ? "-k" : null,
       envNames: Object.keys(invocation.env),
       mcpSettingsPath,

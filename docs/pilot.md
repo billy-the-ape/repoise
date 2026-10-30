@@ -236,12 +236,14 @@ reproduction (run as that user, e.g. via `sudo -u cline-agent`):
    `bench --dry-run` (the hybrid preflight must now pass), and
    `bench suite.json` (12 trials; artifacts in
    `/home/cline-agent/bench-pilot/out/ap06-smoke/`).
-2. **Cancellation check**: run `bench suite-cancel.json` in the
-   foreground with the same three environment variables the chain
-   exports (`REPOISE_EMBED_ENDPOINT`, `REPOISE_EMBED_API_KEY`,
-   `LMSTUDIO_API_KEY`), send SIGINT (Ctrl-C) mid-trial, and expect a
-   cooperative cancellation and exit code 4; artifacts in
-   `out/ap06-cancel/`.
+2. **Cancellation check**: run the staged
+   `/home/cline-agent/bench-pilot/run-cancel.sh` (it exports the same PATH
+   and embedding variables as the smoke chain and sends SIGINT once the
+   trial's Cline CLI has spawned), and expect a cooperative cancellation
+   and exit code 4; artifacts in `out/ap06-cancel/`. Running the bare
+   `bench suite-cancel.json` instead would reproduce the first-attempt
+   `spawn_failed` (`sudo`'s secure PATH lacks `~/.local/bin`), so the
+   PATH export is part of the step.
 3. **Record results**: `python3 /home/cline-agent/bench-pilot/summarize.py
    /home/cline-agent/bench-pilot/out ap06-smoke` (and `ap06-cancel`), then
    fill in the results sections of this document.

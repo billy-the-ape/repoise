@@ -86,7 +86,9 @@ trailing positional argument.
   (`CLINE_MCP_SETTINGS_PATH`), `CLINE_LOG_PATH`, and an
   **effective-config artifact** recording every effective guidance, skill,
   MCP server, model, limit and state location with credential values
-  redacted (names only).
+  redacted (names only) and the prompt absent from the recorded argv
+  (a `<prompt>` placeholder; the prompt is recorded as `promptLength`
+  and `promptSha256` under `task`).
 - `repoise` mode configures the trial's single MCP server
   (`condition.mcp`); `baseline` mode gets an empty server list. The
   isolated `--config` dir guarantees no global servers leak in.
@@ -188,7 +190,8 @@ of the protocol's own happy path (request plus every event) by the
 checked-in schemas (validated with ajv). The adapter suite drives the
 real Cline adapter through the real host with a stub Cline CLI, asserting
 the exact argv/env the harness observed, per-trial MCP settings,
-effective-config redaction, status mapping for cancellation and failure,
+effective-config redaction (credential and prompt), status mapping for
+cancellation and failure,
 rejection of non-`env:` credential references, credential scrubbing from
 forwarded CLI output (including a key straddling the unparsed-line
 truncation boundary), a `cancel` control line arriving in the same stdin
