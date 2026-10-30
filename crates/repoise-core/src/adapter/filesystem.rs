@@ -141,7 +141,10 @@ pub fn scan_directory(canonical_root: &Path, dir: &Path) -> Result<Vec<SourceEnt
 /// On Windows, a file that a concurrent writer just unlinked (delete-pending)
 /// can surface as PermissionDenied (ERROR_ACCESS_DENIED); re-check the entry
 /// — if the metadata lookup also fails with NotFound or PermissionDenied the
-/// entry is gone, otherwise the error is genuine.
+/// entry is gone. When the re-check sees the entry still present (or the
+/// error is otherwise inconclusive), the caller retries the operation once
+/// before treating the error as genuine: the writer may have recreated the
+/// entry in between, in which case the retry resolves the race.
 #[cfg_attr(not(windows), allow(unused_variables))]
 fn entry_gone(path: &Path, err: &std::io::Error) -> bool {
     match err.kind() {
@@ -157,6 +160,27 @@ fn entry_gone(path: &Path, err: &std::io::Error) -> bool {
     }
 }
 
+/// Probes a directory entry that may be racing with a concurrent writer.
+/// A first-attempt error that confirms the entry is gone skips it without
+/// retrying. Any other failure retries once — the `entry_gone` re-check
+/// itself can race with the writer and see a recreated entry — and the
+/// second attempt decides: success includes the entry, a gone entry skips
+/// it, and a second genuine failure is a real error.
+fn probe_entry<T, F>(path: &Path, mut probe: F) -> Result<Option<T>, AdapterError>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    match probe() {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if entry_gone(path, &err) => Ok(None),
+        Err(_) => match probe() {
+            Ok(value) => Ok(Some(value)),
+            Err(err) if entry_gone(path, &err) => Ok(None),
+            Err(err) => Err(AdapterError::Io(err)),
+        },
+    }
+}
+
 fn scan(
     canonical_root: &Path,
     dir: &Path,
@@ -169,10 +193,13 @@ fn scan(
     // skipped; any other I/O error is a real failure. The root itself stays
     // fatal: a vanished root must fail the scan, not yield an empty
     // inventory.
-    let read_dir = match fs::read_dir(dir) {
-        Ok(dir) => dir,
-        Err(err) if !is_root && entry_gone(dir, &err) => return Ok(()),
-        Err(err) => return Err(AdapterError::Io(err)),
+    let read_dir = if is_root {
+        Some(fs::read_dir(dir).map_err(AdapterError::Io)?)
+    } else {
+        probe_entry(dir, || fs::read_dir(dir))?
+    };
+    let Some(read_dir) = read_dir else {
+        return Ok(());
     };
     for result in read_dir {
         let entry = match result {
@@ -180,23 +207,19 @@ fn scan(
             Err(err) if !is_root && entry_gone(dir, &err) => continue,
             Err(err) => return Err(AdapterError::Io(err)),
         };
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(err) if entry_gone(&entry.path(), &err) => continue,
-            Err(err) => return Err(AdapterError::Io(err)),
+        let path = entry.path();
+        let Some(file_type) = probe_entry(&path, || entry.file_type())? else {
+            continue;
         };
         if file_type.is_symlink() {
             // Never follow symlinks (security and determinism).
             continue;
         }
-        let path = entry.path();
         if file_type.is_dir() {
             scan(canonical_root, &path, false, entries)?;
         } else if file_type.is_file() {
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(err) if entry_gone(&path, &err) => continue,
-                Err(err) => return Err(AdapterError::Io(err)),
+            let Some(bytes) = probe_entry(&path, || fs::read(&path))? else {
+                continue;
             };
             let relative = path
                 .strip_prefix(canonical_root)
@@ -215,7 +238,7 @@ fn scan(
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// A concurrent writer churning a file must not fail a scan: entries that
     /// vanish between enumeration and read are skipped, stable entries remain.
@@ -255,6 +278,77 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         let _ = churner.join();
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The skip/retry/fail decision for an entry that vanishes mid-scan must
+    /// not depend on timing: these synthetic probes pin the decision table
+    /// the churn test exercises against a real concurrent writer.
+    #[test]
+    fn probe_entry_decision_table_is_deterministic() {
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-probe-entry-{}-{}",
+            std::process::id(),
+            now_id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("live.txt");
+        fs::write(&live, "live").unwrap();
+
+        // A successful probe includes the value.
+        let calls = AtomicUsize::new(0);
+        let result = probe_entry(&live, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(1u32)
+        });
+        assert_eq!(result.unwrap(), Some(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // A first-attempt NotFound skips immediately, without retrying.
+        let calls = AtomicUsize::new(0);
+        let result: Result<Option<u32>, AdapterError> = probe_entry(&live, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // A failed probe of a live entry retries; a live entry on the second
+        // attempt is included (the writer recreated it in between).
+        let calls = AtomicUsize::new(0);
+        let result = probe_entry(&live, || {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(2u32)
+            }
+        });
+        assert_eq!(result.unwrap(), Some(2));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // Two genuine failures are a real error, not a skipped entry.
+        let calls = AtomicUsize::new(0);
+        let result: Result<Option<u32>, AdapterError> = probe_entry(&live, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert!(matches!(result, Err(AdapterError::Io(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // A probe of an entry that is gone skips it. The `entry_gone`
+        // re-check may or may not already see the gone entry (platform-
+        // dependent), so the probe takes one or two attempts, but the
+        // outcome must be a skip.
+        let calls = AtomicUsize::new(0);
+        let missing = dir.join("missing.txt");
+        let result: Result<Option<u32>, AdapterError> =
+            probe_entry(&missing, || match calls.fetch_add(1, Ordering::SeqCst) {
+                0 => Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+                _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            });
+        assert_eq!(result.unwrap(), None);
+        assert!((1..=2).contains(&calls.load(Ordering::SeqCst)));
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A missing scan root is a real failure, not an empty inventory: a

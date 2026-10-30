@@ -218,6 +218,19 @@ Post-review fixes (2026-10-26, PR #37 review):
   runner where heartbeat-thread start latency exceeded the window (CI run
   40285589778).
 
+Flake fix (2026-10-30, `scan_skips_entries_that_vanish_mid_scan`):
+
+- The filesystem scan now retries a non-root entry probe once when the first
+  failure does not confirm the entry is gone (a `probe_entry` helper): the
+  `entry_gone` re-check itself could race with a concurrent writer that
+  recreated the entry in between, on which the scan wrongly failed — the
+  Windows CI flake of `scan_skips_entries_that_vanish_mid_scan` behind #41.
+  A retry that succeeds includes the entry, a second confirmed-gone outcome
+  skips it, and a second genuine failure still fails the scan. Root
+  semantics are unchanged (a vanished root stays fatal). The new
+  deterministic test `probe_entry_decision_table_is_deterministic` pins the
+  skip/retry/fail decision table without relying on timing.
+
 Deferred / not shipped with this PR:
 
 - `repoise bench` and its exit-code partitioning (AP-04); capabilities only
