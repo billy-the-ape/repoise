@@ -9,11 +9,11 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | Path | Responsibility |
 | --- | --- |
 | `crates/repoise-core/src/lib.rs` | Shared engine boundary; exposes the services below plus config/init file names and defaults |
-| `crates/repoise-core/src/adapter/` | Neutral `SourceAdapter` contract: opaque revisions, capability flags, enumerate/read with containment; filesystem and Git adapters plus a synthetic fake-revision test adapter |
+| `crates/repoise-core/src/adapter/` | Neutral `SourceAdapter` contract: opaque revisions, capability flags, enumerate/read with containment, plus metadata-only intake (`SnapshotIntake`) and bounded reads so discovery can gate content I/O behind policy; filesystem and Git adapters plus a synthetic fake-revision test adapter |
 | `crates/repoise-core/src/config.rs` | Versioned `repoise.config.json` parsing, precedence (CLI > local > committed > default) and redaction-safe validation |
 | `crates/repoise-core/src/ignore.rs` | Explainable include/exclude/secret-deny policy: package defaults, config, native ignore inheritance, gitignore-style matching, stable fingerprints |
 | `crates/repoise-core/src/classify.rs` | Role/lifecycle classification: explicit front matter, configured rules, path inference |
-| `crates/repoise-core/src/discovery.rs` | Deterministic inventory: snapshot manifest, file records, skip diagnostics |
+| `crates/repoise-core/src/discovery.rs` | Deterministic, policy-aware inventory: adapter metadata intake, policy decisions, one bounded content read per accepted file (hashed once, reused), snapshot manifest, file records, skip diagnostics |
 | `crates/repoise-core/src/provenance.rs` | Versioned repository/snapshot/file provenance record shapes and remote identity sanitization |
 | `crates/repoise-core/src/init.rs` and `doctor.rs` | Idempotent overlay init (config, overlay manifest, optional managed block and AGENTS snippet) and effective-settings reporting |
 | `crates/repoise-core/src/overlay.rs` | Non-destructive overlay lifecycle: uninstall of unchanged managed files/blocks, three-way template update with installed-byte baselines, conflict reporting |

@@ -12,7 +12,7 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexPhase {
-    /// Discovery/inventory: enumeration, policy decisions, intake bounds
+    /// Discovery/inventory: metadata intake, policy decisions, intake bounds
     /// (size, UTF-8, secrets) and snapshot manifest construction.
     Discovery,
     /// Reconciliation against the previous generation: unchanged files and

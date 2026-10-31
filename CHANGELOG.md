@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Policy-aware, bounded intake
+
+Filesystem and Git intake no longer read or hash corpus content before
+policy applies. Adapters expose a metadata-only intake (native ignore files
+plus candidate path/size pairs): the filesystem walk collects metadata and
+`.gitignore` policy files without reading file contents, and committed Git
+snapshots use `git ls-tree -r -z -l` plus `.gitignore` blob reads only.
+Discovery then decides each candidate with the shared policy and reads
+accepted, size-eligible files exactly once, bounded at `maxFileBytes + 1`,
+hashing the accepted bytes once and reusing them for the manifest. Excluded
+or oversized files (dependencies, build output, `.git`, generated caches)
+contribute zero content reads or hashes; a file that grows after the
+metadata check is bounded and reported (`file_too_large`), and a size drift
+within the bound is still reported as `changed_during_scan`. Traversal
+conservatively continues below excluded directories so nested `.gitignore`
+policy files remain visible to the policy (no corpus content below them is
+ever read), and the merged scan race behavior is preserved: a missing root
+is fatal, entries that vanish mid-walk are tolerated, and genuine
+persistent failures on eligible files remain errors. `index`, `status` and
+`watch` share the same inventory path as before; manifests, hashes, skip
+diagnostics and scope isolation are unchanged for unchanged trees.
+`inheritGitIgnores: false` is honored by the inventory exactly as before
+(native ignore files are still collected but contribute no policy rules,
+matching `explain`/`doctor`).
+
 ### Workspace and CI foundation (AP-01)
 
 The development tooling became a Cargo + pnpm workspace. pnpm 12.3.4 is pinned by the root `packageManager` field; the committed `pnpm-lock.yaml` replaces `package-lock.json` for development installs (`pnpm install --frozen-lockfile --ignore-scripts`). Turborepo 2.11.9 declares the root development tasks (`format`, `format:check`, `test`) and single per-platform native bridge tasks (`check:native`, `build:native` and their `:windows` variants) with output caching disabled; Cargo remains authoritative for Rust and keeps working without Node. The published launcher stays outside the pnpm workspace, so root frozen installs never resolve its optional platform-package pins; CI jobs provision the pinned pnpm with lifecycle scripts enabled (pnpm 12's postinstall swaps in the native binary) outside the checkout, with an in-workflow version guard.
