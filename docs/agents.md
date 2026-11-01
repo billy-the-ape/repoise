@@ -124,8 +124,10 @@ repoise watch /absolute/path/to/checkout
 
 Watch is a long-running process: stop it with SIGINT or SIGTERM (Ctrl+C sends
 SIGINT). It is not installed as a daemon by init or MCP. Machine automation can
-run it with the `--events` NDJSON stream, and its advisory writer-ownership
-marker is surfaced by `status` (see the [automation guide](automation.md)).
+run it with the `--events` NDJSON stream. Exactly one writer per index scope:
+the watch holds the authoritative scope lock, so starting a second `index` or
+`watch` on the same scope is refused with a stable busy result (see the
+[automation guide](automation.md)). Its owner marker is surfaced by `status`.
 Without a healthy watch loop, run index after changes.
 Check freshness after publication before relying on changed evidence. Watch
 publishes through the shared incremental index operation with the configured

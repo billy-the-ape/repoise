@@ -152,8 +152,9 @@ dies (clean exit, crash or kill), so ownership never depends on PID
 freshness or unsafe stale-file deletion. A second writer for the same scope
 receives a stable, actionable busy result — exit code 1 for one-shot
 operations, and a `failed` terminal event with the machine `reason`
-`scope-owned` (or `lock-unavailable` when the lock file itself is unusable)
-plus `retryable: true` in the `--events` stream — and never starts provider
+`scope-owned` (another writer holds the lock; `retryable: true`, retry once
+it exits) or `lock-unavailable` (the lock file itself could not be used;
+`retryable: null`) in the `--events` stream — and never starts provider
 work, publishes, or overwrites the live owner's metadata. A long-lived
 `watch` can call indexing without deadlocking on its own lease: the lease
 lives in the CLI/MCP/purge entry points, not in the shared index service.
@@ -174,7 +175,11 @@ process.
   scope can never be removed from under it, and removal cannot be bypassed
   by unlinking/recreating the lock path. A scoped purge of an owned scope
   fails before removing anything; `--all` skips owned scopes and reports
-  them in `skippedOwned`.
+  them in `skippedOwned`. `--all` re-checks the scope locks immediately
+  before the final root sweep, so a writer that starts during the purge is
+  locked and skipped rather than having its scope swept; the only residual
+  race is a writer starting in the instant between that final check and the
+  sweep (documented in `crates/repoise-core/src/purge.rs`).
 - Read-only operations (`status`, `search`, `read`, `related`, `check`) keep
   working while a writer owns the scope.
 - Manual recovery: nothing is needed after a crashed writer — the OS

@@ -20,8 +20,9 @@ provider work or publication**:
 - A second writer for the same scope is refused with a stable, actionable
   busy result before any provider work or publication: exit code 1 with the
   message on stderr for one-shot operations, and a `failed` terminal event
-  carrying the machine `reason` (`scope-owned` / `lock-unavailable`) and
-  `retryable: true` in the `--events` stream. Existing exit-code meanings are
+  carrying the machine `reason` in the `--events` stream — `scope-owned`
+  with `retryable: true`, or `lock-unavailable` with `retryable: null` when
+  the lock file itself could not be used. Existing exit-code meanings are
   unchanged; the refusal is an operational failure.
 - The `owner.json` marker remains as descriptive heartbeat metadata for the
   process holding the lock (pid, operation, start/refresh times, atomic

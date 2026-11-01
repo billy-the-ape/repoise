@@ -1160,6 +1160,89 @@ fn index_is_refused_before_any_work_while_watch_owns_the_scope() {
     assert_eq!(freed["writer"]["state"], "free");
 }
 
+/// A second `watch` on a scope owned by a live watcher is refused before it
+/// opens the owner's store: exit code 1 with the actionable message, the
+/// `--events` stream carries the terminal `failed` event with the stable
+/// machine reason, and the owner's metadata is untouched.
+#[cfg(unix)]
+#[test]
+fn second_watch_is_refused_before_any_store_work() {
+    use std::process::Stdio;
+
+    let root = temp_root("second-watch");
+    let root_str = root.to_str().unwrap();
+    let primed = cli(&["index", "--json", root_str]);
+    assert!(primed.status.success());
+
+    let mut watch = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", root_str])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    let doc = wait_for_owned_scope(&root);
+    assert_eq!(doc["owner"]["operation"], "watch");
+    let owner_pid = doc["owner"]["pid"].clone();
+
+    // Plain mode: refused with exit 1 and the actionable message, before
+    // any store access or provider work.
+    let refused = cli(&["watch", "--interval", "200", root_str]);
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "a busy rejection is an operational failure"
+    );
+    let refused_stderr = String::from_utf8(refused.stderr).unwrap();
+    assert!(
+        refused_stderr.contains("scope is owned by another Repoise writer"),
+        "{refused_stderr}"
+    );
+    assert!(
+        refused.stdout.is_empty(),
+        "a refused watch must not emit watch output"
+    );
+
+    // Events mode: the stream still starts and ends with the terminal
+    // `failed` event carrying the stable machine reason and retryability.
+    let events_watch = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", "--events", root_str])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    let output = events_watch.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let events: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(
+        events.iter().any(|event| {
+            event["type"] == "started" && event["payload"]["operation"] == "watch"
+        }),
+        "the refused stream still starts: {events:?}"
+    );
+    let failed = events
+        .iter()
+        .find(|event| event["type"] == "failed")
+        .expect("the refused stream must end with a terminal failed event");
+    assert_eq!(failed["payload"]["operation"], "watch");
+    assert_eq!(failed["payload"]["code"], "operational");
+    assert_eq!(failed["payload"]["reason"], "scope-owned");
+    assert_eq!(failed["payload"]["retryable"], true);
+
+    // The refused watcher neither took over nor overwrote the live owner's
+    // metadata.
+    let after = wait_for_owned_scope(&root);
+    assert_eq!(after["owner"]["pid"], owner_pid);
+    assert_eq!(after["owner"]["operation"], "watch");
+
+    kill(watch.id(), "TERM");
+    assert!(watch.wait().unwrap().success());
+}
+
 /// `purge` cannot remove (or bypass) an owned scope: the scoped purge fails
 /// before removing anything while the watcher holds the lock, and succeeds
 /// after the watcher exits.

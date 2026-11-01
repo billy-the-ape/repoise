@@ -1447,10 +1447,83 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     let scope_dir = db_path
         .parent()
         .ok_or_else(|| "internal error: scope directory has no parent".to_string())?;
+    let root = ctx
+        .adapter
+        .canonical_root()
+        .map_err(|err| err.to_string())?;
+    let scope = events::Scope {
+        root: root.to_string_lossy().to_string(),
+        repo_id: ctx.repo_id.clone(),
+        worktree_id: ctx.worktree_id.clone(),
+        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
+    };
     // Authoritative one-writer-per-scope lease for the watch scope, held for
-    // the watch process lifetime; the descriptive owner marker is refreshed
-    // every loop iteration so an idle watch does not look stale.
+    // the watch process lifetime. Resolved before any store access or
+    // provider work: a refused writer must not open or migrate the owner's
+    // database. The descriptive owner marker is refreshed every loop
+    // iteration so an idle watch does not look stale.
     let lock_result = repoise_core::ownership::ScopeLock::acquire(scope_dir, "watch");
+    // The cooperative SIGINT/SIGTERM handling must be installed before the
+    // first `started` event is emitted, so a signal sent as soon as the
+    // stream starts cancels safely instead of killing the process.
+    let embed_cancel = CancellationToken::new();
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_handler = cancel.clone();
+    let cancel_token = embed_cancel.clone();
+    if let Err(err) = ctrlc::set_handler(move || {
+        cancel_handler.store(true, Ordering::SeqCst);
+        // Stop embedding work inside an in-flight publication as well.
+        cancel_token.cancel();
+    }) {
+        // Ctrl+C everywhere; with the ctrlc `termination` feature also
+        // SIGTERM/SIGHUP on Unix and CTRL_CLOSE_EVENT on Windows.
+        return Err(format!("could not install the signal handler: {err}"));
+    }
+    // The event stream (events mode only) is started before the refusal so
+    // the stream carries `started` plus the terminal `failed` event.
+    let stream: Option<events::EventStream<std::io::Stdout>> = if opts.events {
+        let stream = events::EventStream::stdout("watch");
+        stream.start(&scope);
+        stream.start_heartbeat(events::heartbeat_interval());
+        Some(stream)
+    } else {
+        None
+    };
+    let owner_guard = match lock_result {
+        Err(err) => {
+            // A refused writer stops before any store access or provider
+            // work: the terminal event carries the stable machine reason and
+            // retryability.
+            let (reason, retryable) = repoise_core::ownership::failure_reason(&err);
+            if let Some(stream) = &stream {
+                stream.terminal(
+                    "failed",
+                    json!({
+                        "operation": "watch",
+                        "scope": serde_json::to_value(&scope).unwrap_or_default(),
+                        "code": "operational",
+                        "reason": reason,
+                        "message": err.to_string(),
+                        "retryable": retryable,
+                    }),
+                );
+            }
+            return Err(err.to_string());
+        }
+        Ok(guard) => {
+            for warning in &guard.warnings {
+                if let Some(stream) = &stream {
+                    stream.emit(
+                        "warning",
+                        json!({ "operation": "watch", "message": warning }),
+                    );
+                } else {
+                    eprintln!("warning: {warning}");
+                }
+            }
+            guard
+        }
+    };
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let options = repoise_core::watch::WatchOptions {
         interval: Duration::from_millis(
@@ -1471,17 +1544,6 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     // every debounced publication runs it through the shared index path.
     // Missing configuration (or this build lacking the transport) keeps
     // watch publications lexical-only.
-    let root = ctx
-        .adapter
-        .canonical_root()
-        .map_err(|err| err.to_string())?;
-    let scope = events::Scope {
-        root: root.to_string_lossy().to_string(),
-        repo_id: ctx.repo_id.clone(),
-        worktree_id: ctx.worktree_id.clone(),
-        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
-    };
-    let embed_cancel = CancellationToken::new();
     let client = embedding_client(&ctx.effective, embed_cancel.clone())?;
     let embed_configured = client.is_some();
     // The resolved committed/local config sources for live reload: the
@@ -1521,18 +1583,6 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     )
     .map_err(|err| err.to_string())?
     .with_config_sources(config_sources, Some(client_factory));
-    let cancel = std::sync::Arc::new(AtomicBool::new(false));
-    let cancel_handler = cancel.clone();
-    let cancel_token = embed_cancel;
-    if let Err(err) = ctrlc::set_handler(move || {
-        cancel_handler.store(true, Ordering::SeqCst);
-        // Stop embedding work inside an in-flight publication as well.
-        cancel_token.cancel();
-    }) {
-        // Ctrl+C everywhere; with the ctrlc `termination` feature also
-        // SIGTERM/SIGHUP on Unix and CTRL_CLOSE_EVENT on Windows.
-        return Err(format!("could not install the signal handler: {err}"));
-    }
     let summary = format!(
         "watching {}/{} (interval {} ms, debounce {} ms; embeddings {})",
         ctx.repo_id,
@@ -1546,37 +1596,7 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         }
     );
     if opts.events {
-        let stream = events::EventStream::stdout("watch");
-        stream.start(&scope);
-        stream.start_heartbeat(events::heartbeat_interval());
-        // A refused writer stops before any publication: the terminal event
-        // carries the stable machine reason and retryability.
-        let owner_guard = match lock_result {
-            Err(err) => {
-                let (reason, retryable) = repoise_core::ownership::failure_reason(&err);
-                stream.terminal(
-                    "failed",
-                    json!({
-                        "operation": "watch",
-                        "scope": serde_json::to_value(&scope).unwrap_or_default(),
-                        "code": "operational",
-                        "reason": reason,
-                        "message": err.to_string(),
-                        "retryable": retryable,
-                    }),
-                );
-                return Err(err.to_string());
-            }
-            Ok(guard) => {
-                for warning in &guard.warnings {
-                    stream.emit(
-                        "warning",
-                        json!({ "operation": "watch", "message": warning }),
-                    );
-                }
-                guard
-            }
-        };
+        let stream = stream.expect("the event stream was created in events mode");
         eprintln!("{summary}; SIGINT/SIGTERM cancels");
         let mut last_generation: Option<i64> = None;
         loop {
@@ -1649,15 +1669,6 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    let owner_guard = match lock_result {
-        Err(err) => return Err(err.to_string()),
-        Ok(guard) => {
-            for warning in &guard.warnings {
-                eprintln!("warning: {warning}");
-            }
-            guard
-        }
-    };
     println!("{summary}; Ctrl+C cancels");
     loop {
         match watcher.step(&cancel) {
