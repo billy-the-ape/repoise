@@ -69,7 +69,8 @@ Event types:
   resolved configuration failed validation, so the watch publishes nothing
   until it is corrected; `"restart-required"`: a process-bound setting —
   `cacheDir`, `sharedCache` or `history` — changed and cannot move in
-  process). The `message` is sanitized: it names the structurally broken
+  process; the watch also publishes nothing in this state until the change
+  is reverted or the process is restarted). The `message` is sanitized: it names the structurally broken
   file when identifiable and reports only the validation problem count —
   user-typed configuration values and credentials are never included (run
   `repoise doctor` for details). Repeated

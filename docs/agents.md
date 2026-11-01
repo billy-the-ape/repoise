@@ -156,7 +156,9 @@ credentials are never included; `repoise doctor` shows the details; the
 last published generation stays served) and corrects automatically when the
 file is fixed. Settings bound to the running process — `cacheDir`,
 `sharedCache`, and the `history` lane — are never applied in process: the
-warning says a restart is required, and the watch keeps its startup settings.
+warning says a restart is required, and no new generations are published
+until the change is reverted or the watch is restarted; until then the watch
+keeps its startup settings and serves the last published generation.
 
 Default Git mode indexes the working tree. Use `--committed` consistently
 for index, check, search, read, and MCP when testing a committed snapshot.

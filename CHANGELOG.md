@@ -19,7 +19,13 @@ process, without mixing old and new settings within a publication:
   change rebuilds the embedding client (when the watch can build one) and
   never reuses vectors from the old profile. The effective-config
   fingerprint now includes `embedding.endpoint`, so an endpoint-only change
-  also applies as a config-driven rebuild instead of being silently ignored.
+  also applies as a config-driven rebuild instead of being silently
+  ignored. **Upgrade note:** the fingerprint format change means every
+  existing embedding-configured index reports stale after upgrading and
+  needs one reindex (`repoise index`, or the next watch publication);
+  vectors are still reused through the content-addressed cache, so
+  unchanged inputs cost no provider calls; lexical-only indexes are
+  unaffected.
 - An invalid configuration freezes new publications: repeated identical
   warnings are throttled, and the last published generation stays served.
   Warnings are sanitized — they name the structurally broken file when
@@ -28,7 +34,9 @@ process, without mixing old and new settings within a publication:
   Fixing the file recovers automatically in the next generation.
 - Process-bound settings (`cacheDir`, `sharedCache`, `history`) are never
   applied in process: the warning explicitly says a restart is required and
-  the watch keeps its startup settings. The no-factory client path tracks
+  no new generations are published until the setting is reverted or the
+  watch is restarted (the watch keeps its startup settings in the meantime).
+  The no-factory client path tracks
   the applied embedding revision when it drops the client for a lexical-only
   configuration, so a later revert to embedding settings reports
   restart-required instead of publishing a lexical-only generation that

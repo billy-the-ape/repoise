@@ -3004,13 +3004,42 @@ fn watch_restart_required_settings_are_not_applied() {
         "no generation moved under a rejected revision"
     );
 
-    // Corrected config: the watcher goes idle without a rebuild, and the
-    // last generation stays fresh under the original settings.
+    // While the revision is frozen (the last rejected setting is still on
+    // disk), content edits do not publish either.
+    repo.write(
+        "README.md",
+        &format!("{RELOAD_DOC}\nEdited while frozen.\n"),
+    );
+    assert!(
+        matches!(
+            watcher.step(&cancel).unwrap(),
+            repoise_core::watch::WatchStep::Idle
+                | repoise_core::watch::WatchStep::ConfigIssue(
+                    repoise_core::watch::WatchConfigIssue {
+                        kind: repoise_core::watch::ConfigIssueKind::RestartRequired,
+                        ..
+                    }
+                )
+        ),
+        "no publication under the frozen restart-required revision"
+    );
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(first_generation),
+        "the content edit does not publish while the revision is frozen"
+    );
+
+    // Corrected config: the content edit publishes (the config file itself
+    // leaves the corpus, and the served generation is back under the
+    // original settings).
     repo.remove(repoise_core::CONFIG_FILENAME);
-    assert!(matches!(
-        watcher.step(&cancel).unwrap(),
-        repoise_core::watch::WatchStep::Idle
-    ));
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(!outcome.config_change);
+            assert_eq!(outcome.changed_paths, vec!["README.md".to_string()]);
+        }
+        other => panic!("expected the content publication, got {other:?}"),
+    }
     let result = check_of(&repo);
     assert_eq!(
         result.category,
