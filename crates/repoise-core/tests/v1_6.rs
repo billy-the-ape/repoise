@@ -3166,3 +3166,262 @@ fn watch_cancellation_blocks_a_config_driven_publication() {
     );
     assert!(lex_hits(&repo, &eff0, None, "pangolin").is_empty());
 }
+#[test]
+fn watch_endpoint_only_embedding_edit_reloads_in_place() {
+    let repo = DirRepo::new(
+        "watch-reload-endpoint",
+        &[
+            ("docs/a.md", WATCH_DOC_A_V1),
+            ("docs/b.md", WATCH_DOC_B_V1),
+            ("src/math.ts", MATH_TS),
+        ],
+    );
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"embedding":{"provider":"openai-compatible","model":"model-a","dimensions":8,"endpoint":"env:REPOISE_EP_A"}}"#,
+    )
+    .unwrap();
+    // Record the endpoint each in-process client rebuild used.
+    let built_endpoints = Arc::new(Mutex::new(Vec::<String>::new()));
+    let factory = {
+        let built = built_endpoints.clone();
+        move |eff: &EffectiveConfig|
+            -> repoise_core::Result<Option<repoise_core::embed::EmbeddingClient>> {
+            let settings = eff
+                .embedding
+                .as_ref()
+                .expect("the reload config keeps embedding configured");
+            let endpoint = settings.endpoint.clone().unwrap_or_default();
+            built.lock().unwrap().push(endpoint.clone());
+            let model = settings.model.clone().unwrap_or_default();
+            let (client, _, _) = recording_client(
+                &model,
+                false,
+                None,
+                repoise_core::embed::EmbeddingBudgets::default(),
+                repoise_core::embed::CancellationToken::new(),
+            );
+            Ok(Some(client))
+        }
+    };
+    let (client, _, _) = recording_client(
+        "model-a",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+        default_sources(&repo),
+        Some(Box::new(factory)),
+    );
+    let cancel = AtomicBool::new(false);
+
+    let first = watch_publication(&mut watcher, &cancel);
+    assert!(!first.config_change, "the first build is not config-driven");
+    assert!(first.vectors_total > 0);
+
+    // Endpoint-only change (same model/profile): it must still be applied
+    // as a config-driven generation with a rebuilt client, not silently
+    // ignored.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"embedding":{"provider":"openai-compatible","model":"model-a","dimensions":8,"endpoint":"env:REPOISE_EP_B"}}"#,
+    )
+    .unwrap();
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert_eq!(
+        built_endpoints.lock().unwrap().as_slice(),
+        &["env:REPOISE_EP_B".to_string()],
+        "the factory rebuilt exactly one client, for the new endpoint"
+    );
+    assert_eq!(
+        outcome.vectors_total, first.vectors_total,
+        "scope-aware coverage is preserved across the endpoint change"
+    );
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_inert_history_edit_is_ignored_when_lane_disabled() {
+    let repo = DirRepo::new(
+        "watch-inert-history",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let eff0 = default_effective();
+    let cancel = AtomicBool::new(false);
+
+    // Inert history edits while the lane is disabled: an empty block fills
+    // tuning defaults, and tweaking them has no effective effect. The
+    // config file itself is corpus content, so the bytes still move a
+    // corpus-only generation — but no restart-required issue and no freeze.
+    for body in [
+        r#"{"schemaVersion":1,"history":{}}"#,
+        r#"{"schemaVersion":1,"history":{"horizon":999}}"#,
+    ] {
+        std::fs::write(repo.root.join(repoise_core::CONFIG_FILENAME), body).unwrap();
+        match watcher.step(&cancel).unwrap() {
+            repoise_core::watch::WatchStep::Published(outcome) => {
+                assert!(
+                    !outcome.config_change,
+                    "an inert history edit is not a config rebuild: {body}"
+                );
+                assert_eq!(
+                    outcome.changed_paths,
+                    vec![repoise_core::CONFIG_FILENAME.to_string()],
+                    "only the config file's own chunk moves: {body}"
+                );
+            }
+            other => {
+                panic!("expected the corpus-only config-file update, got {other:?} for {body}")
+            }
+        }
+    }
+
+    // Enabling the lane is still restart-required, and the watch freezes.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"history":{"enabled":true}}"#,
+    )
+    .unwrap();
+    let generation_before = status_generation(&repo, &eff0).expect("a generation is published");
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => {
+            assert_eq!(
+                issue.kind,
+                repoise_core::watch::ConfigIssueKind::RestartRequired
+            );
+            assert!(issue.message.contains("history"));
+        }
+        other => panic!("expected a restart-required issue, got {other:?}"),
+    }
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(generation_before),
+        "the lane must not be enabled implicitly"
+    );
+
+    // Reverting unfreezes the watch (corpus-only config-file update).
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1}"#,
+    )
+    .unwrap();
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(!outcome.config_change);
+        }
+        other => panic!("expected the corpus-only config-file update, got {other:?}"),
+    }
+}
+
+#[test]
+fn watch_invalid_config_warning_never_echoes_user_values() {
+    let repo = DirRepo::new(
+        "watch-redacted-warning",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let eff0 = default_effective();
+    let first_generation = status_generation(&repo, &eff0).expect("published at startup");
+    let cancel = AtomicBool::new(false);
+
+    // Parse failure: a secret-looking string inside the broken file must
+    // never reach the warning; the structurally broken file is named.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r##"{"schemaVersion":1,"exclude":["sk-live-0123456789abcdef""##,
+    )
+    .unwrap();
+    let issue = match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => issue,
+        other => panic!("expected a config issue, got {other:?}"),
+    };
+    assert_eq!(issue.kind, repoise_core::watch::ConfigIssueKind::Invalid);
+    assert!(
+        issue.message.contains("repoise.config.json"),
+        "the broken file is named: {}",
+        issue.message
+    );
+    assert!(
+        !issue.message.contains("sk-live-0123456789abcdef"),
+        "no user values in the warning: {}",
+        issue.message
+    );
+
+    // Validation failure: a secret-looking apiKeyEnv value must not reach
+    // the warning (different message, so it is not throttled away).
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"embedding":{"provider":"openai-compatible","model":"model-a","dimensions":8,"apiKeyEnv":"sk-live-abcdef-secret"}}"#,
+    )
+    .unwrap();
+    let issue = match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => issue,
+        other => panic!("expected a config issue, got {other:?}"),
+    };
+    assert_eq!(issue.kind, repoise_core::watch::ConfigIssueKind::Invalid);
+    assert!(
+        issue.message.contains("1 validation problem"),
+        "the problem count is reported: {}",
+        issue.message
+    );
+    assert!(
+        !issue.message.contains("sk-live-abcdef-secret"),
+        "no user values in the warning: {}",
+        issue.message
+    );
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(first_generation),
+        "the last published generation stays served"
+    );
+
+    // Recovery: fixing the file unfreezes the watch.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1}"#,
+    )
+    .unwrap();
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(!outcome.config_change);
+            assert_eq!(
+                outcome.changed_paths,
+                vec![repoise_core::CONFIG_FILENAME.to_string()]
+            );
+        }
+        other => panic!("expected the corpus-only config-file update, got {other:?}"),
+    }
+}

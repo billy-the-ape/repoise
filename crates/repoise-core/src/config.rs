@@ -626,10 +626,11 @@ impl EffectiveConfig {
         if let Some(settings) = &self.embedding {
             key.push('\n');
             key.push_str(&format!(
-                "embed|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}\n",
+                "embed|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}\n",
                 settings.provider.as_deref().unwrap_or(""),
                 settings.model.as_deref().unwrap_or(""),
                 settings.dimensions,
+                settings.endpoint.as_deref().unwrap_or(""),
                 settings.api_key_env.as_deref().unwrap_or(""),
                 settings.batch_size.unwrap_or(0),
                 settings.timeout_ms.unwrap_or(0),

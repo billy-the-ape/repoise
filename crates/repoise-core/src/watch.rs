@@ -231,7 +231,7 @@ impl Watcher {
     /// once for the watch process and passed into every debounced
     /// publication through the shared index path (cache-first; unchanged
     /// chunk inputs never reach the provider). `None` keeps publications
-    /// lexical-only. Without [`with_config_sources`], the watcher watches
+    /// lexical-only. Without [`Watcher::with_config_sources`], the watcher watches
     /// the repository's default committed/local config paths with no CLI
     /// overrides and no client factory (embedding settings cannot be
     /// rebuilt in-process on that path).
@@ -415,24 +415,48 @@ impl Watcher {
             &sources.cli,
         ) {
             Ok(candidate) => candidate,
-            Err(err) => {
+            Err(_) => {
+                // Sanitized: the underlying error text (parse/schema
+                // details) can embed user-typed values — including a key
+                // someone pasted into `apiKeyEnv` — so it is never echoed.
+                // The structurally broken file is identified separately;
+                // the full detail is available from `repoise doctor`.
+                let mut broken: Vec<&std::path::Path> = Vec::new();
+                if crate::config::load(&sources.committed).is_err() {
+                    broken.push(&sources.committed);
+                }
+                if crate::config::load(&sources.local).is_err() {
+                    broken.push(&sources.local);
+                }
+                let where_broken = match broken.as_slice() {
+                    [path] => format!(
+                        "{} does not parse or does not match the schema",
+                        path.display()
+                    ),
+                    [first, second] => format!(
+                        "both {} and {} do not parse or do not match the schema",
+                        first.display(),
+                        second.display()
+                    ),
+                    _ => "the resolved configuration is invalid".to_string(),
+                };
                 return ConfigReload::Issue(WatchConfigIssue {
                     kind: ConfigIssueKind::Invalid,
-                    // `err` is structural (path plus parse/schema detail); it
-                    // never carries file bytes or credentials.
                     message: format!(
-                        "watch configuration reload failed: {err}; the last published generation is retained; fix the configuration to resume publishing"
+                        "watch configuration reload failed: {where_broken}; the last published generation is retained; run `repoise doctor` for the details"
                     ),
                 });
             }
         };
         let problems = candidate.validate();
         if !problems.is_empty() {
+            // Sanitized: validation problem strings can embed user-typed
+            // values (e.g. the offending `apiKeyEnv` value), so only the
+            // problem count is reported; `repoise doctor` shows the detail.
             return ConfigReload::Issue(WatchConfigIssue {
                 kind: ConfigIssueKind::Invalid,
                 message: format!(
-                    "watch configuration reload rejected: {} ({} problem(s) in total); the last published generation is retained; fix the configuration to resume publishing",
-                    problems.first().expect("problems are non-empty"),
+                    "watch configuration reload rejected: the configuration has {} validation problem(s); the last published generation is retained; run `repoise doctor` for the details",
                     problems.len()
                 ),
             });
@@ -450,7 +474,13 @@ impl Watcher {
         if candidate.shared_cache != self.eff.shared_cache {
             restart_settings.push("sharedCache");
         }
-        if candidate.history != self.eff.history {
+        // The history lane is process-relevant through its enabled flag; the
+        // tuning fields matter only while the lane is enabled, so inert
+        // edits made while it is disabled must not freeze the watch (the
+        // effective fingerprint ignores them too).
+        let history_changed = candidate.history.enabled != self.eff.history.enabled
+            || (candidate.history.enabled && candidate.history != self.eff.history);
+        if history_changed {
             restart_settings.push("history");
         }
         if !restart_settings.is_empty() {

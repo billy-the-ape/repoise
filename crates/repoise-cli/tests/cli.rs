@@ -895,6 +895,33 @@ fn watch_events_reports_config_issue_and_recovers() {
         warning["payload"]["message"]
     );
 
+    // A parseable file whose apiKeyEnv holds a secret-looking value: a
+    // second (different) sanitized warning that must not echo the value.
+    std::fs::write(
+        root.join("repoise.config.json"),
+        r#"{"schemaVersion":1,"embedding":{"provider":"openai-compatible","model":"model-a","dimensions":8,"apiKeyEnv":"sk-live-cli-secret-value"}}"#,
+    )
+    .unwrap();
+    let warning2 = loop {
+        line.clear();
+        reader
+            .read_line(&mut line)
+            .expect("the watch stream stays open");
+        let event: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        if event["type"] == "warning" && event["payload"]["kind"] == "invalid" {
+            break event;
+        }
+    };
+    let message = warning2["payload"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("validation problem"),
+        "the validation problem count is reported: {message}"
+    );
+    assert!(
+        !message.contains("sk-live-cli-secret-value"),
+        "no user values in the warning: {message}"
+    );
+
     // Fix the config: the same process applies the revision as a
     // config-driven generation.
     std::fs::write(
@@ -918,7 +945,7 @@ fn watch_events_reports_config_issue_and_recovers() {
 
     kill(child.id(), "INT");
     assert!(child.wait().expect("wait for watch to exit").success());
-    let mut events = vec![started, warning];
+    let mut events = vec![started, warning, warning2];
     for result in reader.lines() {
         let event_line = result.expect("read the remaining events");
         events.push(serde_json::from_str(&event_line).unwrap());

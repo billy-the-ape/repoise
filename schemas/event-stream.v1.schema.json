@@ -93,7 +93,7 @@
               "kind": {
                 "type": "string",
                 "enum": ["invalid", "restart-required"],
-                "description": "Watch live-config issue kind. The message is sanitized: it names the broken file and the affected settings, never configuration bytes or credentials. For invalid, the last published generation stays served until the configuration is corrected; for restart-required, restart the watch to apply the revision."
+                "description": "Watch live-config issue kind. The message is sanitized: it names the structurally broken file when identifiable and reports only the validation problem count; user-typed configuration values and credentials are never included (run `repoise doctor` for details). For invalid, the last published generation stays served until the configuration is corrected; for restart-required, restart the watch to apply the revision."
               }
             }
           }

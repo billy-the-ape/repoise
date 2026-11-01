@@ -17,11 +17,15 @@ process, without mixing old and new settings within a publication:
   embedding model/profile/input template/scope are reloadable; unchanged
   effective settings never trigger a rebuild. A model or input-template
   change rebuilds the embedding client (when the watch can build one) and
-  never reuses vectors from the old profile.
-- An invalid configuration freezes new publications: a sanitized warning
-  names the broken file (never configuration bytes or credentials), repeated
-  identical warnings are throttled, and the last published generation stays
-  served. Fixing the file recovers automatically in the next generation.
+  never reuses vectors from the old profile. The effective-config
+  fingerprint now includes `embedding.endpoint`, so an endpoint-only change
+  also applies as a config-driven rebuild instead of being silently ignored.
+- An invalid configuration freezes new publications: repeated identical
+  warnings are throttled, and the last published generation stays served.
+  Warnings are sanitized — they name the structurally broken file when
+  identifiable and report only the validation problem count; user-typed
+  values and credentials are never included (details via `repoise doctor`).
+  Fixing the file recovers automatically in the next generation.
 - Process-bound settings (`cacheDir`, `sharedCache`, `history`) are never
   applied in process: the warning explicitly says a restart is required and
   the watch keeps its startup settings.

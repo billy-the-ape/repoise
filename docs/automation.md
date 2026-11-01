@@ -69,8 +69,10 @@ Event types:
   resolved configuration failed validation, so the watch publishes nothing
   until it is corrected; `"restart-required"`: a process-bound setting —
   `cacheDir`, `sharedCache` or `history` — changed and cannot move in
-  process). The `message` is sanitized: it names the broken file and the
-  affected settings, never configuration bytes or credentials. Repeated
+  process). The `message` is sanitized: it names the structurally broken
+  file when identifiable and reports only the validation problem count —
+  user-typed configuration values and credentials are never included (run
+  `repoise doctor` for details). Repeated
   identical issues are throttled; the last published generation stays served
   through both states.
 - `heartbeat` — liveness only, no progress claim. Default every 15 seconds;

@@ -151,7 +151,8 @@ preset, or the embedding model/profile/input template/scope are applied on
 the same running watch as one config-driven generation, and unchanged
 effective settings never trigger a rebuild. A model or input-template change
 never reuses vectors from the old profile. An invalid configuration freezes
-new publications (a sanitized, throttled warning names the broken file; the
+new publications (a sanitized, throttled warning — user-typed values and
+credentials are never included; `repoise doctor` shows the details; the
 last published generation stays served) and corrects automatically when the
 file is fixed. Settings bound to the running process — `cacheDir`,
 `sharedCache`, and the `history` lane — are never applied in process: the
