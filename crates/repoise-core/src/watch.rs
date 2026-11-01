@@ -536,6 +536,13 @@ impl Watcher {
                         });
                     }
                     self.embed_client = None;
+                    // Track the applied revision even though the client was
+                    // dropped: if the configuration later reverts to an
+                    // embedding revision, `revision != client_revision` must
+                    // hold again, or the revert would apply with no client
+                    // and no restart-required warning (a lexical-only
+                    // generation carrying the embedding fingerprint).
+                    self.client_revision = revision;
                 }
             }
         }

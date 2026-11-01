@@ -28,7 +28,11 @@ process, without mixing old and new settings within a publication:
   Fixing the file recovers automatically in the next generation.
 - Process-bound settings (`cacheDir`, `sharedCache`, `history`) are never
   applied in process: the warning explicitly says a restart is required and
-  the watch keeps its startup settings.
+  the watch keeps its startup settings. The no-factory client path tracks
+  the applied embedding revision when it drops the client for a lexical-only
+  configuration, so a later revert to embedding settings reports
+  restart-required instead of publishing a lexical-only generation that
+  carries the embedding fingerprint.
 - `watch --events` warning payloads gain an additive `kind` field
   (`"invalid"` / `"restart-required"`), documented in the event-stream
   schema and the [automation guide](docs/automation.md); watch

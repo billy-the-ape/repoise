@@ -22,11 +22,86 @@ use repoise_core::store::Store;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// The drive root of a Windows path (e.g. `C:\` from
+/// `C:\Users\<user>\AppData\Local\Temp`), if any.
+#[cfg(windows)]
+fn windows_drive_root(path: &Path) -> Option<PathBuf> {
+    let mut root = PathBuf::new();
+    for component in path.components().take(2) {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                root.push(component.as_os_str());
+            }
+            _ => break,
+        }
+    }
+    if root.as_os_str().is_empty() {
+        None
+    } else {
+        Some(root)
+    }
+}
+
+/// Resolves the base directory for one test. On Windows, the deepest
+/// generated path is
+/// <dir>/.repoise/repos/repo-<64 hex>/worktrees/wt-<64 hex>/index.sqlite-wal
+/// (~180 chars after the directory); the default %TEMP% is deep
+/// (C:\Users\<user>\AppData\Local\Temp), so anchor under the drive root
+/// when it is writable to keep the full path well under the 260-char
+/// MAX_PATH limit; otherwise fall back to the default temp directory.
+/// (Same workaround as the K6 suite in v1_6.rs.)
+fn base_dir(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(dir) = windows_drive_root(&std::env::temp_dir())
+        .filter(|root| std::fs::create_dir_all(root.join(name)).is_ok())
+        .map(|root| root.join(name))
+    {
+        return dir;
+    }
+    std::env::temp_dir().join(name)
+}
+
 fn temp_dir(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("repoise-fresh-{tag}-{}-{n}", std::process::id()));
+    let name = format!("repoise-fresh-{tag}-{}-{n}", std::process::id());
+    let dir = base_dir(&name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// The deepest path this suite can generate under `dir` (repository and
+/// worktree ids are 64 hex chars; WAL mode adds a `-wal` sidecar).
+#[cfg(windows)]
+fn deepest_generated_path(dir: &Path) -> PathBuf {
+    dir.join(".repoise")
+        .join("repos")
+        .join(format!("repo-{}", "x".repeat(64)))
+        .join("worktrees")
+        .join(format!("wt-{}", "y".repeat(64)))
+        .join("index.sqlite-wal")
+}
+
+#[cfg(windows)]
+#[test]
+fn temp_dirs_keep_db_paths_under_windows_max_path() {
+    let dir = temp_dir("maxpath-check");
+    // Only assert when the drive-root anchor was used (exactly one
+    // non-root component); a permission fallback to the deep default temp
+    // is a developer-machine condition this suite must tolerate.
+    let names = dir
+        .components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .count();
+    if names == 1 {
+        let deepest = deepest_generated_path(&dir);
+        assert!(
+            deepest.as_os_str().len() < 260,
+            "deepest test path is {} chars: {}",
+            deepest.as_os_str().len(),
+            deepest.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn run_git(root: &Path, args: &[&str]) {

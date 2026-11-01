@@ -3425,3 +3425,63 @@ fn watch_invalid_config_warning_never_echoes_user_values() {
         other => panic!("expected the corpus-only config-file update, got {other:?}"),
     }
 }
+#[test]
+fn watch_no_factory_client_drop_reports_restart_required_on_revert() {
+    // A plain `Watcher::new` consumer (client, no factory) edits the config
+    // to lexical-only (client dropped in-process) and then reverts to the
+    // embedding config: the revert must report restart-required, not
+    // silently publish a lexical-only generation carrying the embedding
+    // fingerprint.
+    let repo = DirRepo::new(
+        "watch-nofactory-revert",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    write_embedding_config(&repo, "model-a");
+    let (client, _, _) = recording_client(
+        "model-a",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+
+    // First generation: embedded under model-a.
+    let first = watch_publication(&mut watcher, &cancel);
+    assert!(first.embedding.is_some());
+    assert!(first.vectors_total > 0);
+
+    // Lexical-only edit: applied, client dropped (no factory to rebuild one).
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1}"#,
+    )
+    .unwrap();
+    let lexical = watch_publication(&mut watcher, &cancel);
+    assert!(lexical.config_change);
+    assert!(
+        lexical.embedding.is_none(),
+        "the lexical-only generation has no embedding"
+    );
+
+    // Revert to the embedding config: no factory means the client cannot be
+    // rebuilt — restart-required, no silent lexical-only publication.
+    write_embedding_config(&repo, "model-a");
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => {
+            assert_eq!(
+                issue.kind,
+                repoise_core::watch::ConfigIssueKind::RestartRequired
+            );
+            assert!(issue.message.contains("restart"), "{}", issue.message);
+        }
+        other => panic!("expected a restart-required issue, got {other:?}"),
+    }
+}
