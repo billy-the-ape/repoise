@@ -36,7 +36,13 @@
     "features": {
       "type": "array",
       "items": {
-        "enum": ["event-stream", "mcp-stdio", "remote-embedding", "github-enrichment"]
+        "enum": [
+          "event-stream",
+          "mcp-stdio",
+          "exclusive-scope-lock",
+          "remote-embedding",
+          "github-enrichment"
+        ]
       },
       "uniqueItems": true
     },
@@ -88,7 +94,10 @@
           "items": { "type": "integer", "minimum": 1 },
           "minItems": 1
         },
-        "notes": { "type": "array", "items": { "type": "string" } }
+        "notes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     }
   }

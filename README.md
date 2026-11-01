@@ -183,8 +183,10 @@ it as `npx --no-install repoise`.
   repoise capabilities --json
   ```
 
-- `repoise purge` — remove generated cache data: `--all` removes the entire
-  cache root; `--repo-id <ID> --worktree-id <ID>` removes one scope directory.
+- `repoise purge` — remove generated cache data: `--all` removes everything
+  under the cache root (owned scopes are skipped and reported, because a
+  writer holds each scope's lock); `--repo-id <ID> --worktree-id <ID>`
+  removes one scope directory.
 
   ```sh
   repoise purge --all

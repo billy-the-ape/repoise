@@ -203,8 +203,8 @@ Preflight freezes the experiment and refuses to approximate:
   chunks outside the scope (e.g. config) never block a hybrid condition,
   and a degraded lexical fallback is never counted as hybrid;
 - root config/cache resolution, scope status and guidance state are captured
-  for the manifest (an active watch/index writer is recorded as contention,
-  never stopped).
+  for the manifest; the preflight fails while a live writer owns the root
+  scope (one writer per scope; the writer is never stopped).
 
 ## Trial lifecycle
 

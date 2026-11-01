@@ -13,7 +13,8 @@ Layout under the cache root:
 | --- | --- |
 | `repos/<repoId>/worktrees/<worktreeId>/index.sqlite` | All index tables for one scope |
 | `repos/<repoId>/worktrees/<worktreeId>/state.json` | Versioned integration manifest; the database remains canonical |
-| `repos/<repoId>/worktrees/<worktreeId>/owner.json` | Advisory writer-ownership marker for the scope (AP-02): owner pid, operation and last-refresh time, published atomically; exposed read-only by `status` and removed when the scope is purged (see [automation.md](automation.md)) |
+| `repos/<repoId>/worktrees/<worktreeId>/scope.lock` | Authoritative one-writer OS lock for the scope (flock on Unix, `LockFileEx` on Windows): held for the whole `index`/`watch`/MCP-refresh run, released by the OS when the process dies; a second writer is refused before any provider work or publication (see [automation.md](automation.md#writer-ownership)) |
+| `repos/<repoId>/worktrees/<worktreeId>/owner.json` | Descriptive heartbeat marker for the process holding the scope lock (AP-02): owner pid, operation and last-refresh time, published atomically; exposed read-only by `status` and removed when the scope is purged (see [automation.md](automation.md)) |
 | `repos/<repoId>/embedding-cache/` | Checkout-local content-addressed embedding cache (`embeddings.sqlite`), used when no reuse family is available (plain directories, sharing opted out, or fallback): input-hash plus profile-fingerprint keyed vectors, reference-counted against retained generations |
 | `repos/<repoId>/host-cache/<host>.json` | Verified remote host records for history enrichment (ETag plus bounded payload per key, with an optional paged-list continuation); invalidated on remote permission denial; removed when the repository scope is purged (`purge --all`), not by a worktree-scoped purge |
 
@@ -84,7 +85,12 @@ Invariants specific to the family store:
   the family store's `members/` directory (sibling shared data is untouched);
   `purge --all` removes everything under the selected cache root, including
   `families/` when the family store lives under an explicit cache root, but
-  never the common-directory default store and never Git metadata.
+  never the common-directory default store and never Git metadata. A scoped
+  purge acquires the scope's ownership lock first, so an owned scope fails
+  the purge; `--all` skips owned scopes (reporting them in `skippedOwned`)
+  and leaves their in-use repository directories and shared stores for the
+  operator to retry after the writer exits (see
+  [automation.md](automation.md#writer-ownership)).
 - Read-only operations (search, read, status, read-only MCP) never create or
   migrate family-store data.
 

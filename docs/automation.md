@@ -24,8 +24,9 @@ The JSON document (`schemaVersion: 1`) carries:
 - `eventStream` — the event-stream protocol version, its checked-in schema
   path, the operations that stream (`index`, `watch`) and the effective
   heartbeat interval in milliseconds;
-- `features` — always-present capabilities (`event-stream`, `mcp-stdio`)
-  plus enabled build features (`remote-embedding`, `github-enrichment`);
+- `features` — always-present capabilities (`event-stream`, `mcp-stdio`,
+  `exclusive-scope-lock`) plus enabled build features
+  (`remote-embedding`, `github-enrichment`);
 - `commands` — every command with its machine output modes
   (`json`, `events`, or `mcp-stdio`);
 - `benchmark` — `supported: true`; the `bench` coordinator (AP-04) with its
@@ -83,9 +84,11 @@ Event types:
 - `completed` / `cancelled` / `failed` — the single **terminal** event.
   `completed` payloads carry `scope` and the full `result` (index outcome or
   the watch's final state); `failed` payloads carry `scope`, a stable
-  `code` (`operational`), a context `message` and `retryable` (null when
-  unknown). Stack traces and secret configuration values are never part of
-  the protocol.
+  `code` (`operational`), a context `message`, `retryable` (null when
+  unknown) and, for writer-refusal failures, a stable machine `reason`
+  (`scope-owned`: another writer holds the scope lock, retry once it exits;
+  `lock-unavailable`: the lock file itself could not be used). Stack traces
+  and secret configuration values are never part of the protocol.
 
 Exactly one terminal event is expected on controlled exit. A stream without
 a terminal event is **incomplete output** (abrupt process death, OS kill);
@@ -123,8 +126,9 @@ set (`disabled`, `profile-unavailable`, `empty`, `partial`, `complete`).
   Unix). `SIGINT`, `SIGTERM` (and `SIGHUP` on Unix; Windows `Ctrl+C`) set a
   cancel flag; the loop stops at its next step boundary, preserves the last
   complete published generation, emits a `cancelled` terminal event
-  (`reason: "signal"`) and exits `0`. The owner marker is released on the
-  clean exit. No in-flight provider call is claimed to be interrupted;
+  (`reason: "signal"`) and exits `0`. The scope lock is released by the OS
+  when the process exits (the descriptive marker is removed on the clean
+  exit). No in-flight provider call is claimed to be interrupted;
   cancellation takes effect at the next check point.
 - `index` has no graceful signal handler. A signal kills the process
   abruptly (no terminal event → incomplete output); the transactional
@@ -139,24 +143,52 @@ set (`disabled`, `profile-unavailable`, `empty`, `partial`, `complete`).
 
 ## Writer ownership
 
-Publications are transactional (one SQLite immediate transaction per
-generation), so a foreign writer can never corrupt a published generation.
-The ownership marker exists for **detection**, not exclusion:
+Exactly one writer per mutable index scope. `index`, `watch` and the opt-in
+MCP refresh acquire an authoritative OS-backed lock on
+`<cache>/repos/<repoId>/worktrees/<worktreeId>/scope.lock` (flock(2) on Unix,
+`LockFileEx` on Windows) before any provider work or publication. The lock is
+atomic across processes and is released by the OS when the owning process
+dies (clean exit, crash or kill), so ownership never depends on PID
+freshness or unsafe stale-file deletion. A second writer for the same scope
+receives a stable, actionable busy result — exit code 1 for one-shot
+operations, and a `failed` terminal event with the machine `reason`
+`scope-owned` (another writer holds the lock; `retryable: true`, retry once
+it exits) or `lock-unavailable` (the lock file itself could not be used;
+`retryable: null`) in the `--events` stream — and never starts provider
+work, publishes, or overwrites the live owner's metadata. A long-lived
+`watch` can call indexing without deadlocking on its own lease: the lease
+lives in the CLI/MCP/purge entry points, not in the shared index service.
 
-- Writers (`index`, `watch`) acquire an advisory marker
-  `<cache>/repos/<repoId>/worktrees/<worktreeId>/owner.json` — scoped by the
-  actual repository/worktree index scope, not by a remote URL. It records
-  `pid`, `operation`, start time and the last refresh; writers refresh at
-  most every 5 seconds.
-- Acquisition never blocks or fails the operation. A recent (under 10
-  minutes) marker from another process produces a stderr warning and a
-  `warning`-style diagnostic, then the run proceeds; publications remain
-  transactional.
-- `status` exposes the marker read-only in an `owner` field
-  (`pid`, `operation`, `startedAtMs`, `refreshedAtMs`, `state`), where
-  `state` is `active` (refreshed within 10 minutes) or `stale`. A PID is
-  never treated as proof of liveness (PIDs are reused); refresh freshness is
-  the health signal. `purge` removes the marker with the scope directory.
+The `owner.json` marker remains, but only as **descriptive heartbeat
+metadata** for the process holding the lock: `pid`, `operation`, start time
+and last refresh (refreshed at most every 5 seconds, published atomically via
+sibling temp file + rename). A PID is descriptive only — never proof of
+liveness (PIDs are reused) and never grounds for killing or adopting a
+process.
+
+- `status` reports the authoritative writer state in a `writer` field
+  (`lock_held`, `state`: `owned` | `busy` | `stale-metadata` | `free`) and
+  still exposes the descriptive `owner` marker (`pid`, `operation`,
+  `startedAtMs`, `refreshedAtMs`, `state` `active`/`stale` with the 10-minute
+  window).
+- `purge` holds each scope's lock before removing it, so an active writer's
+  scope can never be removed from under it, and removal cannot be bypassed
+  by unlinking/recreating the lock path. A scoped purge of an owned scope
+  fails before removing anything; `--all` skips owned scopes and reports
+  them in `skippedOwned`. `--all` re-checks the scope locks immediately
+  before the final root sweep, so a writer that starts during the purge is
+  locked and skipped rather than having its scope swept; the only residual
+  race is a writer starting in the instant between that final check and the
+  sweep (documented in `crates/repoise-core/src/purge.rs`).
+- Read-only operations (`status`, `search`, `read`, `related`, `check`) keep
+  working while a writer owns the scope.
+- Manual recovery: nothing is needed after a crashed writer — the OS
+  releases the lock. A leftover `owner.json` is reported as
+  `stale-metadata` and is replaced on the next successful acquisition.
+- Filesystem assumptions: local filesystems (or single-client shares)
+  where OS lock semantics hold. `flock` is advisory between cooperating
+  Repoise processes; multi-client network filesystems (e.g. NFS) are not
+  supported for shared scope locking.
 
 ## MCP boundary
 

@@ -1,30 +1,47 @@
-//! Advisory writer-ownership marker for one worktree index scope (AP-02).
+//! Authoritative writer ownership for one mutable index scope (AP-02,
+//! later hardened into an exclusive lock).
 //!
-//! Publications are transactional (one SQLite immediate transaction per
-//! generation), so a foreign writer can never corrupt a published
-//! generation; this marker exists so callers can *detect* a concurrent
-//! writer for the same scope, inspect its health and recognize stale
-//! ownership. It is best-effort and never blocks or fails the operation:
-//! acquisition, refresh and release report diagnostics as warnings.
+//! Exactly one writer per mutable index scope: `index`, `watch` and the
+//! opt-in MCP refresh all run through [`ScopeLock`], a cross-platform
+//! OS-backed file lock (`flock(2)` on Unix, `LockFileEx` on Windows) on the
+//! scope's `scope.lock` file. The lock is atomic across processes and is
+//! released by the OS when the owning process dies (clean exit, crash or
+//! kill), so it never depends on PID freshness or unsafe stale-file
+//! deletion. A rejected writer receives a stable, actionable busy result
+//! before any provider work or publication, and must not overwrite the
+//! live owner's metadata.
 //!
-//! Marker publication is atomic (sibling temp file + rename), so concurrent
-//! readers only ever observe a complete record.
+//! `owner.json` remains, but only as **descriptive heartbeat metadata**
+//! for the process that holds the lock (pid, operation, start and last
+//! refresh): marker publication stays atomic (sibling temp file + rename)
+//! so concurrent readers only ever observe a complete record. `status`
+//! surfaces the marker read-only via [`inspect`] together with the
+//! non-mutating lock probe [`lock_held`], and [`writer_state`] lets
+//! automation distinguish `owned`, `busy`, `stale-metadata` and `free`.
+//! A PID is descriptive metadata only — it is never treated as proof of
+//! liveness, and no process is ever killed or adopted based on it.
+//! `purge` removes both files with the scope (it acquires the lock first).
 //!
-//! The marker is scoped by the actual repository/worktree index scope
-//! directory (`<cache>/repos/<repoId>/worktrees/<worktreeId>/owner.json`),
-//! not by a repository remote URL. A PID alone is never treated as proof
-//! of liveness (PIDs are reused); freshness of the last refresh is the
-//! health signal. `status` exposes the marker read-only via
-//! [`inspect`]; `purge` removes it with the scope.
+//! Supported filesystem assumptions: a local filesystem (or a
+//! single-client share) where the OS lock semantics hold. `flock` is
+//! advisory between cooperating Repoise processes; `LockFileEx` is a
+//! mandatory byte-range lock on local volumes. Multi-client network
+//! filesystems (e.g. NFS) are not supported for shared scope locking.
 
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-/// Marker file name inside one worktree scope directory.
+use crate::error::Error;
+
+/// Marker file name inside one worktree scope directory (descriptive).
 pub const OWNER_FILE: &str = "owner.json";
+/// Lock file name for the authoritative scope ownership lock.
+pub const SCOPE_LOCK_FILE: &str = "scope.lock";
 /// A marker not refreshed within this window is reported as stale.
 pub const STALE_AFTER: Duration = Duration::from_secs(600);
 /// Minimum interval between marker refreshes.
@@ -60,15 +77,91 @@ pub struct OwnerReport {
     pub state: String,
 }
 
-/// Advisory ownership for one scope held by the current process. Dropping
-/// the guard releases the marker (only if the marker still carries this
-/// process's exact record, so a newer foreign marker is never removed).
-pub struct OwnerGuard {
+/// Failure to acquire (or use) the authoritative scope lock.
+#[derive(Clone, Debug)]
+pub enum OwnershipError {
+    /// Another process currently holds the scope's OS lock; the live
+    /// owner's descriptive metadata is attached when readable.
+    Busy {
+        /// The live owner's marker, when readable.
+        metadata: Option<OwnerReport>,
+    },
+    /// The lock file could not be opened or locked: the scope cannot be
+    /// guaranteed exclusive, so the operation must fail closed.
+    Io(String),
+}
+
+impl std::fmt::Display for OwnershipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OwnershipError::Busy { metadata } => match metadata {
+                Some(meta) => write!(
+                    f,
+                    "scope is owned by another Repoise writer (operation: {}, pid {}, \
+                     last refreshed {} ms ago); this run made no changes; stop the other \
+                     writer (or wait for it to finish) and retry, or run `repoise status` \
+                     to inspect",
+                    meta.operation,
+                    meta.pid,
+                    now_ms().saturating_sub(meta.refreshed_at_ms)
+                ),
+                None => write!(
+                    f,
+                    "scope is owned by another Repoise writer (owner metadata \
+                     unavailable); this run made no changes; stop the owning writer and \
+                     retry, or run `repoise status` to inspect"
+                ),
+            },
+            OwnershipError::Io(err) => write!(
+                f,
+                "could not acquire the scope ownership lock: {err}; refusing to write \
+                 the index without exclusive ownership"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OwnershipError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            OwnershipError::Busy { .. } | OwnershipError::Io(_) => None,
+        }
+    }
+}
+
+/// The authoritative one-writer lease on one mutable index scope.
+///
+/// The OS lock on [`SCOPE_LOCK_FILE`] is the exclusivity contract: held
+/// for the whole operation (a `watch` holds it for the process lifetime),
+/// released on drop — or by the OS itself when the process dies. The
+/// descriptive `owner.json` heartbeat is refreshed on a schedule so
+/// `status` and automation can tell a live owner from stale metadata.
+/// The guard is not reentrant: a second acquisition by the same process
+/// for the same scope is refused (one writer per scope).
+pub struct ScopeLock {
+    /// Holds the OS lock; closing the file (drop or process death) releases it.
+    file: File,
+    /// The descriptive marker path (inside the scope directory).
     path: PathBuf,
-    mine: bool,
+    /// Our acquisition time; part of the owner-token check on cleanup.
     started_at_ms: u64,
-    last_refresh: std::sync::Mutex<Instant>,
+    last_refresh: Arc<Mutex<Instant>>,
     operation: String,
+    /// Diagnostics for the caller (orphaned-marker replacement, degraded
+    /// heartbeat writes).
+    pub warnings: Vec<String>,
+    /// The orphaned marker replaced at acquisition, if any.
+    pub replaced_marker: Option<OwnerReport>,
+}
+
+impl std::fmt::Debug for ScopeLock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScopeLock")
+            .field("path", &self.path)
+            .field("operation", &self.operation)
+            .field("warnings", &self.warnings)
+            .finish()
+    }
 }
 
 /// Unix milliseconds since the epoch (0 when the clock is before it).
@@ -100,99 +193,99 @@ fn write_marker_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     result
 }
 
-impl OwnerGuard {
-    /// Attempts to acquire the advisory marker for `operation` (`"index"` or
-    /// `"watch"`). Returns the guard plus diagnostics; non-empty diagnostics
-    /// mean a concurrent or stale owner was detected (the caller still
-    /// proceeds — this never blocks).
-    pub fn acquire(scope_dir: &Path, operation: &str) -> (Self, Vec<String>) {
-        let mut warnings = Vec::new();
-        let path = marker_path(scope_dir);
-        let pid = std::process::id();
-        let started = now_ms();
-        if let Ok(text) = fs::read_to_string(&path) {
-            match serde_json::from_str::<OwnerRecord>(&text) {
-                Ok(record) if record.schema_version == OWNER_SCHEMA_VERSION => {
-                    let age_ms = now_ms().saturating_sub(record.refreshed_at_ms);
-                    let foreign = record.pid != pid || record.operation != operation;
-                    if foreign && age_ms < STALE_AFTER.as_millis() as u64 {
-                        // A recent marker from another process: report, never block.
-                        warnings.push(format!(
-                            "another Repoise writer may be active for this scope (pid {}, operation {}, last refreshed {} ms ago); proceeding, publications are transactional",
-                            record.pid, record.operation, age_ms
-                        ));
-                        return (
-                            Self {
-                                path,
-                                mine: false,
-                                started_at_ms: started,
-                                last_refresh: std::sync::Mutex::new(Instant::now()),
-                                operation: operation.to_string(),
-                            },
-                            warnings,
-                        );
-                    }
-                    if foreign {
-                        warnings.push(format!(
-                            "removed stale owner marker (pid {}, operation {}, last refreshed {} ms ago)",
-                            record.pid, record.operation, age_ms
-                        ));
-                    } else {
-                        warnings.push("reacquired owner marker left by this process".to_string());
-                    }
-                    let _ = fs::remove_file(&path);
-                }
-                Ok(_) => {
-                    warnings
-                        .push("removed owner marker with an unknown schema version".to_string());
-                    let _ = fs::remove_file(&path);
-                }
-                Err(_) => {
-                    warnings.push("removed unreadable owner marker".to_string());
-                    let _ = fs::remove_file(&path);
-                }
+impl ScopeLock {
+    /// Atomically acquires exclusive ownership of the scope.
+    ///
+    /// On success the lock is held and the descriptive marker (re)written
+    /// with this process's record — any marker already present is an
+    /// orphan from a writer that died (a live writer would hold the lock).
+    /// On [`OwnershipError::Busy`] the caller must stop and surface the
+    /// actionable message: no provider work or publication may proceed,
+    /// and the live owner's marker is never touched.
+    pub fn acquire(scope_dir: &Path, operation: &str) -> Result<Self, OwnershipError> {
+        // The scope directory may not exist before the first publication;
+        // create it so the lock (and marker) have a home.
+        fs::create_dir_all(scope_dir).map_err(|err| OwnershipError::Io(err.to_string()))?;
+        let path = scope_dir.join(SCOPE_LOCK_FILE);
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|err| OwnershipError::Io(err.to_string()))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => {}
+            Err(err)
+                if err.raw_os_error()
+                    == Some(fs2::lock_contended_error().raw_os_error().unwrap_or(-1)) =>
+            {
+                // The scope lock is held by another live process. Never
+                // touch its marker; attach it read-only for the report.
+                return Err(OwnershipError::Busy {
+                    metadata: inspect(scope_dir),
+                });
             }
+            Err(err) => return Err(OwnershipError::Io(err.to_string())),
         }
+
+        // We now hold the authoritative lock: any existing marker is an
+        // orphan (its holder is dead — otherwise we could not have
+        // acquired). Descriptive only; safe to replace.
+        let replaced_marker = inspect(scope_dir)
+            .filter(|old| old.pid != std::process::id() || old.operation != operation);
+        let started = now_ms();
         let record = OwnerRecord {
             schema_version: OWNER_SCHEMA_VERSION,
-            pid,
+            pid: std::process::id(),
             operation: operation.to_string(),
             started_at_ms: started,
             refreshed_at_ms: started,
         };
         let mut guard = Self {
-            path,
-            mine: false,
+            file,
+            path: marker_path(scope_dir),
             started_at_ms: started,
-            last_refresh: std::sync::Mutex::new(Instant::now()),
+            last_refresh: Arc::new(Mutex::new(Instant::now())),
             operation: operation.to_string(),
+            warnings: Vec::new(),
+            replaced_marker: replaced_marker.clone(),
         };
-        let record_text = serde_json::to_string(&record).unwrap_or_default();
-        // The scope directory may not exist before the first publication;
-        // create it so the marker has a home.
-        let _ = fs::create_dir_all(scope_dir);
-        match write_marker_atomic(&guard.path, &record_text) {
-            Ok(()) => guard.mine = true,
-            Err(err) => {
-                warnings.push(format!(
-                    "could not write owner marker: {err}; ownership detection is degraded for this run"
-                ));
-            }
+        if write_marker_atomic(
+            &guard.path,
+            &serde_json::to_string(&record).unwrap_or_default(),
+        )
+        .is_err()
+        {
+            // The lock stays authoritative; only the descriptive metadata
+            // is degraded for observers.
+            guard.warnings.push(
+                "could not write owner marker: ownership detection is degraded for this run"
+                    .to_string(),
+            );
         }
-        (guard, warnings)
+        if let Some(old) = &replaced_marker {
+            guard.warnings.push(format!(
+                "replaced orphaned owner marker (pid {}, operation {}, last refreshed {} ms ago): the previous writer is no longer holding the scope lock",
+                old.pid,
+                old.operation,
+                now_ms().saturating_sub(old.refreshed_at_ms)
+            ));
+        }
+        Ok(guard)
     }
 
-    /// Refreshes the marker (throttled to [`REFRESH_INTERVAL`]); no-op when
-    /// the current process is not the owner.
+    /// Refreshes the descriptive heartbeat marker (throttled to
+    /// [`REFRESH_INTERVAL`]). The OS lock itself needs no refresh; this
+    /// only keeps `status` metadata current while the writer is idle.
     pub fn refresh(&self) {
-        if !self.mine {
-            return;
-        }
-        let last = *self.last_refresh.lock().unwrap();
+        let mut last = match self.last_refresh.lock() {
+            Ok(last) => last,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         if last.elapsed() < REFRESH_INTERVAL {
             return;
         }
-        *self.last_refresh.lock().unwrap() = Instant::now();
         let record = OwnerRecord {
             schema_version: OWNER_SCHEMA_VERSION,
             pid: std::process::id(),
@@ -200,26 +293,106 @@ impl OwnerGuard {
             started_at_ms: self.started_at_ms,
             refreshed_at_ms: now_ms(),
         };
-        let _ = write_marker_atomic(
+        if write_marker_atomic(
             &self.path,
             &serde_json::to_string(&record).unwrap_or_default(),
-        );
+        )
+        .is_ok()
+        {
+            *last = Instant::now();
+        }
     }
 }
 
-impl Drop for OwnerGuard {
+impl Drop for ScopeLock {
     fn drop(&mut self) {
-        // Remove the marker only when it still carries this process's exact
-        // record; a newer foreign marker must survive.
-        if self.mine
-            && let Ok(text) = fs::read_to_string(&self.path)
-            && let Ok(record) = serde_json::from_str::<OwnerRecord>(&text)
-            && record.schema_version == OWNER_SCHEMA_VERSION
+        // Release the OS lock; if the process dies instead, the OS
+        // releases it (the lock lives in the kernel, not in a file).
+        let _ = self.file.unlock();
+        // Owner-token-safe cleanup: remove the descriptive marker only
+        // while it still carries this process's exact record. A foreign
+        // marker written in the interval (normally impossible — only the
+        // lock holder writes it) is never deleted.
+        if let Some(record) = inspect(self.path.parent().unwrap_or(Path::new("")))
             && record.pid == std::process::id()
             && record.started_at_ms == self.started_at_ms
         {
             let _ = fs::remove_file(&self.path);
         }
+    }
+}
+
+/// Non-mutating probe: is the scope's OS lock currently held by some
+/// process? Creates nothing (an absent lock file means `false`).
+///
+/// The probe briefly takes and releases the lock to observe it: that is
+/// safe because it can only succeed while no writer holds the lease, so
+/// the probe never changes the scope's ownership state in any observable
+/// way.
+pub fn lock_held(scope_dir: &Path) -> bool {
+    let path = scope_dir.join(SCOPE_LOCK_FILE);
+    let Ok(file) = File::options().read(true).write(true).open(&path) else {
+        return false;
+    };
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+/// Derives the machine state for `status`/automation from the lock probe
+/// and the descriptive marker:
+///
+/// - `owned`: the lock is held and the marker is active — a live writer
+///   with current metadata;
+/// - `busy`: the lock is held but the marker is missing or stale — a
+///   writer is certainly present (new writers get the busy result) but
+///   its health/identity is unknown;
+/// - `stale-metadata`: the lock is not held and a marker is present — the
+///   scope is free; the marker is descriptive residue (e.g. a crash);
+/// - `free`: the lock is not held and no marker is present.
+pub fn writer_state(owner: Option<&OwnerReport>, lock_held: bool) -> &'static str {
+    if lock_held {
+        if owner.is_some_and(|o| o.state == "active") {
+            "owned"
+        } else {
+            "busy"
+        }
+    } else if owner.is_some() {
+        "stale-metadata"
+    } else {
+        "free"
+    }
+}
+
+/// Machine-readable failure reason for the `--events` terminal `failed`
+/// payload when a writer is refused because another writer owns the
+/// scope (retryable once the owner releases).
+pub const REASON_SCOPE_OWNERD: &str = "scope-owned";
+/// Machine-readable failure reason when the lock file itself is unusable
+/// (not retryable by automation).
+pub const REASON_LOCK_UNAVAILABLE: &str = "lock-unavailable";
+
+/// Maps an acquisition failure to its machine reason and retryability.
+pub fn failure_reason(err: &OwnershipError) -> (String, Option<bool>) {
+    match err {
+        OwnershipError::Busy { .. } => (REASON_SCOPE_OWNERD.to_string(), Some(true)),
+        OwnershipError::Io(_) => (REASON_LOCK_UNAVAILABLE.to_string(), None),
+    }
+}
+
+impl From<OwnershipError> for Error {
+    fn from(err: OwnershipError) -> Self {
+        Error::Owned(err.to_string())
+    }
+}
+
+impl From<OwnershipError> for String {
+    fn from(err: OwnershipError) -> Self {
+        err.to_string()
     }
 }
 
@@ -260,61 +433,86 @@ mod tests {
         dir
     }
 
+    fn foreign_record(pid: u32, operation: &str, refreshed_age_ms: u64) -> OwnerRecord {
+        let now = now_ms();
+        OwnerRecord {
+            schema_version: OWNER_SCHEMA_VERSION,
+            pid,
+            operation: operation.to_string(),
+            started_at_ms: now.saturating_sub(60_000),
+            refreshed_at_ms: now.saturating_sub(refreshed_age_ms),
+        }
+    }
+
     #[test]
-    fn acquire_inspect_and_release_lifecycle() {
+    fn acquire_writes_marker_and_probe_reports_held() {
         let dir = scratch("lifecycle");
-        let (guard, warnings) = OwnerGuard::acquire(&dir, "index");
+        let guard = ScopeLock::acquire(&dir, "index").expect("acquire");
         assert!(
-            warnings.is_empty(),
-            "first acquire has no warnings: {warnings:?}"
+            guard.warnings.is_empty(),
+            "first acquire has no warnings: {:?}",
+            guard.warnings
         );
+        assert!(lock_held(&dir), "the OS lock is held");
 
         let report = inspect(&dir).expect("marker is visible to inspect");
         assert_eq!(report.operation, "index");
         assert_eq!(report.state, "active");
         assert_eq!(report.pid, std::process::id());
+        assert_eq!(writer_state(Some(&report), true), "owned");
 
-        // A foreign process marker is detected but never removed or blocked.
-        let foreign = OwnerRecord {
-            schema_version: OWNER_SCHEMA_VERSION,
-            pid: std::process::id().wrapping_add(1),
-            operation: "watch".to_string(),
-            started_at_ms: now_ms(),
-            refreshed_at_ms: now_ms(),
-        };
-        fs::write(marker_path(&dir), serde_json::to_string(&foreign).unwrap()).unwrap();
-        let (_other, other_warnings) = OwnerGuard::acquire(&dir, "watch");
-        assert_eq!(
-            other_warnings.len(),
-            1,
-            "fresh foreign marker is reported: {other_warnings:?}"
-        );
-        assert!(other_warnings[0].contains("may be active"));
-        // The foreign marker survived (never blocked or removed).
-        let report = inspect(&dir).expect("foreign marker still present");
-        assert_eq!(report.pid, foreign.pid);
-        assert_eq!(report.state, "active");
-
-        // Release: the current process (not the owner) removes nothing.
-        drop(_other);
-        assert!(inspect(&dir).is_some(), "non-owner drop removes nothing");
-
-        // Simulate the foreign run having exited (its marker replaced by the
-        // owner's own live record), then the owner's drop removes the marker.
-        let own = OwnerRecord {
-            schema_version: OWNER_SCHEMA_VERSION,
-            pid: std::process::id(),
-            operation: "index".to_string(),
-            started_at_ms: guard.started_at_ms,
-            refreshed_at_ms: now_ms(),
-        };
-        fs::write(marker_path(&dir), serde_json::to_string(&own).unwrap()).unwrap();
         drop(guard);
+        assert!(!lock_held(&dir), "the lock releases on drop");
         assert!(inspect(&dir).is_none(), "owner drop removes its marker");
     }
 
     #[test]
-    fn stale_markers_are_reclaimed_and_reported() {
+    fn second_open_for_same_scope_is_denied() {
+        // Two independent opens of the same scope (the in-process stand-in
+        // for two processes): exactly one acquires.
+        let dir = scratch("deny");
+        let first = ScopeLock::acquire(&dir, "watch").expect("first acquires");
+        match ScopeLock::acquire(&dir, "index") {
+            Err(OwnershipError::Busy { metadata }) => {
+                assert!(
+                    metadata.is_some_and(|meta| meta.pid == std::process::id()),
+                    "the live owner's metadata is attached"
+                );
+            }
+            other => panic!("expected Busy, got {other:?}"),
+        }
+        // The rejected writer must not have touched the owner's marker.
+        let report = inspect(&dir).expect("marker untouched");
+        assert_eq!(report.operation, "watch");
+        drop(first);
+        assert!(
+            ScopeLock::acquire(&dir, "index").is_ok(),
+            "the released scope is acquirable again"
+        );
+    }
+
+    #[test]
+    fn fresh_marker_with_live_pid_never_blocks() {
+        // PID reuse / stale-metadata guard: a fresh marker that even names
+        // a live pid must not block — only the OS lock decides.
+        let dir = scratch("pid-reuse");
+        let foreign = foreign_record(std::process::id().wrapping_add(1), "watch", 0);
+        fs::write(marker_path(&dir), serde_json::to_string(&foreign).unwrap()).unwrap();
+        let guard = ScopeLock::acquire(&dir, "index").expect("a marker alone must never block");
+        assert!(
+            matches!(
+                guard.replaced_marker.as_ref(),
+                Some(old) if old.operation == "watch"
+            ),
+            "the orphan is reported as replaced"
+        );
+        let report = inspect(&dir).expect("marker rewritten");
+        assert_eq!(report.operation, "index");
+        drop(guard);
+    }
+
+    #[test]
+    fn stale_marker_is_replaced_and_reported() {
         let dir = scratch("stale");
         let stale = OwnerRecord {
             schema_version: OWNER_SCHEMA_VERSION,
@@ -324,9 +522,15 @@ mod tests {
             refreshed_at_ms: now_ms() - 720_000,
         };
         fs::write(marker_path(&dir), serde_json::to_string(&stale).unwrap()).unwrap();
-        let (guard, warnings) = OwnerGuard::acquire(&dir, "index");
-        assert_eq!(warnings.len(), 1, "stale marker is reported: {warnings:?}");
-        assert!(warnings[0].contains("stale"), "{warnings:?}");
+        let guard = ScopeLock::acquire(&dir, "index").expect("stale marker must not block");
+        assert!(
+            guard
+                .warnings
+                .iter()
+                .any(|w| w.contains("orphaned owner marker")),
+            "the orphaned marker is reported: {:?}",
+            guard.warnings
+        );
         let report = inspect(&dir).expect("new marker is visible");
         assert_eq!(report.pid, std::process::id());
         drop(guard);
@@ -334,33 +538,86 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_and_unknown_schema_markers_are_replaced() {
+    fn corrupt_or_truncated_metadata_never_block() {
         let dir = scratch("garbage");
         fs::write(marker_path(&dir), "not json").unwrap();
-        let (guard, warnings) = OwnerGuard::acquire(&dir, "index");
+        let guard = ScopeLock::acquire(&dir, "index").expect("corrupt marker must not block");
         assert!(
-            warnings.iter().any(|w| w.contains("unreadable")),
-            "{warnings:?}"
+            guard.replaced_marker.is_none(),
+            "unreadable metadata is not reported as replaced"
         );
-
-        fs::write(
-            marker_path(&dir),
-            r#"{"schemaVersion":999,"pid":1,"operation":"index","startedAtMs":1,"refreshedAtMs":1}"#,
-        )
-        .unwrap();
-        let (guard2, warnings2) = OwnerGuard::acquire(&dir, "index");
-        assert!(
-            warnings2.iter().any(|w| w.contains("unknown schema")),
-            "{warnings2:?}"
-        );
-        drop(guard2);
+        assert!(inspect(&dir).is_some_and(|o| o.operation == "index"));
         drop(guard);
+
+        // A truncated marker (the failure mode of a non-atomic write).
+        let dir = scratch("truncated");
+        let full = foreign_record(9999, "watch", 0);
+        let full_text = serde_json::to_string(&full).unwrap();
+        fs::write(marker_path(&dir), &full_text[..full_text.len() / 2]).unwrap();
+        let guard = ScopeLock::acquire(&dir, "index").expect("truncated marker must not block");
+        assert!(inspect(&dir).is_some_and(|o| o.operation == "index"));
+        drop(guard);
+    }
+
+    #[test]
+    fn cleanup_is_owner_token_safe() {
+        let dir = scratch("token");
+        let guard = ScopeLock::acquire(&dir, "index").expect("acquire");
+        // A foreign marker written while we hold the lock (normally
+        // impossible — only the lock holder writes it) must survive our
+        // drop.
+        let foreign = foreign_record(999_999, "watch", 0);
+        fs::write(marker_path(&dir), serde_json::to_string(&foreign).unwrap()).unwrap();
+        drop(guard);
+        let remaining = inspect(&dir).expect("foreign marker kept");
+        assert_eq!(remaining.pid, 999_999);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writer_state_matrix() {
+        let active = OwnerReport {
+            pid: 1,
+            operation: "watch".into(),
+            started_at_ms: 0,
+            refreshed_at_ms: 0,
+            state: "active".into(),
+        };
+        let stale = OwnerReport {
+            state: "stale".into(),
+            ..active.clone()
+        };
+        assert_eq!(writer_state(Some(&active), true), "owned");
+        assert_eq!(writer_state(None, true), "busy");
+        assert_eq!(writer_state(Some(&stale), true), "busy");
+        assert_eq!(writer_state(Some(&active), false), "stale-metadata");
+        assert_eq!(writer_state(None, false), "free");
+    }
+
+    #[test]
+    fn probe_never_creates_the_lock_file() {
+        let dir = scratch("no-create");
+        assert!(!lock_held(&dir));
+        assert!(
+            !dir.join(SCOPE_LOCK_FILE).exists(),
+            "the probe creates nothing"
+        );
+    }
+
+    #[test]
+    fn distinct_scopes_do_not_block_each_other() {
+        let a = scratch("scope-a");
+        let b = scratch("scope-b");
+        let lock_a = ScopeLock::acquire(&a, "watch").expect("scope A acquires");
+        let lock_b = ScopeLock::acquire(&b, "watch").expect("scope B acquires concurrently");
+        drop(lock_a);
+        drop(lock_b);
     }
 
     #[test]
     fn refresh_is_throttled_and_updates_health() {
         let dir = scratch("refresh");
-        let (guard, _) = OwnerGuard::acquire(&dir, "watch");
+        let guard = ScopeLock::acquire(&dir, "watch").expect("acquire");
         let first = inspect(&dir).unwrap().refreshed_at_ms;
         guard.refresh(); // throttled: within REFRESH_INTERVAL of acquire
         let second = inspect(&dir).unwrap().refreshed_at_ms;
@@ -433,31 +690,5 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         let _ = writer.join();
-    }
-
-    /// A truncated marker (the failure mode of a non-atomic write) is
-    /// replaced with a valid record and reported — it is never mistaken for a
-    /// live owner.
-    #[test]
-    fn truncated_marker_is_replaced_and_reported() {
-        let dir = scratch("truncated");
-        let full = OwnerRecord {
-            schema_version: OWNER_SCHEMA_VERSION,
-            pid: 9999,
-            operation: "watch".to_string(),
-            started_at_ms: now_ms(),
-            refreshed_at_ms: now_ms(),
-        };
-        let full_text = serde_json::to_string(&full).unwrap();
-        fs::write(marker_path(&dir), &full_text[..full_text.len() / 2]).unwrap();
-        let (guard, warnings) = OwnerGuard::acquire(&dir, "index");
-        assert!(
-            warnings.iter().any(|w| w.contains("unreadable")),
-            "truncated marker is reported: {warnings:?}"
-        );
-        let report = inspect(&dir).expect("valid marker after recovery");
-        assert_eq!(report.pid, std::process::id());
-        drop(guard);
-        assert!(inspect(&dir).is_none());
     }
 }

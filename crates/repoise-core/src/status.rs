@@ -150,6 +150,21 @@ pub struct StatusCache {
     pub wal_bytes: u64,
 }
 
+/// Writer-ownership section of the status view.
+///
+/// `state` is derived from the authoritative scope lock (non-mutating
+/// probe) plus the descriptive owner marker: `owned` (live writer with
+/// current metadata), `busy` (lock held; marker missing or stale),
+/// `stale-metadata` (lock free; marker is descriptive residue), `free`
+/// (lock free, no marker). See [`crate::ownership::writer_state`].
+#[derive(Clone, Debug, Serialize)]
+pub struct WriterStatus {
+    /// Whether the scope's OS lock is currently held.
+    pub lock_held: bool,
+    /// Machine state: `owned` | `busy` | `stale-metadata` | `free`.
+    pub state: String,
+}
+
 /// Full operator status view.
 #[derive(Clone, Debug, Serialize)]
 pub struct StatusView {
@@ -171,8 +186,10 @@ pub struct StatusView {
     /// Cache location and sizes.
     pub cache: StatusCache,
     /// Advisory writer-ownership marker for this scope, when one is present
-    /// (a concurrent or recently stopped `index`/`watch` writer).
+    /// (the process that holds — or last held — the scope's ownership lock).
     pub owner: Option<crate::ownership::OwnerReport>,
+    /// Authoritative writer state for this scope (lock probe + marker).
+    pub writer: WriterStatus,
     /// Linked-worktree sharing state (shared store, opt-out, fallback).
     pub sharing: crate::shared::SharingInfo,
     /// Last recorded build error, if any.
@@ -303,9 +320,15 @@ pub fn status(
     let wal_bytes = fs::metadata(db_path.with_extension("sqlite-wal"))
         .map(|m| m.len())
         .unwrap_or(0);
-    // Advisory writer-ownership marker for this scope (read-only; never
-    // creates anything).
-    let owner = db_path.parent().and_then(crate::ownership::inspect);
+    // Writer state for this scope: the authoritative OS-lock probe
+    // (non-mutating — creates nothing) plus the descriptive owner marker.
+    let scope_dir = db_path.parent();
+    let lock_held = scope_dir.is_some_and(crate::ownership::lock_held);
+    let owner = scope_dir.and_then(crate::ownership::inspect);
+    let writer = WriterStatus {
+        lock_held,
+        state: crate::ownership::writer_state(owner.as_ref(), lock_held).to_string(),
+    };
 
     Ok(StatusView {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -339,6 +362,7 @@ pub fn status(
             wal_bytes,
         },
         owner,
+        writer,
         last_error,
     })
 }

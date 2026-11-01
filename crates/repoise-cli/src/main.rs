@@ -778,16 +778,22 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     let scope_dir = db_path
         .parent()
         .ok_or_else(|| "internal error: scope directory has no parent".to_string())?;
-    // Advisory writer-ownership marker: detects concurrent or stale writers
-    // for this scope and reports them; it never blocks the build.
-    let (owner_guard, owner_warnings) =
-        repoise_core::ownership::OwnerGuard::acquire(scope_dir, "index");
-    for warning in &owner_warnings {
-        eprintln!("warning: {warning}");
-    }
+    // Authoritative one-writer-per-scope lease: another live writer owns the
+    // scope (its OS lock is held) and this run is refused before any provider
+    // work or publication.
+    let lock_result = repoise_core::ownership::ScopeLock::acquire(scope_dir, "index");
     if opts.events {
-        return run_index_events(&ctx, owner_guard);
+        return run_index_events(&ctx, lock_result);
     }
+    let owner_guard = match lock_result {
+        Err(err) => return Err(err.to_string()),
+        Ok(guard) => {
+            for warning in &guard.warnings {
+                eprintln!("warning: {warning}");
+            }
+            guard
+        }
+    };
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let request = repoise_core::indexing::IndexRequest::default();
     let client = embedding_client(&ctx.effective, CancellationToken::new())?;
@@ -920,12 +926,12 @@ fn run_index(opts: &CliOptions) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Wraps a progress reporter so the advisory owner marker is refreshed
-/// while a long build runs (the marker is the health signal for concurrent
-/// `status` callers).
+/// Wraps a progress reporter so the owner heartbeat marker is refreshed
+/// while a long build runs (the marker is the descriptive health signal for
+/// concurrent `status` callers; the OS lock is the authoritative lease).
 struct OwnerRefreshingReporter<'a, R> {
     inner: R,
-    guard: &'a repoise_core::ownership::OwnerGuard,
+    guard: &'a repoise_core::ownership::ScopeLock,
 }
 
 impl<R: repoise_core::progress::IndexProgressReporter> repoise_core::progress::IndexProgressReporter
@@ -952,7 +958,10 @@ impl<R: repoise_core::progress::IndexProgressReporter> repoise_core::progress::I
 /// diagnostics go to stderr.
 fn run_index_events(
     ctx: &Context,
-    owner_guard: repoise_core::ownership::OwnerGuard,
+    lock_result: Result<
+        repoise_core::ownership::ScopeLock,
+        repoise_core::ownership::OwnershipError,
+    >,
 ) -> Result<ExitCode, String> {
     use serde_json::json;
 
@@ -969,10 +978,35 @@ fn run_index_events(
     let stream = events::EventStream::stdout("index");
     stream.start(&scope);
     stream.start_heartbeat(events::heartbeat_interval());
-    // Sessions are built after the stream starts so their degradation notes
-    // (stderr) follow the start event in the run's logical order. A setup
-    // failure must still end the run with a `failed` terminal event.
     let scope_value = serde_json::to_value(&scope).unwrap_or_default();
+    // A refused writer stops before any provider work or publication: the
+    // terminal event carries the stable machine reason and retryability.
+    let owner_guard = match lock_result {
+        Err(err) => {
+            let (reason, retryable) = repoise_core::ownership::failure_reason(&err);
+            stream.terminal(
+                "failed",
+                json!({
+                    "operation": "index",
+                    "scope": scope_value.clone(),
+                    "code": "operational",
+                    "reason": reason,
+                    "message": err.to_string(),
+                    "retryable": retryable,
+                }),
+            );
+            return Err(err.to_string());
+        }
+        Ok(guard) => {
+            for warning in &guard.warnings {
+                stream.emit(
+                    "warning",
+                    json!({ "operation": "index", "message": warning }),
+                );
+            }
+            guard
+        }
+    };
     let report_setup_failure = |err: String| {
         stream.terminal(
             "failed",
@@ -1213,11 +1247,19 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
             view.cache.db_path.display(),
             view.cache.db_bytes
         );
-        if let Some(owner) = &view.owner {
+        if view.writer.lock_held {
+            if let Some(owner) = &view.owner {
+                println!("writer: owned (pid {}, {})", owner.pid, owner.operation);
+            } else {
+                println!("writer: busy (lock held; owner metadata unavailable)");
+            }
+        } else if let Some(owner) = &view.owner {
             println!(
-                "owner: pid {} ({}, {})",
-                owner.pid, owner.operation, owner.state
+                "writer: stale metadata (pid {}, {}; no writer holds the scope)",
+                owner.pid, owner.operation
             );
+        } else {
+            println!("writer: free");
         }
         if let Some(err) = &view.last_error {
             println!("last error: {err}");
@@ -1405,13 +1447,83 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     let scope_dir = db_path
         .parent()
         .ok_or_else(|| "internal error: scope directory has no parent".to_string())?;
-    // Advisory writer-ownership marker for the watch scope; refreshed every
-    // loop iteration so an idle watch does not look stale.
-    let (owner_guard, owner_warnings) =
-        repoise_core::ownership::OwnerGuard::acquire(scope_dir, "watch");
-    for warning in &owner_warnings {
-        eprintln!("warning: {warning}");
+    let root = ctx
+        .adapter
+        .canonical_root()
+        .map_err(|err| err.to_string())?;
+    let scope = events::Scope {
+        root: root.to_string_lossy().to_string(),
+        repo_id: ctx.repo_id.clone(),
+        worktree_id: ctx.worktree_id.clone(),
+        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
+    };
+    // Authoritative one-writer-per-scope lease for the watch scope, held for
+    // the watch process lifetime. Resolved before any store access or
+    // provider work: a refused writer must not open or migrate the owner's
+    // database. The descriptive owner marker is refreshed every loop
+    // iteration so an idle watch does not look stale.
+    let lock_result = repoise_core::ownership::ScopeLock::acquire(scope_dir, "watch");
+    // The cooperative SIGINT/SIGTERM handling must be installed before the
+    // first `started` event is emitted, so a signal sent as soon as the
+    // stream starts cancels safely instead of killing the process.
+    let embed_cancel = CancellationToken::new();
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_handler = cancel.clone();
+    let cancel_token = embed_cancel.clone();
+    if let Err(err) = ctrlc::set_handler(move || {
+        cancel_handler.store(true, Ordering::SeqCst);
+        // Stop embedding work inside an in-flight publication as well.
+        cancel_token.cancel();
+    }) {
+        // Ctrl+C everywhere; with the ctrlc `termination` feature also
+        // SIGTERM/SIGHUP on Unix and CTRL_CLOSE_EVENT on Windows.
+        return Err(format!("could not install the signal handler: {err}"));
     }
+    // The event stream (events mode only) is started before the refusal so
+    // the stream carries `started` plus the terminal `failed` event.
+    let stream: Option<events::EventStream<std::io::Stdout>> = if opts.events {
+        let stream = events::EventStream::stdout("watch");
+        stream.start(&scope);
+        stream.start_heartbeat(events::heartbeat_interval());
+        Some(stream)
+    } else {
+        None
+    };
+    let owner_guard = match lock_result {
+        Err(err) => {
+            // A refused writer stops before any store access or provider
+            // work: the terminal event carries the stable machine reason and
+            // retryability.
+            let (reason, retryable) = repoise_core::ownership::failure_reason(&err);
+            if let Some(stream) = &stream {
+                stream.terminal(
+                    "failed",
+                    json!({
+                        "operation": "watch",
+                        "scope": serde_json::to_value(&scope).unwrap_or_default(),
+                        "code": "operational",
+                        "reason": reason,
+                        "message": err.to_string(),
+                        "retryable": retryable,
+                    }),
+                );
+            }
+            return Err(err.to_string());
+        }
+        Ok(guard) => {
+            for warning in &guard.warnings {
+                if let Some(stream) = &stream {
+                    stream.emit(
+                        "warning",
+                        json!({ "operation": "watch", "message": warning }),
+                    );
+                } else {
+                    eprintln!("warning: {warning}");
+                }
+            }
+            guard
+        }
+    };
     let store = Store::new(ctx.cache.db_path(&ctx.repo_id, &ctx.worktree_id));
     let options = repoise_core::watch::WatchOptions {
         interval: Duration::from_millis(
@@ -1432,17 +1544,6 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     // every debounced publication runs it through the shared index path.
     // Missing configuration (or this build lacking the transport) keeps
     // watch publications lexical-only.
-    let root = ctx
-        .adapter
-        .canonical_root()
-        .map_err(|err| err.to_string())?;
-    let scope = events::Scope {
-        root: root.to_string_lossy().to_string(),
-        repo_id: ctx.repo_id.clone(),
-        worktree_id: ctx.worktree_id.clone(),
-        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
-    };
-    let embed_cancel = CancellationToken::new();
     let client = embedding_client(&ctx.effective, embed_cancel.clone())?;
     let embed_configured = client.is_some();
     // The resolved committed/local config sources for live reload: the
@@ -1482,18 +1583,6 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     )
     .map_err(|err| err.to_string())?
     .with_config_sources(config_sources, Some(client_factory));
-    let cancel = std::sync::Arc::new(AtomicBool::new(false));
-    let cancel_handler = cancel.clone();
-    let cancel_token = embed_cancel;
-    if let Err(err) = ctrlc::set_handler(move || {
-        cancel_handler.store(true, Ordering::SeqCst);
-        // Stop embedding work inside an in-flight publication as well.
-        cancel_token.cancel();
-    }) {
-        // Ctrl+C everywhere; with the ctrlc `termination` feature also
-        // SIGTERM/SIGHUP on Unix and CTRL_CLOSE_EVENT on Windows.
-        return Err(format!("could not install the signal handler: {err}"));
-    }
     let summary = format!(
         "watching {}/{} (interval {} ms, debounce {} ms; embeddings {})",
         ctx.repo_id,
@@ -1507,9 +1596,7 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         }
     );
     if opts.events {
-        let stream = events::EventStream::stdout("watch");
-        stream.start(&scope);
-        stream.start_heartbeat(events::heartbeat_interval());
+        let stream = stream.expect("the event stream was created in events mode");
         eprintln!("{summary}; SIGINT/SIGTERM cancels");
         let mut last_generation: Option<i64> = None;
         loop {
@@ -2069,7 +2156,19 @@ fn run_purge(opts: &CliOptions) -> Result<ExitCode, String> {
         for path in &report.removed {
             println!("removed: {}", path.display());
         }
-        if report.removed.is_empty() {
+        if let Some(skipped) = &report.skipped_owned {
+            for scope in &skipped.owned {
+                let detail = scope
+                    .owner
+                    .as_ref()
+                    .map(|owner| {
+                        format!(" (owner pid {}, operation {})", owner.pid, owner.operation)
+                    })
+                    .unwrap_or_else(|| " (owner metadata unavailable)".to_string());
+                println!("skipped (owned): {}{detail}", scope.path.display());
+            }
+        }
+        if report.removed.is_empty() && report.skipped_owned.is_none() {
             println!("nothing to remove");
         }
     }

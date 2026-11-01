@@ -24,6 +24,8 @@ pub enum Error {
     IndexState(String),
     /// An embedding provider request or response failed.
     Provider(String),
+    /// Another writer currently holds the scope's ownership lock.
+    Owned(String),
     /// The exact source changed since the index was built (validation failed).
     Stale {
         /// Relative path that is stale.
@@ -47,6 +49,7 @@ impl fmt::Display for Error {
             Error::Sqlite(err) => write!(f, "index storage error: {err}"),
             Error::IndexState(msg) => write!(f, "index state error: {msg}"),
             Error::Provider(msg) => write!(f, "embedding provider error: {msg}"),
+            Error::Owned(msg) => write!(f, "scope ownership error: {msg}"),
             Error::Stale { path, reason, .. } => {
                 write!(f, "stale source ({path}): {reason}")
             }

@@ -16,6 +16,10 @@ ctrlc = { version = "=3.4.2", features = ["termination"] }
 serde = { version = "=1.0.219", features = ["derive"] }
 serde_json = "=1.0.140"
 sha2 = "=0.10.9"
+# Cross-platform OS-backed file locks (flock(2) on Unix, LockFileEx on
+# Windows) for the authoritative one-writer-per-scope ownership lock.
+# MIT/Apache-2.0; depends only on libc (Unix) and winapi (Windows).
+fs2 = "=0.4.3"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 tree-sitter = "=0.25.10"
 tree-sitter-language = "=0.1.8"
