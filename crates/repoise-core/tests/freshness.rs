@@ -30,7 +30,12 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 fn run_git(root: &Path, args: &[&str]) {
+    // Pin LF line endings for every call: Windows runners default to
+    // `core.autocrlf=true`, which would check out the committed LF fixtures
+    // as CRLF (e.g. `git checkout main` in the branch-switch test) and move
+    // the content manifest away from the indexed bytes.
     let output = Command::new("git")
+        .args(["-c", "core.autocrlf=false", "-c", "core.eol=lf"])
         .args(args)
         .current_dir(root)
         .output()
