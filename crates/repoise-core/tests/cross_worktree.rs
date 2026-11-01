@@ -1209,3 +1209,70 @@ fn non_canonical_checkout_spelling_shares_the_family_store() {
     assert_eq!(out_b.files_family_reused, out_b.files_indexed);
     assert_eq!(out_b.files_reparsed, 0);
 }
+
+/// A family parse artifact written by an older engine (an artifact format
+/// version other than the current one) is a safe miss: the linked worktree
+/// reparses the file with the current parser rules and republishes a
+/// current-version artifact. A following worktree reuses the refresh.
+#[test]
+fn stale_family_artifact_is_reparsed_and_refreshed() {
+    let base = temp_dir("stale-artifact");
+    let root_a = base.join("a");
+    std::fs::create_dir_all(&root_a).unwrap();
+    run_git(&root_a, &["init", "-b", "main"]);
+    write_corpus(&root_a, "{}");
+    let a = harness(&root_a, None);
+    let out_a = build(&a, SnapshotMode::WorkingTree, Some(&client("v1")));
+    assert_eq!(out_a.files_reparsed, out_a.files_indexed);
+
+    // Simulate an upgraded shared store: replace the src/util.ts family
+    // parse artifact with an older artifact format version (same content
+    // and current parser version — everything else as-is).
+    let cache = ArtifactCache::open(&shared_root(&a));
+    let content_hash = hash::sha256_hex(UTIL_TS.as_bytes());
+    let stale = ParseArtifact {
+        version: 0, // an artifact format version the current engine rejects
+        content_hash: content_hash.clone(),
+        language: "ts".to_string(),
+        parser_version: repoise_core::chunk::PARSER_VERSION_TS.to_string(),
+        corpus: "code".to_string(),
+        path: "src/util.ts".to_string(),
+        chunks: Vec::new(),
+        symbols: Vec::new(),
+        imports: Vec::new(),
+        refs: Vec::new(),
+    };
+    cache.put(&stale).unwrap();
+
+    // The linked worktree must not reuse the stale artifact: src/util.ts
+    // reparses under the current rules and republishes the current
+    // artifact; the other files still reuse their family artifacts.
+    let root_b = linked_worktree(&root_a, "b");
+    let b = harness(&root_b, None);
+    let out_b = build(&b, SnapshotMode::WorkingTree, Some(&client("v1")));
+    assert_eq!(out_b.files_reparsed, 1, "the stale artifact is a safe miss");
+    assert_eq!(
+        out_b.files_family_reused,
+        out_b.files_indexed - 1,
+        "the other files still reuse family artifacts"
+    );
+    let refreshed = cache
+        .get(
+            &content_hash,
+            "ts",
+            repoise_core::chunk::PARSER_VERSION_TS,
+            "code",
+            "src/util.ts",
+        )
+        .unwrap()
+        .expect("the reparsed artifact is republished");
+    assert_eq!(refreshed.version, shared::ARTIFACT_VERSION);
+    assert!(!refreshed.chunks.is_empty());
+
+    // A third worktree reuses the refreshed artifact.
+    let root_c = linked_worktree(&root_a, "c");
+    let c = harness(&root_c, None);
+    let out_c = build(&c, SnapshotMode::WorkingTree, Some(&client("v1")));
+    assert_eq!(out_c.files_reparsed, 0);
+    assert_eq!(out_c.files_family_reused, out_c.files_indexed);
+}

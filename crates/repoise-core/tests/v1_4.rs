@@ -133,7 +133,7 @@ fn code_files_chunk_with_symbols_and_reference_edges() {
     assert_eq!(math.corpus.as_deref(), Some("code"));
     assert_eq!(
         math.parser_version.as_deref(),
-        Some("ts/tree-sitter-0.23.2/1")
+        Some("ts/tree-sitter-0.23.2/2")
     );
     let format = generation
         .files
@@ -147,7 +147,7 @@ fn code_files_chunk_with_symbols_and_reference_edges() {
         .find(|f| f.path == "src/legacy.py")
         .unwrap();
     assert_eq!(legacy.corpus.as_deref(), Some("code"));
-    assert_eq!(legacy.parser_version.as_deref(), Some("code-line/1"));
+    assert_eq!(legacy.parser_version.as_deref(), Some("code-line/2"));
 
     // Symbols: declared functions, exported and local.
     let math_symbols: Vec<_> = generation

@@ -183,6 +183,13 @@ pub fn format_docs_input(profile: InputProfile, title: &str, text: &str) -> Stri
 /// `raw` keeps the chunk text exactly as stored; `embeddinggemma-2`
 /// uses the file path as title and includes the existing symbol and
 /// context metadata (when available) followed by the code text.
+///
+/// The template adds a bounded amount of overhead on top of the chunk's
+/// stored text (path/symbol/context prefix for the formatted profiles).
+/// The chunk ceiling therefore bounds the *estimate* of the chunk text
+/// (characters / 4); it is not a provider-token guarantee — suitability
+/// for a given model also depends on its tokenizer and documented input
+/// limit, which the operator must keep clear of the formatted input.
 pub fn format_code_input(
     profile: InputProfile,
     path: &str,
