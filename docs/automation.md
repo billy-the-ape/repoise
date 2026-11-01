@@ -166,7 +166,7 @@ liveness (PIDs are reused) and never grounds for killing or adopting a
 process.
 
 - `status` reports the authoritative writer state in a `writer` field
-  (`lockHeld`, `state`: `owned` | `busy` | `stale-metadata` | `free`) and
+  (`lock_held`, `state`: `owned` | `busy` | `stale-metadata` | `free`) and
   still exposes the descriptive `owner` marker (`pid`, `operation`,
   `startedAtMs`, `refreshedAtMs`, `state` `active`/`stale` with the 10-minute
   window).

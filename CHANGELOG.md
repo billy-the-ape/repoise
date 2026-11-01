@@ -28,7 +28,7 @@ provider work or publication**:
   temp+rename publication); a PID is never proof of liveness and no process
   is ever killed or adopted based on it. Orphaned markers from dead writers
   are reported and replaced on the next successful acquisition.
-- `status` gains an additive `writer` field (`lockHeld`, `state`: `owned` |
+- `status` gains an additive `writer` field (`lock_held`, `state`: `owned` |
   `busy` | `stale-metadata` | `free`) alongside the existing descriptive
   `owner` field; `capabilities --json` advertises the new
   `exclusive-scope-lock` feature.
