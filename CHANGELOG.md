@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### Live configuration reload for running watch
+
+A running `repoise watch` previously loaded the effective configuration and
+the embedding client once at startup: editing the configuration during a
+watch run had no effect until the watch was restarted. The watch now
+reconciles the resolved configuration sources on every step (the explicit
+CLI-selected paths, otherwise the committed `repoise.config.json` and the
+local override — monitored even when excluded from the corpus) and applies a
+changed effective configuration as one config-driven generation on the same
+process, without mixing old and new settings within a publication:
+
+- Include/exclude patterns, role rules, preset, max file size, and the
+  embedding model/profile/input template/scope are reloadable; unchanged
+  effective settings never trigger a rebuild. A model or input-template
+  change rebuilds the embedding client (when the watch can build one) and
+  never reuses vectors from the old profile. The effective-config
+  fingerprint now includes `embedding.endpoint`, so an endpoint-only change
+  also applies as a config-driven rebuild instead of being silently
+  ignored. **Upgrade note:** the fingerprint format change means every
+  existing embedding-configured index reports stale after upgrading and
+  needs one reindex (`repoise index`, or the next watch publication);
+  vectors are still reused through the content-addressed cache, so
+  unchanged inputs cost no provider calls; lexical-only indexes are
+  unaffected.
+- An invalid configuration freezes new publications: repeated identical
+  warnings are throttled, and the last published generation stays served.
+  Warnings are sanitized — they name the structurally broken file when
+  identifiable and report only the validation problem count; user-typed
+  values and credentials are never included (details via `repoise doctor`).
+  Fixing the file recovers automatically in the next generation.
+- Process-bound settings (`cacheDir`, `sharedCache`, `history`) are never
+  applied in process: the warning explicitly says a restart is required and
+  no new generations are published until the setting is reverted or the
+  watch is restarted (the watch keeps its startup settings in the meantime).
+  The no-factory client path tracks
+  the applied embedding revision when it drops the client for a lexical-only
+  configuration, so a later revert to embedding settings reports
+  restart-required instead of publishing a lexical-only generation that
+  carries the embedding fingerprint.
+- `watch --events` warning payloads gain an additive `kind` field
+  (`"invalid"` / `"restart-required"`), documented in the event-stream
+  schema and the [automation guide](docs/automation.md); watch
+  `progress` publication events already carry `configChange`.
+
 ### Freshness separated from Git dirtiness
 
 `status` previously reported the working-tree index as stale whenever Git

@@ -143,6 +143,22 @@ Watch does not retry a publication on its own: the failed or pending inputs
 are re-attempted by the next watch publication (when content or configuration
 changes) or by an explicit `repoise index`, so a missing vector is never
 reported as covered.
+Watch reconciles live edits to the resolved configuration (the
+CLI-selected config paths, or the repository's committed
+`repoise.config.json` plus local override — monitored even when excluded
+from the corpus): changes to include/exclude patterns, role rules, the
+preset, or the embedding model/profile/input template/scope are applied on
+the same running watch as one config-driven generation, and unchanged
+effective settings never trigger a rebuild. A model or input-template change
+never reuses vectors from the old profile. An invalid configuration freezes
+new publications (a sanitized, throttled warning — user-typed values and
+credentials are never included; `repoise doctor` shows the details; the
+last published generation stays served) and corrects automatically when the
+file is fixed. Settings bound to the running process — `cacheDir`,
+`sharedCache`, and the `history` lane — are never applied in process: the
+warning says a restart is required, and no new generations are published
+until the change is reverted or the watch is restarted; until then the watch
+keeps its startup settings and serves the last published generation.
 
 Default Git mode indexes the working tree. Use `--committed` consistently
 for index, check, search, read, and MCP when testing a committed snapshot.

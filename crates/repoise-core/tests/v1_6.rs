@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use repoise_core::adapter::{SnapshotMode, SourceAdapter};
@@ -381,10 +382,48 @@ fn quick_watcher_with_embed(
         interval: Duration::from_millis(10),
         debounce: Duration::from_millis(10),
         max_pending_paths: max_pending,
+        config_warning_interval: repoise_core::watch::DEFAULT_CONFIG_WARNING_INTERVAL,
     };
     (
         repoise_core::watch::Watcher::new(adapter, mode, effective, store, cache, options, embed)
             .unwrap(),
+        options,
+    )
+}
+
+/// The repository default configuration sources for one watcher.
+fn default_sources(repo: &DirRepo) -> repoise_core::watch::ConfigSources {
+    repoise_core::watch::ConfigSources::default_for(&repo.root)
+}
+
+/// A watcher with explicit configuration sources (and, when provided, an
+/// embedding client factory): this is how the live config-reload tests run
+/// one watcher across configuration edits.
+type EmbeddingFactory =
+    dyn Fn(&EffectiveConfig) -> repoise_core::Result<Option<repoise_core::embed::EmbeddingClient>>;
+
+fn quick_watcher_with_sources(
+    repo: &DirRepo,
+    max_pending: usize,
+    embed: Option<repoise_core::embed::EmbeddingClient>,
+    sources: repoise_core::watch::ConfigSources,
+    factory: Option<Box<EmbeddingFactory>>,
+) -> (
+    repoise_core::watch::Watcher,
+    repoise_core::watch::WatchOptions,
+) {
+    let (adapter, mode, effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    let options = repoise_core::watch::WatchOptions {
+        interval: Duration::from_millis(10),
+        debounce: Duration::from_millis(10),
+        max_pending_paths: max_pending,
+        config_warning_interval: repoise_core::watch::DEFAULT_CONFIG_WARNING_INTERVAL,
+    };
+    (
+        repoise_core::watch::Watcher::new(adapter, mode, effective, store, cache, options, embed)
+            .unwrap()
+            .with_config_sources(sources, factory),
         options,
     )
 }
@@ -2410,4 +2449,1068 @@ fn partial_eligible_vectors_fail_the_coverage_gate() {
         "expected the partial reason, got {:?}",
         result.reasons
     );
+}
+
+// --------------------------------------------------------------------------
+// Live configuration reload: one running watcher reconciles configuration
+// edits (inclusion/exclusion, role rules, embedding profile/scope) without
+// being reconstructed, freezes on invalid or restart-required revisions
+// with sanitized throttled warnings, and recovers automatically.
+
+const RELOAD_DOC: &str =
+    "# Guide\n\n## Setup\n\nInstall the toolchain.\n\n## Usage\n\nRun the CLI.\n";
+const RELOAD_PRIVATE: &str = "# Notes\n\nPangolin quokka field notes.\n";
+
+/// Default effective settings (no files, no overrides): used to keep
+/// querying the store while a config file on disk is broken.
+fn default_effective() -> EffectiveConfig {
+    EffectiveConfig::resolve_layers(None, None, &CliOverrides::default()).unwrap()
+}
+
+/// Lexical hits under an explicitly resolved effective setting: the config
+/// is never re-resolved from disk.
+fn lex_hits(
+    repo: &DirRepo,
+    effective: &EffectiveConfig,
+    role: Option<repoise_core::classify::Role>,
+    query: &str,
+) -> Vec<repoise_core::search::SearchHit> {
+    let adapter = repoise_core::adapter::filesystem::FilesystemAdapter::new(&repo.root).unwrap();
+    let cache = CachePaths::resolve(&repo.root, ".repoise", None).unwrap();
+    let (repo_id, worktree_id, _) =
+        search::scope_for_search(&adapter, SnapshotMode::PlainDirectory).unwrap();
+    let store = Store::new(cache.db_path(&repo_id, &worktree_id));
+    let request = SearchRequest {
+        query: query.to_string(),
+        path_filter: None,
+        role_filter: role,
+        max_results: Some(5),
+        max_output_tokens: None,
+        cursor: None,
+        mode: repoise_core::search::SearchMode::Lexical,
+        rrf_k: Some(effective.rrf_k),
+    };
+    search::search(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &store,
+        &request,
+        None,
+    )
+    .unwrap()
+    .results
+}
+
+/// The generation id currently published for the scope under an explicit
+/// effective setting (never re-resolves the config from disk).
+fn status_generation(repo: &DirRepo, effective: &EffectiveConfig) -> Option<i64> {
+    let adapter = repoise_core::adapter::filesystem::FilesystemAdapter::new(&repo.root).unwrap();
+    let cache = CachePaths::resolve(&repo.root, ".repoise", None).unwrap();
+    let store = repo.store(&cache);
+    let view = repoise_core::status::status(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        effective,
+        None,
+        &store,
+        &cache,
+    )
+    .unwrap();
+    view.index.as_ref().map(|index| index.generation_id)
+}
+
+#[test]
+fn watch_reloads_inclusion_config_in_place() {
+    let repo = DirRepo::new(
+        "watch-reload-exclude",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+    let eff0 = default_effective();
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+    assert!(
+        !lex_hits(&repo, &eff0, None, "pangolin").is_empty(),
+        "the private notes are indexed at startup"
+    );
+
+    // Edit the committed config in the same running watcher: one
+    // config-driven generation, no watcher reconstruction.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"exclude":["private"]}"#,
+    )
+    .unwrap();
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert!(
+        lex_hits(&repo, &eff0, None, "pangolin").is_empty(),
+        "the excluded corpus must leave the index"
+    );
+    assert!(
+        !lex_hits(&repo, &eff0, None, "toolchain").is_empty(),
+        "the rest of the corpus must remain"
+    );
+
+    // Settled state: unchanged effective settings cause no repeated rebuild.
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_reloads_role_rules_in_place() {
+    let repo = DirRepo::new(
+        "watch-reload-role",
+        &[(
+            "guide.md",
+            "# Guide\n\nCompass bearing and navigation text.\n",
+        )],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+    let eff0 = default_effective();
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+    // An unclassified markdown document defaults to the current-doc role.
+    assert!(
+        !lex_hits(
+            &repo,
+            &eff0,
+            Some(repoise_core::classify::Role::CurrentDoc),
+            "compass"
+        )
+        .is_empty()
+    );
+
+    // Live role rule: reclassify guide.md as readable configuration.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"documentRoles":[{"pattern":"guide.md","role":"config"}]}"#,
+    )
+    .unwrap();
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert!(
+        lex_hits(
+            &repo,
+            &eff0,
+            Some(repoise_core::classify::Role::CurrentDoc),
+            "compass"
+        )
+        .is_empty(),
+        "the old role must no longer match"
+    );
+    assert!(
+        !lex_hits(
+            &repo,
+            &eff0,
+            Some(repoise_core::classify::Role::Config),
+            "compass"
+        )
+        .is_empty(),
+        "the new role must match"
+    );
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_noop_config_edit_is_not_a_config_rebuild() {
+    let repo = DirRepo::new("watch-reload-noop", &[("README.md", RELOAD_DOC)]);
+    // A config file whose effective settings equal the defaults: the
+    // watcher must treat later equivalent bytes as a no-op for the policy
+    // (no config-driven rebuild); only the config file itself, which is
+    // corpus content, is updated.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"preset":"docs-code-lexical","maxFileBytes":1048576}"#,
+    )
+    .unwrap();
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+
+    // Same effective configuration, different bytes.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{ "preset": "docs-code-lexical", "maxFileBytes": 1048576 }"#,
+    )
+    .unwrap();
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(
+                !outcome.config_change,
+                "no effective change, no config rebuild"
+            );
+            assert!(!outcome.force_full);
+            assert_eq!(
+                outcome.changed_paths,
+                vec![repoise_core::CONFIG_FILENAME.to_string()],
+                "only the config file's own chunk moves"
+            );
+        }
+        other => panic!("expected a corpus-only update, got {other:?}"),
+    }
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_local_override_created_and_removed() {
+    let repo = DirRepo::new(
+        "watch-reload-local",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+    let eff0 = default_effective();
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+
+    // Creating the local override takes effect live (local > committed).
+    std::fs::write(
+        repo.root.join(repoise_core::LOCAL_CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"exclude":["private"]}"#,
+    )
+    .unwrap();
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert!(lex_hits(&repo, &eff0, None, "pangolin").is_empty());
+
+    // Removing the local override: the committed (absent) layer wins back.
+    repo.remove(repoise_core::LOCAL_CONFIG_FILENAME);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert!(!lex_hits(&repo, &eff0, None, "pangolin").is_empty());
+
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_explicit_config_paths_replace_the_defaults() {
+    let repo = DirRepo::new(
+        "watch-reload-explicit",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    // The operator-selected config lives at a non-default path.
+    let custom = repo.root.join("custom.repoise.json");
+    std::fs::write(&custom, r#"{"schemaVersion":1,"exclude":["private"]}"#).unwrap();
+    let effective = EffectiveConfig::resolve_files(
+        &custom,
+        &repo.root.join(repoise_core::LOCAL_CONFIG_FILENAME),
+        &CliOverrides::default(),
+    )
+    .unwrap();
+    let adapter =
+        Box::new(repoise_core::adapter::filesystem::FilesystemAdapter::new(&repo.root).unwrap());
+    let cache = CachePaths::resolve(&repo.root, ".repoise", None).unwrap();
+    let store = repo.store(&cache);
+    let options = repoise_core::watch::WatchOptions {
+        interval: Duration::from_millis(10),
+        debounce: Duration::from_millis(10),
+        max_pending_paths: repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        config_warning_interval: repoise_core::watch::DEFAULT_CONFIG_WARNING_INTERVAL,
+    };
+    repoise_core::indexing::index(
+        adapter.as_ref(),
+        SnapshotMode::PlainDirectory,
+        &effective,
+        &store,
+        &cache,
+        &IndexRequest::default(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut watcher = repoise_core::watch::Watcher::new(
+        adapter,
+        SnapshotMode::PlainDirectory,
+        effective,
+        store,
+        cache,
+        options,
+        None,
+    )
+    .unwrap()
+    .with_config_sources(
+        repoise_core::watch::ConfigSources {
+            committed: custom.clone(),
+            local: repo.root.join(repoise_core::LOCAL_CONFIG_FILENAME),
+            cli: CliOverrides::default(),
+        },
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+    let eff0 = default_effective();
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+    assert!(
+        lex_hits(&repo, &eff0, None, "pangolin").is_empty(),
+        "private stays excluded by the explicit config"
+    );
+
+    // Editing the default config path is corpus content only: it publishes
+    // as a content change but does not move the effective policy.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1}"#,
+    )
+    .unwrap();
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(
+                !outcome.config_change,
+                "the default path is not the selected source"
+            );
+        }
+        other => panic!("expected a content-only publication, got {other:?}"),
+    }
+    assert!(
+        lex_hits(&repo, &eff0, None, "pangolin").is_empty(),
+        "the effective policy did not move"
+    );
+
+    // Editing the explicit path applies the new revision.
+    std::fs::write(&custom, r#"{"schemaVersion":1}"#).unwrap();
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert!(!lex_hits(&repo, &eff0, None, "pangolin").is_empty());
+}
+
+#[test]
+fn watch_invalid_config_freezes_then_recovers() {
+    let repo = DirRepo::new(
+        "watch-reload-invalid",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+    let eff0 = default_effective();
+    let first_generation = status_generation(&repo, &eff0).expect("published at startup");
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+
+    // Broken config: a sanitized warning, no publication.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"exclude":["private""#,
+    )
+    .unwrap();
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => {
+            assert_eq!(issue.kind, repoise_core::watch::ConfigIssueKind::Invalid);
+            assert!(
+                issue.message.contains("repoise.config.json"),
+                "the warning must name the broken file: {}",
+                issue.message
+            );
+            // No configuration bytes in the warning.
+            assert!(!issue.message.contains("pangolin"));
+        }
+        other => panic!("expected a config issue, got {other:?}"),
+    }
+    // Repeat: the identical warning is throttled (no tight warning loop).
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+    // While frozen, content edits do not publish a generation.
+    repo.write("README.md", "# Guide\n\nKumquat toolchain.\n");
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(first_generation),
+        "the last good generation must remain served unchanged"
+    );
+    assert!(
+        lex_hits(&repo, &eff0, None, "kumquat").is_empty(),
+        "the new content must not be published while the config is invalid"
+    );
+
+    // Fix the config: automatic recovery, one generation carrying both the
+    // new policy and the pending content change.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"exclude":["private"]}"#,
+    )
+    .unwrap();
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert!(
+        outcome.changed_paths.iter().any(|path| path == "README.md"),
+        "the pending content change publishes with the recovered config: {:?}",
+        outcome.changed_paths
+    );
+    assert!(
+        !lex_hits(&repo, &eff0, None, "kumquat").is_empty(),
+        "recovered content is served"
+    );
+    assert!(
+        lex_hits(&repo, &eff0, None, "pangolin").is_empty(),
+        "the new exclusion applies"
+    );
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_restart_required_settings_are_not_applied() {
+    let repo = DirRepo::new("watch-reload-restart", &[("README.md", RELOAD_DOC)]);
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+    let eff0 = default_effective();
+    let first_generation = status_generation(&repo, &eff0).expect("published at startup");
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+
+    // Each process-bound setting is reported restart-required and never
+    // applied.
+    let revisions: [(&str, &str); 3] = [
+        (r#"{"schemaVersion":1,"cacheDir":"elsewhere"}"#, "cacheDir"),
+        (r#"{"schemaVersion":1,"sharedCache":false}"#, "sharedCache"),
+        (
+            r#"{"schemaVersion":1,"history":{"enabled":true}}"#,
+            "history",
+        ),
+    ];
+    for (config, name) in revisions {
+        std::fs::write(repo.root.join(repoise_core::CONFIG_FILENAME), config).unwrap();
+        match watcher.step(&cancel).unwrap() {
+            repoise_core::watch::WatchStep::ConfigIssue(issue) => {
+                assert_eq!(
+                    issue.kind,
+                    repoise_core::watch::ConfigIssueKind::RestartRequired
+                );
+                assert!(
+                    issue.message.contains(name),
+                    "{name} named in the warning: {}",
+                    issue.message
+                );
+                assert!(
+                    issue.message.contains("restart"),
+                    "restart is explicit: {}",
+                    issue.message
+                );
+            }
+            other => panic!("expected a restart-required issue for {name}, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(first_generation),
+        "no generation moved under a rejected revision"
+    );
+
+    // While the revision is frozen (the last rejected setting is still on
+    // disk), content edits do not publish either.
+    repo.write(
+        "README.md",
+        &format!("{RELOAD_DOC}\nEdited while frozen.\n"),
+    );
+    assert!(
+        matches!(
+            watcher.step(&cancel).unwrap(),
+            repoise_core::watch::WatchStep::Idle
+                | repoise_core::watch::WatchStep::ConfigIssue(
+                    repoise_core::watch::WatchConfigIssue {
+                        kind: repoise_core::watch::ConfigIssueKind::RestartRequired,
+                        ..
+                    }
+                )
+        ),
+        "no publication under the frozen restart-required revision"
+    );
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(first_generation),
+        "the content edit does not publish while the revision is frozen"
+    );
+
+    // Corrected config: the content edit publishes (the config file itself
+    // leaves the corpus, and the served generation is back under the
+    // original settings).
+    repo.remove(repoise_core::CONFIG_FILENAME);
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(!outcome.config_change);
+            assert_eq!(outcome.changed_paths, vec!["README.md".to_string()]);
+        }
+        other => panic!("expected the content publication, got {other:?}"),
+    }
+    let result = check_of(&repo);
+    assert_eq!(
+        result.category,
+        repoise_core::check::CheckCategory::Ok,
+        "the served generation is still fresh: {:?}",
+        result.reasons
+    );
+}
+
+#[test]
+fn watch_reloads_embedding_profile_and_scope_with_live_client() {
+    let repo = DirRepo::new(
+        "watch-reload-embed",
+        &[
+            ("docs/a.md", WATCH_DOC_A_V1),
+            ("docs/b.md", WATCH_DOC_B_V1),
+            ("src/math.ts", MATH_TS),
+        ],
+    );
+    write_embedding_config_scoped(&repo, "model-a", None);
+    // Record which model each in-process client rebuild used.
+    let built_models = Arc::new(Mutex::new(Vec::<String>::new()));
+    let factory = {
+        let built = built_models.clone();
+        move |eff: &EffectiveConfig|
+            -> repoise_core::Result<Option<repoise_core::embed::EmbeddingClient>> {
+            let settings = eff
+                .embedding
+                .as_ref()
+                .expect("the reload config keeps embedding configured");
+            let model = settings.model.clone().unwrap_or_default();
+            built.lock().unwrap().push(model.clone());
+            let (client, _, _) = recording_client(
+                &model,
+                false,
+                None,
+                repoise_core::embed::EmbeddingBudgets::default(),
+                repoise_core::embed::CancellationToken::new(),
+            );
+            Ok(Some(client))
+        }
+    };
+    let (client, _, _) = recording_client(
+        "model-a",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+        default_sources(&repo),
+        Some(Box::new(factory)),
+    );
+    let cancel = AtomicBool::new(false);
+
+    // First generation: docs-only scope under model-a.
+    let first = watch_publication(&mut watcher, &cancel);
+    assert!(!first.config_change, "the first build is not config-driven");
+    let first_stats = first.embedding.as_ref().expect("embedding ran");
+    assert_eq!(first.vectors_total, first_stats.embedded);
+    assert!(first.vectors_total > 0);
+
+    // Live profile change: a new client is built, zero cache reuse, and a
+    // full re-embed under the new profile.
+    write_embedding_config_scoped(&repo, "model-b", None);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert_eq!(
+        built_models.lock().unwrap().as_slice(),
+        &["model-b".to_string()],
+        "the factory rebuilt exactly one client, for model-b"
+    );
+    let stats = outcome.embedding.as_ref().expect("embedding ran");
+    assert_eq!(stats.cache_hits, 0, "no model-a vector is reused");
+    assert_eq!(stats.embedded, first.vectors_total);
+    assert_eq!(outcome.vectors_total, first.vectors_total);
+
+    // Live scope change: docs -> docs+code. Cached docs inputs come from
+    // the model-b profile; only the code corpus is newly embedded.
+    write_embedding_config_scoped(&repo, "model-b", Some("all"));
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    let stats = outcome.embedding.as_ref().expect("embedding ran");
+    assert!(
+        stats.cache_hits > 0,
+        "docs inputs are served from the model-b cache"
+    );
+    assert!(stats.embedded > 0, "code inputs are newly embedded");
+    assert_eq!(
+        outcome.vectors_total,
+        stats.cache_hits + stats.embedded,
+        "scope-aware coverage: every eligible chunk has a vector"
+    );
+    assert!(outcome.vectors_total > first.vectors_total);
+
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_cancellation_blocks_a_config_driven_publication() {
+    let repo = DirRepo::new(
+        "watch-reload-cancel",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let eff0 = default_effective();
+    let first_generation = status_generation(&repo, &eff0).expect("published at startup");
+
+    let cancel = AtomicBool::new(true);
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"exclude":["private"]}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Cancelled
+    ));
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(first_generation),
+        "cancellation must not publish a generation"
+    );
+
+    // A corrected run applies the same revision and publishes it.
+    let cancel = AtomicBool::new(false);
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert!(lex_hits(&repo, &eff0, None, "pangolin").is_empty());
+}
+#[test]
+fn watch_endpoint_only_embedding_edit_reloads_in_place() {
+    let repo = DirRepo::new(
+        "watch-reload-endpoint",
+        &[
+            ("docs/a.md", WATCH_DOC_A_V1),
+            ("docs/b.md", WATCH_DOC_B_V1),
+            ("src/math.ts", MATH_TS),
+        ],
+    );
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"embedding":{"provider":"openai-compatible","model":"model-a","dimensions":8,"endpoint":"env:REPOISE_EP_A"}}"#,
+    )
+    .unwrap();
+    // Record the endpoint each in-process client rebuild used.
+    let built_endpoints = Arc::new(Mutex::new(Vec::<String>::new()));
+    let factory = {
+        let built = built_endpoints.clone();
+        move |eff: &EffectiveConfig|
+            -> repoise_core::Result<Option<repoise_core::embed::EmbeddingClient>> {
+            let settings = eff
+                .embedding
+                .as_ref()
+                .expect("the reload config keeps embedding configured");
+            let endpoint = settings.endpoint.clone().unwrap_or_default();
+            built.lock().unwrap().push(endpoint.clone());
+            let model = settings.model.clone().unwrap_or_default();
+            let (client, _, _) = recording_client(
+                &model,
+                false,
+                None,
+                repoise_core::embed::EmbeddingBudgets::default(),
+                repoise_core::embed::CancellationToken::new(),
+            );
+            Ok(Some(client))
+        }
+    };
+    let (client, _, _) = recording_client(
+        "model-a",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+        default_sources(&repo),
+        Some(Box::new(factory)),
+    );
+    let cancel = AtomicBool::new(false);
+
+    let first = watch_publication(&mut watcher, &cancel);
+    assert!(!first.config_change, "the first build is not config-driven");
+    assert!(first.vectors_total > 0);
+
+    // Endpoint-only change (same model/profile): it must still be applied
+    // as a config-driven generation with a rebuilt client, not silently
+    // ignored.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"embedding":{"provider":"openai-compatible","model":"model-a","dimensions":8,"endpoint":"env:REPOISE_EP_B"}}"#,
+    )
+    .unwrap();
+    let outcome = watch_publication(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the generation must be config-driven"
+    );
+    assert_eq!(
+        built_endpoints.lock().unwrap().as_slice(),
+        &["env:REPOISE_EP_B".to_string()],
+        "the factory rebuilt exactly one client, for the new endpoint"
+    );
+    assert_eq!(
+        outcome.vectors_total, first.vectors_total,
+        "scope-aware coverage is preserved across the endpoint change"
+    );
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+}
+
+#[test]
+fn watch_inert_history_edit_is_ignored_when_lane_disabled() {
+    let repo = DirRepo::new(
+        "watch-inert-history",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let eff0 = default_effective();
+    let cancel = AtomicBool::new(false);
+
+    // Inert history edits while the lane is disabled: an empty block fills
+    // tuning defaults, and tweaking them has no effective effect. The
+    // config file itself is corpus content, so the bytes still move a
+    // corpus-only generation — but no restart-required issue and no freeze.
+    for body in [
+        r#"{"schemaVersion":1,"history":{}}"#,
+        r#"{"schemaVersion":1,"history":{"horizon":999}}"#,
+    ] {
+        std::fs::write(repo.root.join(repoise_core::CONFIG_FILENAME), body).unwrap();
+        match watcher.step(&cancel).unwrap() {
+            repoise_core::watch::WatchStep::Published(outcome) => {
+                assert!(
+                    !outcome.config_change,
+                    "an inert history edit is not a config rebuild: {body}"
+                );
+                assert_eq!(
+                    outcome.changed_paths,
+                    vec![repoise_core::CONFIG_FILENAME.to_string()],
+                    "only the config file's own chunk moves: {body}"
+                );
+            }
+            other => {
+                panic!("expected the corpus-only config-file update, got {other:?} for {body}")
+            }
+        }
+    }
+
+    // Enabling the lane is still restart-required, and the watch freezes.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"history":{"enabled":true}}"#,
+    )
+    .unwrap();
+    let generation_before = status_generation(&repo, &eff0).expect("a generation is published");
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => {
+            assert_eq!(
+                issue.kind,
+                repoise_core::watch::ConfigIssueKind::RestartRequired
+            );
+            assert!(issue.message.contains("history"));
+        }
+        other => panic!("expected a restart-required issue, got {other:?}"),
+    }
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(generation_before),
+        "the lane must not be enabled implicitly"
+    );
+
+    // Reverting unfreezes the watch (corpus-only config-file update).
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1}"#,
+    )
+    .unwrap();
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(!outcome.config_change);
+        }
+        other => panic!("expected the corpus-only config-file update, got {other:?}"),
+    }
+}
+
+#[test]
+fn watch_invalid_config_warning_never_echoes_user_values() {
+    let repo = DirRepo::new(
+        "watch-redacted-warning",
+        &[
+            ("README.md", RELOAD_DOC),
+            ("private/notes.md", RELOAD_PRIVATE),
+        ],
+    );
+    build_index(&repo);
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        None,
+        default_sources(&repo),
+        None,
+    );
+    let eff0 = default_effective();
+    let first_generation = status_generation(&repo, &eff0).expect("published at startup");
+    let cancel = AtomicBool::new(false);
+
+    // Parse failure: a secret-looking string inside the broken file must
+    // never reach the warning; the structurally broken file is named.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r##"{"schemaVersion":1,"exclude":["sk-live-0123456789abcdef""##,
+    )
+    .unwrap();
+    let issue = match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => issue,
+        other => panic!("expected a config issue, got {other:?}"),
+    };
+    assert_eq!(issue.kind, repoise_core::watch::ConfigIssueKind::Invalid);
+    assert!(
+        issue.message.contains("repoise.config.json"),
+        "the broken file is named: {}",
+        issue.message
+    );
+    assert!(
+        !issue.message.contains("sk-live-0123456789abcdef"),
+        "no user values in the warning: {}",
+        issue.message
+    );
+
+    // Validation failure: a secret-looking apiKeyEnv value must not reach
+    // the warning (different message, so it is not throttled away).
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1,"embedding":{"provider":"openai-compatible","model":"model-a","dimensions":8,"apiKeyEnv":"sk-live-abcdef-secret"}}"#,
+    )
+    .unwrap();
+    let issue = match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => issue,
+        other => panic!("expected a config issue, got {other:?}"),
+    };
+    assert_eq!(issue.kind, repoise_core::watch::ConfigIssueKind::Invalid);
+    assert!(
+        issue.message.contains("1 validation problem"),
+        "the problem count is reported: {}",
+        issue.message
+    );
+    assert!(
+        !issue.message.contains("sk-live-abcdef-secret"),
+        "no user values in the warning: {}",
+        issue.message
+    );
+    assert_eq!(
+        status_generation(&repo, &eff0),
+        Some(first_generation),
+        "the last published generation stays served"
+    );
+
+    // Recovery: fixing the file unfreezes the watch.
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1}"#,
+    )
+    .unwrap();
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::Published(outcome) => {
+            assert!(!outcome.config_change);
+            assert_eq!(
+                outcome.changed_paths,
+                vec![repoise_core::CONFIG_FILENAME.to_string()]
+            );
+        }
+        other => panic!("expected the corpus-only config-file update, got {other:?}"),
+    }
+}
+#[test]
+fn watch_no_factory_client_drop_reports_restart_required_on_revert() {
+    // A plain `Watcher::new` consumer (client, no factory) edits the config
+    // to lexical-only (client dropped in-process) and then reverts to the
+    // embedding config: the revert must report restart-required, not
+    // silently publish a lexical-only generation carrying the embedding
+    // fingerprint.
+    let repo = DirRepo::new(
+        "watch-nofactory-revert",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    write_embedding_config(&repo, "model-a");
+    let (client, _, _) = recording_client(
+        "model-a",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let (mut watcher, _) = quick_watcher_with_sources(
+        &repo,
+        repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        Some(client),
+        default_sources(&repo),
+        None,
+    );
+    let cancel = AtomicBool::new(false);
+
+    // First generation: embedded under model-a.
+    let first = watch_publication(&mut watcher, &cancel);
+    assert!(first.embedding.is_some());
+    assert!(first.vectors_total > 0);
+
+    // Lexical-only edit: applied, client dropped (no factory to rebuild one).
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        r#"{"schemaVersion":1}"#,
+    )
+    .unwrap();
+    let lexical = watch_publication(&mut watcher, &cancel);
+    assert!(lexical.config_change);
+    assert!(
+        lexical.embedding.is_none(),
+        "the lexical-only generation has no embedding"
+    );
+
+    // Revert to the embedding config: no factory means the client cannot be
+    // rebuilt — restart-required, no silent lexical-only publication.
+    write_embedding_config(&repo, "model-a");
+    match watcher.step(&cancel).unwrap() {
+        repoise_core::watch::WatchStep::ConfigIssue(issue) => {
+            assert_eq!(
+                issue.kind,
+                repoise_core::watch::ConfigIssueKind::RestartRequired
+            );
+            assert!(issue.message.contains("restart"), "{}", issue.message);
+        }
+        other => panic!("expected a restart-required issue, got {other:?}"),
+    }
 }

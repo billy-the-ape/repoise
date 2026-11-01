@@ -22,11 +22,86 @@ use repoise_core::store::Store;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// The drive root of a Windows path (e.g. `C:\` from
+/// `C:\Users\<user>\AppData\Local\Temp`), if any.
+#[cfg(windows)]
+fn windows_drive_root(path: &Path) -> Option<PathBuf> {
+    let mut root = PathBuf::new();
+    for component in path.components().take(2) {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                root.push(component.as_os_str());
+            }
+            _ => break,
+        }
+    }
+    if root.as_os_str().is_empty() {
+        None
+    } else {
+        Some(root)
+    }
+}
+
+/// Resolves the base directory for one test. On Windows, the deepest
+/// generated path is
+/// <dir>/.repoise/repos/repo-<64 hex>/worktrees/wt-<64 hex>/index.sqlite-wal
+/// (~180 chars after the directory); the default %TEMP% is deep
+/// (C:\Users\<user>\AppData\Local\Temp), so anchor under the drive root
+/// when it is writable to keep the full path well under the 260-char
+/// MAX_PATH limit; otherwise fall back to the default temp directory.
+/// (Same workaround as the K6 suite in v1_6.rs.)
+fn base_dir(name: &str) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(dir) = windows_drive_root(&std::env::temp_dir())
+        .filter(|root| std::fs::create_dir_all(root.join(name)).is_ok())
+        .map(|root| root.join(name))
+    {
+        return dir;
+    }
+    std::env::temp_dir().join(name)
+}
+
 fn temp_dir(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("repoise-fresh-{tag}-{}-{n}", std::process::id()));
+    let name = format!("repoise-fresh-{tag}-{}-{n}", std::process::id());
+    let dir = base_dir(&name);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// The deepest path this suite can generate under `dir` (repository and
+/// worktree ids are 64 hex chars; WAL mode adds a `-wal` sidecar).
+#[cfg(windows)]
+fn deepest_generated_path(dir: &Path) -> PathBuf {
+    dir.join(".repoise")
+        .join("repos")
+        .join(format!("repo-{}", "x".repeat(64)))
+        .join("worktrees")
+        .join(format!("wt-{}", "y".repeat(64)))
+        .join("index.sqlite-wal")
+}
+
+#[cfg(windows)]
+#[test]
+fn temp_dirs_keep_db_paths_under_windows_max_path() {
+    let dir = temp_dir("maxpath-check");
+    // Only assert when the drive-root anchor was used (exactly one
+    // non-root component); a permission fallback to the deep default temp
+    // is a developer-machine condition this suite must tolerate.
+    let names = dir
+        .components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .count();
+    if names == 1 {
+        let deepest = deepest_generated_path(&dir);
+        assert!(
+            deepest.as_os_str().len() < 260,
+            "deepest test path is {} chars: {}",
+            deepest.as_os_str().len(),
+            deepest.display()
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn run_git(root: &Path, args: &[&str]) {
@@ -218,6 +293,7 @@ fn watch_published_generation_is_fresh_without_committing() {
         interval: Duration::from_millis(10),
         debounce: Duration::from_millis(10),
         max_pending_paths: repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        config_warning_interval: repoise_core::watch::DEFAULT_CONFIG_WARNING_INTERVAL,
     };
     let mut watcher = repoise_core::watch::Watcher::new(
         adapter,
@@ -245,6 +321,9 @@ fn watch_published_generation_is_fresh_without_committing() {
             }
             repoise_core::watch::WatchStep::Cancelled => {
                 panic!("watch cancelled unexpectedly");
+            }
+            repoise_core::watch::WatchStep::ConfigIssue(issue) => {
+                panic!("watch reported a config issue unexpectedly: {issue:?}");
             }
         }
     }
@@ -506,4 +585,136 @@ fn bench_preflight_rejects_dirty_consumer_checkout_even_with_fresh_index() {
         err.to_string().contains("working tree is dirty"),
         "expected the clean-snapshot preflight rejection, got {err}"
     );
+}
+
+/// A config-only branch switch (the committed config file appears/disappears
+/// while no corpus file moves) reloads the effective configuration in the
+/// running watcher and republishes accordingly.
+#[test]
+fn watch_config_only_branch_switch_reloads_effective_config() {
+    let root = temp_dir("watch-branch-config");
+    run_git(&root, &["init", "-b", "main"]);
+    run_git(&root, &["config", "user.email", "test@example.com"]);
+    run_git(&root, &["config", "user.name", "Test"]);
+    std::fs::write(
+        root.join(".git").join("info").join("exclude"),
+        ".repoise/\n",
+    )
+    .unwrap();
+    commit_file(
+        &root,
+        "README.md",
+        "# Guide\n\nInstall the toolchain.\n",
+        "Add guide",
+    );
+    commit_file(
+        &root,
+        "private/notes.md",
+        "# Notes\n\nPangolin quokka.\n",
+        "Add private notes",
+    );
+
+    let h = Harness::new(root);
+    h.build(SnapshotMode::WorkingTree);
+    let adapter = Box::new(GitAdapter::new(&h.root).unwrap());
+    let options = repoise_core::watch::WatchOptions {
+        interval: Duration::from_millis(10),
+        debounce: Duration::from_millis(10),
+        max_pending_paths: repoise_core::watch::DEFAULT_MAX_PENDING_PATHS,
+        config_warning_interval: repoise_core::watch::DEFAULT_CONFIG_WARNING_INTERVAL,
+    };
+    let mut watcher = repoise_core::watch::Watcher::new(
+        adapter,
+        SnapshotMode::WorkingTree,
+        h.effective(),
+        h.store(SnapshotMode::WorkingTree),
+        h.cache(),
+        options,
+        None,
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    assert!(matches!(
+        watcher.step(&cancel).unwrap(),
+        repoise_core::watch::WatchStep::Idle
+    ));
+
+    // Config-only branch switch: the committed config file appears on disk.
+    run_git(&h.root, &["checkout", "-b", "config-branch"]);
+    commit_file(
+        &h.root,
+        "repoise.config.json",
+        r#"{"schemaVersion":1,"exclude":["private"]}"#,
+        "Exclude private notes",
+    );
+    let outcome = step_until_published(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "the branch switch must show as a config-driven generation"
+    );
+    assert!(outcome.branch_switch);
+    assert!(
+        h.check(SnapshotMode::WorkingTree, true).fresh,
+        "the republished generation must be fresh"
+    );
+    // The excluded corpus must leave the index.
+    assert!(
+        lex_hits_empty(&h, "pangolin"),
+        "private notes must be excluded after the switch"
+    );
+
+    // Switching back removes the config file: the corpus comes back.
+    run_git(&h.root, &["checkout", "main"]);
+    let outcome = step_until_published(&mut watcher, &cancel);
+    assert!(
+        outcome.config_change,
+        "removing the config file must also be config-driven"
+    );
+    assert!(outcome.branch_switch);
+    assert!(
+        !lex_hits_empty(&h, "pangolin"),
+        "the private notes must be indexed again"
+    );
+}
+
+/// Bounded publication wait: step through debounce cycles until published.
+fn step_until_published(
+    watcher: &mut repoise_core::watch::Watcher,
+    cancel: &AtomicBool,
+) -> repoise_core::watch::WatchPublication {
+    for _ in 0..200 {
+        match watcher.step(cancel).unwrap() {
+            repoise_core::watch::WatchStep::Published(outcome) => return outcome,
+            repoise_core::watch::WatchStep::Idle => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => panic!("unexpected watcher step: {other:?}"),
+        }
+    }
+    panic!("the watcher did not publish within the bounded wait")
+}
+
+/// True when a working-tree lexical query returns no hits at all.
+fn lex_hits_empty(h: &Harness, query: &str) -> bool {
+    let adapter = GitAdapter::new(&h.root).unwrap();
+    let effective = h.effective();
+    let request = SearchRequest {
+        query: query.to_string(),
+        path_filter: None,
+        role_filter: None,
+        max_results: Some(5),
+        max_output_tokens: None,
+        cursor: None,
+        mode: repoise_core::search::SearchMode::Lexical,
+        rrf_k: Some(effective.rrf_k),
+    };
+    let response = search::search(
+        &adapter,
+        SnapshotMode::WorkingTree,
+        &h.store(SnapshotMode::WorkingTree),
+        &request,
+        None,
+    )
+    .unwrap();
+    response.results.is_empty()
 }
