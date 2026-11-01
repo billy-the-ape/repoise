@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Freshness separated from Git dirtiness
+
+`status` previously reported the working-tree index as stale whenever Git
+reported any uncommitted changes, even when the published manifest and
+configuration exactly matched the saved working tree — so a coding-session
+UI could stay stale after a successful `watch` or `index` publication.
+Freshness now means the index represents the selected filesystem snapshot:
+it is judged from the published content manifest and effective-config
+fingerprint for the declared scope/mode (parser compatibility is enforced
+at publication by `indexing`, as before). Git dirtiness is a separate,
+informational concern: `snapshot.dirty_count` and `freshness.dirty_count`
+(and the human `dirty:` line) still report it, and branch/revision
+information is unchanged, but uncommitted changes never make the index
+stale.
+
+Consequences:
+
+- An edited, saved, tracked file that is indexed (manually or via `watch`)
+  is **fresh while `dirty_count` is non-zero**. Unsaved editor buffers
+  were always outside the filesystem snapshot; saved uncommitted content
+  can now be indexed and fresh.
+- Stale still means: eligible saved content changed after publication, the
+  effective configuration changed, the scope/mode no longer matches, or the
+  index is absent (`unknown`). Committed-mode snapshots are unaffected by
+  working-tree edits; branch labels alone never make an index stale — only
+  changed snapshot content does.
+- Exact reads keep their hash validation: a source id from a generation the
+  live snapshot has moved away from still fails with a stale-source error,
+  regardless of what `status` says.
+- `check --fresh`, the MCP `project_knowledge_status` tool, the CLI and the
+  benchmark preflight all use the same freshness judgment. The benchmark's
+  clean-committed-snapshot preflight rule is independent of index freshness
+  and still rejects a dirty consumer checkout.
+- Response shapes and exit codes are unchanged: `status` still exits 3 when
+  the index is missing or stale, and `check` keeps `ok`/`missing`/`stale`/
+  `coverage-not-met` with exit codes 0/3/4.
+
 ### Scope-aware embedding coverage
 
 Vector coverage is now computed against the eligible corpus of the

@@ -47,7 +47,7 @@ repoise-condition trial an MCP boundary that enforces the suite's declared
 | `search_project_knowledge` | lexical (or hybrid) search | `query` required; optional `pathFilter`, `role`, `maxResults` (default 5, cap 20), `maxOutputTokens` (estimated, default 1200), `cursor`, `mode` (`lexical` default, `hybrid`, `vectors-only`), `rrfK` |
 | `read_project_knowledge` | exact read-back | `sourceId` required; expected-hash validation against the live snapshot; `maxOutputTokens` (estimated, default 2500) truncates at a line boundary and marks the result `truncated` |
 | `related_project_knowledge` | reference and parent/child-chunk links | `sourceId` required; optional `relations` (`references`, `referenced-by`, `children`, `parent`), `limit`, `maxOutputTokens` |
-| `project_knowledge_status` | operator status | published index, live snapshot, freshness, coverage, cache, last error |
+| `project_knowledge_status` | operator status | published index, live snapshot, freshness, coverage, cache, last error; freshness tracks the live saved snapshot and effective config — Git dirtiness (`dirtyCount`) is reported separately and does not make the index stale |
 | `refresh_project_knowledge` | incremental index publication | opt-in only; identical outcome to `repoise index` |
 
 All tools accept the optional scope-verification arguments `repoId`,
