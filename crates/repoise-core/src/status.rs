@@ -5,6 +5,18 @@
 //! snapshot, cache location/size and any recorded build error. It re-runs
 //! the deterministic inventory (metadata only, no chunking) to judge
 //! freshness honestly.
+//!
+//! Freshness means the index represents the selected filesystem snapshot:
+//! it is judged from the declared scope/snapshot (content manifest hash)
+//! and the effective configuration fingerprint, with parser compatibility
+//! enforced at publication by `indexing` (a changed parser fingerprint
+//! forces a full reparse). Git working-tree dirtiness is a separate
+//! concern: `snapshot.dirty_count` and `freshness.dirty_count` report it,
+//! but uncommitted changes never make the index stale by themselves. An
+//! index may legitimately be fresh over a dirty tree (its saved contents
+//! are indexed); only a change to the saved snapshot, the effective
+//! configuration, or the scope/mode makes it stale. Unsaved editor buffers
+//! remain outside the filesystem snapshot either way.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,6 +73,7 @@ pub struct StatusSnapshot {
     /// Mutable overlay digest (working-tree/plain-directory modes).
     pub dirty_digest: Option<String>,
     /// Dirty (uncommitted) file count, git working-tree mode only.
+    /// Informational: it never affects the freshness judgment.
     pub dirty_count: usize,
 }
 
@@ -119,7 +132,8 @@ pub struct StatusFreshness {
     pub snapshot_id: String,
     /// Live branch/workspace hint.
     pub branch: Option<String>,
-    /// Dirty file count (git working-tree mode).
+    /// Dirty file count (git working-tree mode). Informational only:
+    /// uncommitted changes never affect the freshness judgment.
     pub dirty_count: usize,
 }
 
@@ -271,11 +285,11 @@ pub fn status(
             if meta.config_fingerprint != eff.fingerprint() {
                 reasons.push("effective config changed since the last build".into());
             }
-            if mode == SnapshotMode::WorkingTree && dirty_count > 0 {
-                reasons.push(format!(
-                    "{dirty_count} uncommitted change(s) in the working tree"
-                ));
-            }
+            // Git working-tree dirtiness is reported (snapshot.dirty_count and
+            // freshness.dirty_count) but never judged: the index is fresh when
+            // it represents the saved snapshot, whether or not Git is dirty.
+            // Saved uncommitted content can be indexed and fresh; only a
+            // snapshot, configuration or scope mismatch makes it stale.
             if reasons.is_empty() {
                 ("fresh".into(), reasons)
             } else {

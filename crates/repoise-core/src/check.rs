@@ -13,6 +13,13 @@
 //! when it wants hybrid retrieval, and no pending eligible chunks
 //! (`partial`). A stale index is only a failing outcome when
 //! `CheckOptions::require_fresh` is set (`check --fresh`).
+//!
+//! Freshness carries the same meaning as `status`: the index is fresh when
+//! its published content manifest and effective-config fingerprint match
+//! the live snapshot for the declared scope. Git working-tree dirtiness is
+//! reported in the status view but never makes the index stale; the
+//! benchmark preflight's clean-committed-snapshot rule is a separate,
+//! independent requirement (see `bench::preflight`).
 
 use std::path::Path;
 

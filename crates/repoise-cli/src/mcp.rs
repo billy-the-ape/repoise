@@ -239,7 +239,7 @@ impl Server {
             }),
             json!({
                 "name": "project_knowledge_status",
-                "description": "Operator status for the configured scope: published index, live snapshot, freshness, coverage, cache and last error.",
+                "description": "Operator status for the configured scope: published index, live snapshot, freshness, coverage, cache and last error. Freshness means the index matches the live saved snapshot and effective config; Git dirtiness (dirtyCount) is reported separately and does not make the index stale.",
                 "inputSchema": scope_input_schema(),
             }),
         ];

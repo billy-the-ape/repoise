@@ -42,7 +42,10 @@ root; `purge` operates on the current directory's resolved cache root):
 repoise doctor [ROOT]                 # effective settings, capabilities, policy summary
 repoise explain --path <REL> [ROOT]   # explainable include/exclude decision for one path
 repoise index [ROOT]                  # build and publish the offline index (incremental)
-repoise status [ROOT]                 # scope, snapshot, index and freshness (exit 3 when missing/stale)
+repoise status [ROOT]                 # scope, snapshot, index and freshness
+                                      # (freshness tracks the saved snapshot/config;
+                                      # Git dirtiness is reported separately;
+                                      # exit 3 when missing/stale)
 repoise search --query <Q> [ROOT]     # offline lexical search over the current index
 repoise read --source-id <ID> [ROOT]  # exact read-back of a search result
 repoise related --source-id <ID> [ROOT]  # structural links from a source chunk

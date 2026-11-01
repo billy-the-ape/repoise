@@ -886,3 +886,71 @@ fn status_reports_the_active_watch_owner_and_clears_it_after_exit() {
         "the owner marker must be removed on clean exit: {cleared}"
     );
 }
+
+fn git(root: &std::path::Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("git should run");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn status_and_check_separate_freshness_from_git_dirtiness() {
+    let root = std::env::temp_dir().join(format!("repoise-cli-test-dirty-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp dir");
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    // Keep the in-repo cache out of the dirty-tree count (local policy).
+    std::fs::write(
+        root.join(".git").join("info").join("exclude"),
+        ".repoise/\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("README.md"), "hello\n").unwrap();
+    git(&root, &["add", "README.md"]);
+    git(&root, &["commit", "-q", "-m", "Add readme"]);
+
+    // Index, then save an uncommitted edit and index the saved contents.
+    assert!(cli(&["index", root.to_str().unwrap()]).status.success());
+    std::fs::write(root.join("README.md"), "hello again\n").unwrap();
+    assert!(cli(&["index", root.to_str().unwrap()]).status.success());
+
+    // Fresh with the Git dirtiness still visible: exit 0.
+    let status = cli(&["status", root.to_str().unwrap()]);
+    assert!(status.status.success());
+    let text = String::from_utf8(status.stdout).unwrap();
+    assert!(text.contains("freshness: fresh"), "{text}");
+    assert!(text.contains("dirty: 1"), "{text}");
+
+    // check --fresh passes on the dirty, indexed tree.
+    let fresh = cli(&["check", "--fresh", root.to_str().unwrap()]);
+    assert!(
+        fresh.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fresh.stderr)
+    );
+    assert!(
+        String::from_utf8(fresh.stdout)
+            .unwrap()
+            .contains("check: Ok")
+    );
+
+    // Edit again without indexing: stale (exit 3), dirtiness still reported.
+    std::fs::write(root.join("README.md"), "hello third\n").unwrap();
+    let stale = cli(&["status", root.to_str().unwrap()]);
+    assert_eq!(stale.status.code(), Some(3));
+    let stale_text = String::from_utf8(stale.stdout).unwrap();
+    assert!(stale_text.contains("freshness: stale"), "{stale_text}");
+    assert!(stale_text.contains("dirty: 1"), "{stale_text}");
+    let stale_check = cli(&["check", "--fresh", root.to_str().unwrap()]);
+    assert_eq!(stale_check.status.code(), Some(3));
+}

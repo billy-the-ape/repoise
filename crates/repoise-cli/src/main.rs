@@ -116,6 +116,8 @@ COMMANDS:
     index [ROOT]                  Build and publish the offline index (incremental;
                                   live phase progress, or to stderr with --json)
     status [ROOT]                 Show scope, snapshot, index and freshness
+                                  (freshness tracks the saved snapshot and config;
+                                  Git dirtiness is reported separately)
     search --query <Q> [ROOT]     Offline lexical search over the current index
     read --source-id <ID> [ROOT]  Exact read-back of a search result
     related --source-id <ID> [ROOT]  Follow structural links from a source
@@ -192,7 +194,9 @@ RELATED OPTIONS:
 CHECK OPTIONS:
     --fresh                     Also fail when the index is stale; without it, check
                                 classifies missing/coverage only (stable exit codes:
-                                0 ok, 1 error, 2 usage, 3 missing/stale, 4 coverage not met)
+                                0 ok, 1 error, 2 usage, 3 missing/stale, 4 coverage not met).
+                                Stale means the saved snapshot or effective config no
+                                longer matches the index; Git dirtiness is not staleness.
 
 WATCH OPTIONS:
     --interval <MS>             Poll interval (default 500)

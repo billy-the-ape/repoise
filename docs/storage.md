@@ -169,5 +169,8 @@ already stores `vector_profile` and `embedding_scope`).
 Commands: `repoise index` (build/publish), `repoise status` (scope/snapshot/freshness;
 exit 3 when the index is missing or stale), `repoise search`/`repoise read` (offline
 lexical search and exact read-back), `repoise purge` (remove one scope or the whole
-generated layout; source files are never touched). See
+generated layout; source files are never touched). Freshness is judged from the
+published content manifest and effective configuration against the live snapshot
+for the declared scope; Git working-tree dirtiness is reported in the status view
+but never makes the index stale. See
 [development](development.md) for examples and [v1-1.md](plans/complete/v1-1.md) for the card.
