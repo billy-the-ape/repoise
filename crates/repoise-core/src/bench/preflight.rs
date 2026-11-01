@@ -344,10 +344,23 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
         }
     }
     let mut warnings: Vec<String> = Vec::new();
+    // One writer per scope: a live index/watch writer owning the root scope
+    // would contend with the run (index files, provider work); fail before
+    // any worktree is created (bench preflight exit 3).
+    if status.writer.lock_held {
+        let detail = status
+            .owner
+            .as_ref()
+            .map(|owner| format!(" (pid {}, operation {})", owner.pid, owner.operation))
+            .unwrap_or_else(|| " (owner metadata unavailable)".to_string());
+        return Err(Error::Config(format!(
+            "the root scope is owned by an active index/watch writer{detail}; stop it before running the benchmark"
+        )));
+    }
+    // A marker without a held lock is descriptive residue only; record it.
     if status.owner.is_some() {
         warnings.push(
-            "an index/watch writer marker is present for the root scope; the run will not stop \
-             it, but watch/provider contention is recorded"
+            "a stale index/watch writer marker is present for the root scope (no writer holds the lock); recorded as descriptive metadata"
                 .to_string(),
         );
     }

@@ -246,7 +246,7 @@ impl Server {
         if self.allow_refresh {
             tools.push(json!({
                 "name": "refresh_project_knowledge",
-                "description": "Opt-in incremental refresh: rebuild and publish the index for the configured scope (the same operation as `repoise index`). Never executes repository scripts.",
+                "description": "Opt-in incremental refresh: rebuild and publish the index for the configured scope (the same operation as `repoise index`). Never executes repository scripts. Refused with a busy error while another writer (`repoise index` or `repoise watch`) owns the scope; retry once the writer exits.",
                 "inputSchema": scope_input_schema(),
             }));
         }
@@ -605,6 +605,16 @@ impl Server {
                     .into(),
             );
         }
+        // One writer per scope: the refresh runs the same bounded,
+        // transactional index operation as `repoise index`, under the scope's
+        // ownership lock; a concurrent `repoise index`/`watch` writer refuses
+        // the call before any provider work or publication.
+        let scope_dir = self
+            .context
+            .cache
+            .worktree_dir(&self.context.repo_id, &self.context.worktree_id);
+        let _lock = repoise_core::ownership::ScopeLock::acquire(&scope_dir, "mcp-refresh")
+            .map_err(|err| err.to_string())?;
         let client = crate::embedding_client(
             &self.context.effective,
             repoise_core::embed::CancellationToken::new(),

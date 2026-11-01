@@ -32,11 +32,38 @@ pub struct PurgeRequest {
     pub worktree_id: Option<String>,
 }
 
+/// A scope whose ownership lock is currently held by a live writer.
+///
+/// An active `index`/`watch`/`purge` writer must not lose its scope mid-run
+/// (partial generations, lost lock state); the operator stops the writer
+/// first and retries. The list is non-empty only for scopes that are owned
+/// at the moment of the check.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedScope {
+    /// Scope directory path.
+    pub path: PathBuf,
+    /// Descriptive owner marker, when one is present.
+    pub owner: Option<crate::ownership::OwnerReport>,
+}
+
+/// A purge that was refused because a live writer owns at least one scope.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedScopePurgeReport {
+    /// The owned scopes that were skipped.
+    pub owned: Vec<OwnedScope>,
+}
+
 /// Report of what was removed.
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PurgeReport {
     /// Paths removed.
     pub removed: Vec<PathBuf>,
+    /// Present when the purge was refused because live writer(s) own
+    /// scope(s): nothing was removed.
+    pub skipped_owned: Option<OwnedScopePurgeReport>,
 }
 
 /// Validates a scope id: `[a-z0-9][a-z0-9-]*` (ids are hash-derived).
@@ -54,20 +81,19 @@ fn validate_id(value: &str) -> Result<()> {
 }
 
 /// Purges the whole cache or one scope directory.
+///
+/// One writer per scope: before removing a scope directory, the purge takes
+/// that scope's ownership lock, so a live `index`/`watch` writer's scope can
+/// never be removed from under it, and removal cannot be bypassed by
+/// unlinking/recreating the lock file (the lock is held on the open file, not
+/// by path name).
+///
+/// A scoped purge whose scope is owned fails with [`Error::Owned`] before
+/// anything is removed. `--all` removes every scope it can lock; owned
+/// scopes are skipped and reported in `skipped_owned`.
 pub fn purge(cache: &CachePaths, request: &PurgeRequest) -> Result<PurgeReport> {
-    let mut removed = Vec::new();
     if request.all {
-        for dir in [
-            cache.root.join("repos"),
-            cache.root.join("embedding-cache"),
-            cache.root.join("families"),
-        ] {
-            if dir.exists() {
-                fs::remove_dir_all(&dir)?;
-                removed.push(dir);
-            }
-        }
-        return Ok(PurgeReport { removed });
+        return purge_all(cache);
     }
     let Some(repo_id) = &request.repo_id else {
         return Err(Error::Config("purge requires --all or a scope".into()));
@@ -83,9 +109,103 @@ pub fn purge(cache: &CachePaths, request: &PurgeRequest) -> Result<PurgeReport> 
             "scope not found in cache: {dir:?}"
         )));
     }
+    // Hold the scope's ownership lock while it is removed; a live writer
+    // holds the same lock and is reported (never interrupted).
+    let _lock = crate::ownership::ScopeLock::acquire(&dir, "purge")?;
     fs::remove_dir_all(&dir)?;
-    removed.push(dir);
+    let removed = vec![dir];
     // Trim empty parents (keep the layout).
     let _ = fs::remove_dir(cache.repo_dir(repo_id).join("worktrees"));
-    Ok(PurgeReport { removed })
+    Ok(PurgeReport {
+        removed,
+        skipped_owned: None,
+    })
+}
+
+/// Removes every scope the purge can lock, skipping owned scopes and
+/// reporting them.
+fn purge_all(cache: &CachePaths) -> Result<PurgeReport> {
+    let repos_root = cache.root.join("repos");
+    let mut removed = Vec::new();
+    let mut owned = Vec::new();
+    if repos_root.is_dir() {
+        for entry in fs::read_dir(&repos_root)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(repo_id) = name.to_str() else {
+                continue;
+            };
+            if !validate_id(repo_id).is_ok() || !entry.path().is_dir() {
+                continue;
+            }
+            let worktrees_root = entry.path().join("worktrees");
+            if worktrees_root.is_dir() {
+                for scope_entry in fs::read_dir(&worktrees_root)? {
+                    let scope_entry = scope_entry?;
+                    let scope_name = scope_entry.file_name();
+                    let Some(worktree_id) = scope_name.to_str() else {
+                        continue;
+                    };
+                    if !validate_id(worktree_id).is_ok() || !scope_entry.path().is_dir() {
+                        continue;
+                    }
+                    let scope_dir = scope_entry.path();
+                    match crate::ownership::ScopeLock::acquire(&scope_dir, "purge") {
+                        // Locked: remove the whole scope directory (the lock
+                        // file goes with it; the guard's drop is a no-op).
+                        Ok(_lock) => {
+                            fs::remove_dir_all(&scope_dir)?;
+                            removed.push(scope_dir);
+                        }
+                        // A live writer owns this scope: skip it and report it.
+                        Err(crate::ownership::OwnershipError::Busy { metadata }) => {
+                            owned.push(OwnedScope {
+                                path: scope_dir,
+                                owner: metadata,
+                            });
+                        }
+                        Err(err) => return Err(err.into()),
+                    }
+                }
+            }
+            // Trim the now-possibly-empty repository scope directories.
+            let _ = fs::remove_dir(&worktrees_root);
+            let _ = fs::remove_dir(entry.path());
+        }
+        // Leftover repository-scoped data (embedding caches, host caches) and
+        // the other cache roots. When owned scopes remain, their repository
+        // directories are still in use and the shared stores may still be
+        // referenced by the live writers' in-flight builds — leave them and
+        // let the operator retry after the writers exit.
+        if owned.is_empty() {
+            for dir in [
+                repos_root.clone(),
+                cache.root.join("embedding-cache"),
+                cache.root.join("families"),
+            ] {
+                if dir.exists() {
+                    fs::remove_dir_all(&dir)?;
+                    removed.push(dir);
+                }
+            }
+        }
+    } else {
+        for dir in [
+            cache.root.join("embedding-cache"),
+            cache.root.join("families"),
+        ] {
+            if dir.exists() {
+                fs::remove_dir_all(&dir)?;
+                removed.push(dir);
+            }
+        }
+    }
+    Ok(PurgeReport {
+        removed,
+        skipped_owned: if owned.is_empty() {
+            None
+        } else {
+            Some(OwnedScopePurgeReport { owned })
+        },
+    })
 }

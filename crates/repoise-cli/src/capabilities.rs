@@ -61,7 +61,13 @@ pub fn document(heartbeat_ms: u64) -> Value {
 
 /// Build features and always-present capabilities.
 fn features() -> Vec<Value> {
-    let mut features = vec![json!("event-stream"), json!("mcp-stdio")];
+    let mut features = vec![
+        json!("event-stream"),
+        json!("mcp-stdio"),
+        // One writer per mutable index scope: OS-backed exclusive locks (the
+        // advisory owner marker remains the descriptive heartbeat).
+        json!("exclusive-scope-lock"),
+    ];
     if cfg!(feature = "remote-embedding") {
         features.push(json!("remote-embedding"));
     }

@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### Authoritative one-writer-per-scope ownership lock
+
+`OwnerGuard` previously published a best-effort advisory `owner.json`
+marker: a second writer warned and proceeded, so two windows could create
+competing writers on the same mutable index scope. Writers now acquire an
+authoritative, cross-platform OS-backed lock
+(`crates/repoise-core/src/ownership.rs`; `flock(2)` on Unix, `LockFileEx` on
+Windows, via pinned `fs2 =0.4.3`) on
+`<cache>/repos/<repoId>/worktrees/<worktreeId>/scope.lock` **before any
+provider work or publication**:
+
+- `index`, `watch` and the opt-in MCP `refresh_project_knowledge` all run
+  through the same lock. Acquisition is atomic across processes and is
+  released by the OS when the owning process dies (clean exit, crash or
+  kill) — never dependent on PID freshness or unsafe stale-file deletion.
+- A second writer for the same scope is refused with a stable, actionable
+  busy result before any provider work or publication: exit code 1 with the
+  message on stderr for one-shot operations, and a `failed` terminal event
+  carrying the machine `reason` (`scope-owned` / `lock-unavailable`) and
+  `retryable: true` in the `--events` stream. Existing exit-code meanings are
+  unchanged; the refusal is an operational failure.
+- The `owner.json` marker remains as descriptive heartbeat metadata for the
+  process holding the lock (pid, operation, start/refresh times, atomic
+  temp+rename publication); a PID is never proof of liveness and no process
+  is ever killed or adopted based on it. Orphaned markers from dead writers
+  are reported and replaced on the next successful acquisition.
+- `status` gains an additive `writer` field (`lockHeld`, `state`: `owned` |
+  `busy` | `stale-metadata` | `free`) alongside the existing descriptive
+  `owner` field; `capabilities --json` advertises the new
+  `exclusive-scope-lock` feature.
+- `purge` acquires each scope's lock before removing it, so an active
+  writer's scope can never be removed (or bypassed) from under it: a scoped
+  purge of an owned scope fails before removing anything, and `purge --all`
+  skips owned scopes, reporting them in the additive `skippedOwned` report
+  field (human output prints a `skipped (owned):` line per scope).
+- Read-only operations (`status`, `search`, `read`, `related`, `check`,
+  read-only MCP tools) keep working while a writer owns the scope; different
+  worktree/snapshot scopes never block each other.
+
+**Compatibility note:** upgrading while an older (pre-lock) advisory
+`owner.json` exists is safe — the marker is descriptive only; the lock is
+new and starts free. On supported local filesystems a crash never needs
+manual recovery: the OS releases the lock, and a leftover marker is
+reported as `stale-metadata` and replaced on the next acquisition.
+Multi-client network filesystems (e.g. NFS) are not supported for shared
+scope locking (documented in
+[docs/automation.md](docs/automation.md#writer-ownership)).
+
 ### Live configuration reload for running watch
 
 A running `repoise watch` previously loaded the effective configuration and

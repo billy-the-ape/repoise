@@ -372,6 +372,72 @@ fn mcp_refresh_enabled_by_local_config() {
     mcp.close();
 }
 
+/// Sends `signal` (e.g. `"INT"`, `"TERM"`) to `pid` with the POSIX `kill`.
+#[cfg(unix)]
+fn kill_process(pid: u32, signal: &str) {
+    let status = Command::new("kill")
+        .args([format!("-{signal}"), pid.to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -{signal} {pid} must succeed");
+}
+
+/// A refresh call while another writer owns the scope is refused before any
+/// provider work or publication and never overwrites the owner's metadata;
+/// once the owner exits, the same refresh succeeds.
+#[cfg(unix)]
+#[test]
+fn mcp_refresh_is_refused_while_watch_owns_the_scope() {
+    use std::process::Stdio;
+
+    let root = temp_root("mcp-owned");
+    let root_str = root.to_str().unwrap();
+    std::fs::write(root.join("README.md"), "hello world\n").unwrap();
+    cli_json(&["index", "--json", root_str]);
+
+    let mut watch = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", root_str])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    // Barrier: wait until the watcher actually holds the scope lock.
+    let mut owned = false;
+    for _ in 0..50 {
+        let probe = cli(&["status", "--json", root_str]);
+        match probe.status.code() {
+            Some(0) | Some(3) => {}
+            other => panic!("unexpected status exit code: {other:?}"),
+        }
+        let doc: Value = serde_json::from_slice(&probe.stdout).unwrap();
+        if doc["writer"]["lock_held"] == true && doc["writer"]["state"] == "owned" {
+            owned = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(owned, "watch should hold the scope lock while running");
+
+    let mut mcp = Mcp::spawn(&root, &["--allow-refresh"]);
+    let denied = mcp.tool_error(2, "refresh_project_knowledge", json!({}));
+    assert!(
+        denied.contains("scope is owned by another Repoise writer"),
+        "{denied}"
+    );
+
+    // The owner's metadata is untouched by the refused call.
+    let probe = cli(&["status", "--json", root_str]);
+    let doc: Value = serde_json::from_slice(&probe.stdout).unwrap();
+    assert_eq!(doc["owner"]["operation"], "watch");
+
+    kill_process(watch.id(), "TERM");
+    assert!(watch.wait().unwrap().success());
+
+    let outcome = mcp.tool_result(3, "refresh_project_knowledge", json!({}));
+    assert!(outcome["generation_id"].as_i64().unwrap() >= 1);
+    mcp.close();
+}
+
 #[test]
 fn mcp_scope_enforcement() {
     let root = temp_root("scope");

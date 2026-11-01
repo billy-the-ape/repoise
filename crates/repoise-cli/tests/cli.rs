@@ -1071,3 +1071,350 @@ fn status_and_check_separate_freshness_from_git_dirtiness() {
     let stale_check = cli(&["check", "--fresh", root.to_str().unwrap()]);
     assert_eq!(stale_check.status.code(), Some(3));
 }
+
+/// Cross-process barrier: poll `status --json` until the scope's OS lock is
+/// actually held and the owner marker is active. Never relies on a lucky
+/// sleep; the watcher owns the scope before the test proceeds.
+#[cfg(unix)]
+fn wait_for_owned_scope(root: &std::path::Path) -> serde_json::Value {
+    for _ in 0..50 {
+        let probe = cli(&["status", "--json", root.to_str().unwrap()]);
+        match probe.status.code() {
+            Some(0) | Some(3) => {}
+            other => panic!(
+                "unexpected status exit code: {other:?}; stderr: {}",
+                String::from_utf8(probe.stderr).unwrap_or_default()
+            ),
+        }
+        let doc: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(probe.stdout).unwrap()).unwrap();
+        if doc["writer"]["lock_held"] == true && doc["writer"]["state"] == "owned" {
+            return doc;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("the scope never became owned by the running watcher");
+}
+
+/// Two independent processes racing the same scope: the second writer is
+/// refused with a stable, actionable busy result before any provider work or
+/// publication, the owner's metadata stays untouched, and the scope is
+/// acquirable again once the watcher exits (the OS released the lock).
+#[cfg(unix)]
+#[test]
+fn index_is_refused_before_any_work_while_watch_owns_the_scope() {
+    use std::process::Stdio;
+
+    let root = temp_root("owned-index");
+    let root_str = root.to_str().unwrap();
+    let primed = cli(&["index", "--json", root_str]);
+    assert!(primed.status.success());
+
+    let mut watch = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", root_str])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    let doc = wait_for_owned_scope(&root);
+    assert_eq!(doc["owner"]["operation"], "watch");
+    let generation = doc["index"]["generation_id"].clone();
+
+    // The rejected one-shot writer: operational failure (exit 1) with the
+    // actionable message, and no index output (it never started work).
+    let refused = cli(&["index", "--json", root_str]);
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "a busy rejection is an operational failure"
+    );
+    let refused_stderr = String::from_utf8(refused.stderr).unwrap();
+    assert!(
+        refused_stderr.contains("scope is owned by another Repoise writer"),
+        "{refused_stderr}"
+    );
+    assert!(
+        refused.stdout.is_empty(),
+        "a refused index must not emit index output"
+    );
+
+    // The rejected writer did not overwrite the live owner's metadata, and
+    // the served generation is unchanged.
+    let after = wait_for_owned_scope(&root);
+    assert_eq!(after["owner"]["operation"], "watch");
+    assert_eq!(after["index"]["generation_id"], generation);
+
+    kill(watch.id(), "TERM");
+    assert!(watch.wait().unwrap().success());
+
+    let reindex = cli(&["index", "--json", root_str]);
+    assert!(
+        reindex.status.success(),
+        "the released scope must be indexable again; stderr: {}",
+        String::from_utf8_lossy(&reindex.stderr)
+    );
+    let freed: serde_json::Value = serde_json::from_str(
+        &String::from_utf8(cli(&["status", "--json", root_str]).stdout).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(freed["writer"]["state"], "free");
+}
+
+/// `purge` cannot remove (or bypass) an owned scope: the scoped purge fails
+/// before removing anything while the watcher holds the lock, and succeeds
+/// after the watcher exits.
+#[cfg(unix)]
+#[test]
+fn purge_is_refused_while_watch_owns_the_scope() {
+    use std::process::Stdio;
+
+    let root = temp_root("owned-purge");
+    let root_str = root.to_str().unwrap();
+    let primed = cli(&["index", "--json", root_str]);
+    assert!(primed.status.success());
+    let doc = cli_json_status(root_str);
+    let repo_id = doc["scope"]["repo_id"].as_str().unwrap();
+    let worktree_id = doc["scope"]["worktree_id"].as_str().unwrap();
+    let db_path = doc["cache"]["db_path"].as_str().unwrap();
+
+    let mut watch = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", root_str])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    wait_for_owned_scope(&root);
+
+    let refused = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["purge", "--repo-id", repo_id, "--worktree-id", worktree_id])
+        .current_dir(&root)
+        .output()
+        .expect("CLI should start");
+    assert_eq!(refused.status.code(), Some(1));
+    let refused_stderr = String::from_utf8(refused.stderr).unwrap();
+    assert!(
+        refused_stderr.contains("scope is owned by another Repoise writer"),
+        "{refused_stderr}"
+    );
+    assert!(
+        std::path::Path::new(db_path).exists(),
+        "the owned scope's database must not be removed"
+    );
+
+    kill(watch.id(), "TERM");
+    assert!(watch.wait().unwrap().success());
+
+    let purged = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["purge", "--repo-id", repo_id, "--worktree-id", worktree_id])
+        .current_dir(&root)
+        .output()
+        .expect("CLI should start");
+    assert!(
+        purged.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&purged.stderr)
+    );
+    assert!(
+        !std::path::Path::new(db_path).exists(),
+        "the released scope must be purged"
+    );
+}
+
+/// Runs the CLI with explicit environment overrides.
+#[cfg(unix)]
+fn cli_with_env(env: &[(&str, &str)], args: &[&str]) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.args(args).output().expect("CLI should start")
+}
+
+/// `purge --all` skips owned scopes (reporting them), removes the rest, and
+/// completes fully once the writer exits.
+#[cfg(unix)]
+#[test]
+fn purge_all_skips_owned_scope_and_removes_the_rest() {
+    use std::process::Stdio;
+
+    // Two repositories sharing one explicit cache root.
+    let cache = std::env::temp_dir().join(format!(
+        "repoise-cli-test-purge-all-cache-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&cache).unwrap();
+    let cache_str = cache.to_str().unwrap();
+    let env: &[(&str, &str)] = &[("REPOISE_CACHE_DIR", cache_str)];
+
+    let mut roots = Vec::new();
+    for name in ["purge-all-a", "purge-all-b"] {
+        let root = temp_root(name);
+        let index = cli_with_env(env, &["index", "--json", root.to_str().unwrap()]);
+        assert!(index.status.success());
+        roots.push(root);
+    }
+
+    let mut watch = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", roots[0].to_str().unwrap()])
+        .env("REPOISE_CACHE_DIR", cache_str)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    // Barrier: wait until the watcher actually holds the scope lock.
+    let mut owned = false;
+    for _ in 0..50 {
+        let probe = cli_with_env(env, &["status", "--json", roots[0].to_str().unwrap()]);
+        match probe.status.code() {
+            Some(0) | Some(3) => {}
+            other => panic!("unexpected status exit code: {other:?}"),
+        }
+        let doc: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(probe.stdout).unwrap()).unwrap();
+        if doc["writer"]["lock_held"] == true {
+            owned = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(owned, "watch should hold the scope lock while running");
+
+    let owned_db: String = {
+        let probe = cli_with_env(env, &["status", "--json", roots[0].to_str().unwrap()]);
+        let doc: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(probe.stdout).unwrap()).unwrap();
+        doc.get("cache")
+            .and_then(|c| c.get("db_path"))
+            .and_then(|p| p.as_str())
+            .unwrap()
+            .to_string()
+    };
+
+    // --all from an owned scope's own root: the free scope is removed, the
+    // owned scope is skipped and reported, and nothing else is touched.
+    let all = cli_with_env(env, &["purge", "--all", "--json"]);
+    assert!(
+        all.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&all.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
+    let skipped = report["skippedOwned"]["owned"].as_array().unwrap();
+    assert_eq!(
+        skipped.len(),
+        1,
+        "exactly one owned scope is skipped: {report}"
+    );
+    assert!(
+        std::path::Path::new(&owned_db).exists(),
+        "the owned scope survives"
+    );
+
+    kill(watch.id(), "TERM");
+    assert!(watch.wait().unwrap().success());
+
+    // Retry after the writer exits: everything is removed, nothing skipped.
+    let all2 = cli_with_env(env, &["purge", "--all", "--json"]);
+    assert!(
+        all2.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&all2.stderr)
+    );
+    let report2: serde_json::Value = serde_json::from_slice(&all2.stdout).unwrap();
+    assert!(
+        report2["skippedOwned"].is_null(),
+        "no owned scopes remain after the writer exits: {report2}"
+    );
+    assert!(
+        !cache.join("repos").exists(),
+        "the repos root must be removed"
+    );
+}
+
+/// `status --json` for a root, asserting the documented exit codes (0 when
+/// indexed, 3 while the index is missing).
+#[cfg(unix)]
+fn cli_json_status(root_str: &str) -> serde_json::Value {
+    let probe = cli(&["status", "--json", root_str]);
+    match probe.status.code() {
+        Some(0) | Some(3) => {}
+        other => panic!(
+            "unexpected status exit code: {other:?}; stderr: {}",
+            String::from_utf8(probe.stderr).unwrap_or_default()
+        ),
+    }
+    serde_json::from_str(&String::from_utf8(probe.stdout).unwrap()).unwrap()
+}
+
+/// The working-tree scope and the committed scope of one repository are
+/// separate mutable scopes: a watcher owning one never blocks an index of
+/// the other.
+#[cfg(unix)]
+#[test]
+fn different_snapshot_scopes_do_not_block_each_other() {
+    use std::process::Stdio;
+
+    let root = std::env::temp_dir().join(format!(
+        "repoise-cli-test-scope-split-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create temp dir");
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "user.name", "Test"]);
+    std::fs::write(
+        root.join(".git").join("info").join("exclude"),
+        ".repoise/\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("README.md"), "hello\n").unwrap();
+    git(&root, &["add", "README.md"]);
+    git(&root, &["commit", "-q", "-m", "Add readme"]);
+    let root_str = root.to_str().unwrap();
+
+    // Both snapshot scopes exist and are distinct.
+    assert!(cli(&["index", "--json", root_str]).status.success());
+    assert!(
+        cli(&["index", "--json", "--committed", root_str])
+            .status
+            .success()
+    );
+    let wt_doc = cli_json_status(root_str);
+    let committed_doc: serde_json::Value = {
+        let probe = cli(&["status", "--json", "--committed", root_str]);
+        match probe.status.code() {
+            Some(0) | Some(3) => {}
+            other => panic!(
+                "unexpected status exit code: {other:?}; stderr: {}",
+                String::from_utf8(probe.stderr).unwrap_or_default()
+            ),
+        }
+        serde_json::from_str(&String::from_utf8(probe.stdout).unwrap()).unwrap()
+    };
+    assert_ne!(
+        wt_doc["scope"]["worktree_id"], committed_doc["scope"]["worktree_id"],
+        "the two snapshot modes must be separate mutable scopes"
+    );
+
+    let mut watch = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args(["watch", "--interval", "200", root_str])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    wait_for_owned_scope(&root);
+
+    // The committed scope stays indexable while the working-tree scope is
+    // owned by the watch.
+    let committed_index = cli(&["index", "--json", "--committed", root_str]);
+    assert!(
+        committed_index.status.success(),
+        "a different scope must not be blocked by another scope's writer; stderr: {}",
+        String::from_utf8_lossy(&committed_index.stderr)
+    );
+
+    kill(watch.id(), "TERM");
+    assert!(watch.wait().unwrap().success());
+}

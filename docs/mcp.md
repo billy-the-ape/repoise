@@ -12,7 +12,10 @@ The server is **read-only by default**: the refresh tool is exposed only when th
 operator explicitly enables it (config `mcp.refresh` or `--allow-refresh`).
 Refresh runs the same bounded, transactional index operation as `repoise index`
 for the configured scope; it never executes repository scripts and changes only
-the generated cache.
+the generated cache. It runs under the scope's one-writer ownership lock: while
+another writer (`repoise index` or `repoise watch`) owns the scope, the call is
+refused with a busy error before any provider work or publication (see
+[automation.md](automation.md#writer-ownership)).
 
 ## Launch
 
@@ -48,7 +51,7 @@ repoise-condition trial an MCP boundary that enforces the suite's declared
 | `read_project_knowledge` | exact read-back | `sourceId` required; expected-hash validation against the live snapshot; `maxOutputTokens` (estimated, default 2500) truncates at a line boundary and marks the result `truncated` |
 | `related_project_knowledge` | reference and parent/child-chunk links | `sourceId` required; optional `relations` (`references`, `referenced-by`, `children`, `parent`), `limit`, `maxOutputTokens` |
 | `project_knowledge_status` | operator status | published index, live snapshot, freshness, coverage, cache, last error; freshness tracks the live saved snapshot and effective config — Git dirtiness (`dirtyCount`) is reported separately and does not make the index stale |
-| `refresh_project_knowledge` | incremental index publication | opt-in only; identical outcome to `repoise index` |
+| `refresh_project_knowledge` | incremental index publication | opt-in only; identical outcome to `repoise index`; refused while another writer owns the scope |
 
 All tools accept the optional scope-verification arguments `repoId`,
 `worktreeId` and `snapshotMode`; a provided value that does not match the
