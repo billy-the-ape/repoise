@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Scope-aware embedding coverage
+
+Vector coverage is now computed against the eligible corpus of the
+generation's persisted embedding scope (docs, or docs + code when the scope
+is `all`) instead of the whole chunk population. Indexing embeds docs, or
+docs + code, while config and other corpora stay lexical-only; previously
+`status` computed `vectors_pending` as all chunks minus vector count, so a
+healthy docs-only (or docs+code) index with config chunks looked
+permanently incomplete and the bench hybrid preflight was unreachable for
+such corpora. One shared computation now feeds `status`, `check`, the
+search coverage report and the bench root hybrid gate:
+
+- `status` (CLI and MCP, same view) gains additive machine fields on the
+  index: `embedding_scope`, `eligible_chunks`, `ineligible_chunks` and
+  `embedding_coverage` (`disabled`, `profile-unavailable`, `empty`,
+  `partial` or `complete`); `vectors_pending` now counts eligible chunks
+  without a vector for the stored profile (0 for lexical-only builds and
+  empty eligible corpora). The human `status` line reports
+  `N / M eligible (scope S; K lexical-only)` instead of `N / M chunks`.
+- Vectors from a different profile fingerprint never satisfy coverage, and
+  the judgment always uses the generation's persisted scope/profile, never
+  today's config: changing the embedding scope/profile flags the index
+  stale (rebuild required) instead of reinterpreting old vectors.
+- `check` keeps its categories and exit codes: a configured embedding over a
+  lexical-only served generation reports `profile-unavailable` (rebuild,
+  not pending work), a stored profile over an empty eligible corpus is a
+  deterministic unmet coverage with nothing pending (hybrid retrieval
+  cannot run), and partial eligible coverage fails with the pending count.
+- The bench hybrid preflight accepts any otherwise valid corpus whose
+  eligible chunks are fully embedded (no corpus role remapping needed) and
+  still rejects partial/missing coverage; `bench --dry-run` now also reports
+  `eligibleChunks` and `embeddingCoverage`.
+- No database migration: the `generation` row already stores
+  `vector_profile` and `embedding_scope`; retrieval (RRF, ranking, query
+  profiles) is unchanged. See the vector coverage semantics in
+  `docs/storage.md`.
+
 ### Policy-aware, bounded intake
 
 Filesystem and Git intake no longer read or hash corpus content before

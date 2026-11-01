@@ -284,10 +284,17 @@ state is modified.
   model is used, but the original `nomic-embed-text-v1.5` selection from
   the preset could not be loaded alongside the coding model under the
   current llama-swap configuration.
-- **Engine gap (follow-up)**: `status` and the bench hybrid preflight
-  compute vector pending across the entire corpus (docs+code+config),
-  while the embedding scope covers docs+code only — so any corpus
-  containing config files has permanently non-zero pending and the
-  hybrid preflight is unreachable without a corpus policy (the role
-  remap above) or an engine fix (scope-aware coverage). Flagged for a
-  separate engine PR; it does not change retrieval behavior.
+- **Engine gap (follow-up) — resolved in main**: `status` and the bench
+  hybrid preflight computed vector pending across the entire corpus
+  (docs+code+config), while the embedding scope covers docs+code only —
+  so any corpus containing config files had permanently non-zero pending
+  and the hybrid preflight was unreachable without a corpus policy (the
+  role remap above) or an engine fix (scope-aware coverage). The engine
+  fix has landed: `status`, `check` and the bench hybrid preflight now
+  judge vector coverage against the eligible corpus of the generation's
+  persisted embedding scope (docs, or docs + code), so config and other
+  lexical-only chunks never count as pending and a mixed corpus no
+  longer needs the role remap. The historical config, hashes and
+  measurements recorded above are unchanged — this pilot was not rerun
+  and the remap still stands in that repository's config; `status` on
+  it now reports complete eligible coverage with zero pending.

@@ -1144,14 +1144,21 @@ fn run_status(opts: &CliOptions) -> Result<ExitCode, String> {
                     .map(|p| format!(" profile {p}"))
                     .unwrap_or_default();
                 let pending = if index.vectors_pending > 0 {
-                    format!(" ({} pending)", index.vectors_pending)
+                    format!(" ({} eligible pending)", index.vectors_pending)
                 } else {
                     String::new()
                 };
-                println!(
-                    "vectors: {} / {} chunks{}{}",
-                    index.vectors, index.chunks, profile, pending
-                );
+                if index.embedding_coverage == "disabled" {
+                    println!("vectors: 0 (lexical-only build){profile}");
+                } else {
+                    println!(
+                        "vectors: {} / {} eligible (scope {}; {} lexical-only){profile}{pending}",
+                        index.vectors,
+                        index.eligible_chunks,
+                        index.embedding_scope,
+                        index.ineligible_chunks
+                    );
+                }
             }
             None => println!("index: (none)"),
         }

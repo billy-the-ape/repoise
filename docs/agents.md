@@ -123,8 +123,10 @@ configured budgets. When embedding is not configured (or this build lacks the
 remote-embedding transport), watch publications are lexical-only and carry no
 vectors. A provider failure or cancellation during a publication leaves the
 generation lexically complete with partial or no vector coverage; `status`
-and `check` report the combined pending/failed vector count (`vectors_pending`)
-and coverage-not-met.
+and `check` report the eligible-chunk pending count (`vectors_pending`,
+scoped to the generation's embedding scope — docs, or docs + code — while
+config and other out-of-scope chunks stay lexical and never count as
+pending) and coverage-not-met.
 Watch does not retry a publication on its own: the failed or pending inputs
 are re-attempted by the next watch publication (when content or configuration
 changes) or by an explicit `repoise index`, so a missing vector is never

@@ -1989,3 +1989,425 @@ fn edited_1_0_0_agents_snippet_reports_conflict_and_is_preserved() {
         expected
     );
 }
+// --- Scope-aware embedding coverage (denominator fix) -------------------
+//
+// Embedding covers docs, or docs+code; config and other corpora are
+// lexical-only. Status/check/preflight must judge vector coverage against
+// the eligible corpus of the generation's persisted scope/profile, never
+// the whole chunk population.
+
+const CONFIG_JSON: &str = "{\n  \"name\": \"repoise-test\"\n}\n";
+
+fn status_of(repo: &DirRepo) -> repoise_core::status::StatusView {
+    let (adapter, mode, effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    repoise_core::status::status(adapter.as_ref(), mode, &effective, None, &store, &cache).unwrap()
+}
+
+fn check_with(repo: &DirRepo, require_fresh: bool) -> repoise_core::check::CheckResult {
+    let (adapter, mode, effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    repoise_core::check::check(
+        adapter.as_ref(),
+        mode,
+        &effective,
+        None,
+        &store,
+        &cache,
+        &repoise_core::check::CheckOptions { require_fresh },
+    )
+    .unwrap()
+}
+
+fn write_embedding_config_scoped(repo: &DirRepo, model: &str, scope: Option<&str>) {
+    let mut embedding = serde_json::json!({
+        "provider": "openai-compatible",
+        "model": model,
+        "dimensions": 8
+    });
+    if let Some(scope) = scope {
+        embedding["scope"] = serde_json::Value::String(scope.to_string());
+    }
+    let config = serde_json::json!({ "embedding": embedding });
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn mixed_corpus_docs_scope_reports_complete_scope_aware_coverage() {
+    let repo = DirRepo::new(
+        "cov-mixed-docs",
+        &[
+            ("docs/a.md", WATCH_DOC_A_V1),
+            ("src/math.ts", MATH_TS),
+            ("config/app.json", CONFIG_JSON),
+        ],
+    );
+    write_embedding_config_scoped(&repo, "v1", None); // docs scope (default)
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let outcome = build_with_embeddings(&repo, Some(&client));
+    assert!(outcome.vectors_total > 0);
+
+    let view = status_of(&repo);
+    let index = view.index.as_ref().expect("published index");
+    let (_adapter, _mode, _effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    let conn = store.open().unwrap();
+    let (docs, code) =
+        repoise_core::store::corpus_chunk_counts(&conn, index.generation_id).unwrap();
+    assert!(docs > 0, "docs chunks expected");
+    assert!(code > 0, "code chunks expected");
+    // Docs are the only eligible corpus; code and config stay lexical.
+    assert_eq!(index.embedding_scope, "docs");
+    assert_eq!(index.eligible_chunks, docs);
+    assert_eq!(
+        index.ineligible_chunks,
+        index.chunks - index.eligible_chunks
+    );
+    assert!(
+        index.ineligible_chunks >= code,
+        "config+code are ineligible"
+    );
+    assert_eq!(index.vectors, docs);
+    assert_eq!(index.vectors_pending, 0, "docs-only embedding is complete");
+    assert_eq!(index.embedding_coverage, "complete");
+
+    // The offline check is met without any provider call.
+    let result = check_of(&repo);
+    assert_eq!(result.category, repoise_core::check::CheckCategory::Ok);
+    assert!(result.fresh);
+    assert!(result.coverage_met);
+
+    // The machine view carries the same scope-aware fields (the MCP status
+    // tool serializes this same view, so CLI and MCP stay in parity).
+    let value = serde_json::to_value(&view).unwrap();
+    assert_eq!(value["index"]["embedding_coverage"], "complete");
+    assert_eq!(value["index"]["eligible_chunks"], docs as u64);
+    assert_eq!(
+        value["index"]["ineligible_chunks"],
+        (index.chunks - docs) as u64
+    );
+    assert_eq!(value["index"]["vectors_pending"], 0);
+
+    // The search coverage report uses the eligible denominator too.
+    let hits = lex_results(&repo, "alpha");
+    assert!(!hits.is_empty());
+    let (adapter, mode, effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    let response = repoise_core::search::search(
+        adapter.as_ref(),
+        mode,
+        &store,
+        &SearchRequest {
+            query: "alpha".to_string(),
+            path_filter: None,
+            role_filter: None,
+            max_results: Some(1),
+            max_output_tokens: None,
+            cursor: None,
+            mode: repoise_core::search::SearchMode::Lexical,
+            rrf_k: Some(effective.rrf_k),
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(response.coverage.eligible_chunks, docs);
+    assert_eq!(response.coverage.vectors, docs);
+    assert!(
+        response.coverage.vector.contains("eligible vectors"),
+        "vector coverage describes the eligible corpus: {}",
+        response.coverage.vector
+    );
+}
+
+#[test]
+fn docs_plus_code_scope_embeds_code_and_keeps_config_lexical() {
+    let repo = DirRepo::new(
+        "cov-mixed-all",
+        &[
+            ("docs/a.md", WATCH_DOC_A_V1),
+            ("src/math.ts", MATH_TS),
+            ("config/app.json", CONFIG_JSON),
+        ],
+    );
+    write_embedding_config_scoped(&repo, "v1", Some("all"));
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let outcome = build_with_embeddings(&repo, Some(&client));
+    let view = status_of(&repo);
+    let index = view.index.as_ref().expect("published index");
+    let (_adapter, _mode, _effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    let conn = store.open().unwrap();
+    let (docs, code) =
+        repoise_core::store::corpus_chunk_counts(&conn, index.generation_id).unwrap();
+    assert_eq!(index.embedding_scope, "all");
+    assert_eq!(
+        index.eligible_chunks,
+        docs + code,
+        "docs and code are eligible under the all scope"
+    );
+    assert_eq!(index.vectors, outcome.vectors_total as i64);
+    assert_eq!(index.vectors, index.eligible_chunks);
+    assert_eq!(index.vectors_pending, 0);
+    assert!(index.ineligible_chunks > 0, "config chunks stay lexical");
+    assert_eq!(index.embedding_coverage, "complete");
+    let result = check_of(&repo);
+    assert_eq!(result.category, repoise_core::check::CheckCategory::Ok);
+    assert!(result.coverage_met);
+}
+
+#[test]
+fn wrong_profile_vectors_cannot_mask_missing_coverage() {
+    let repo = DirRepo::new("cov-wrong-profile", &[("docs/a.md", WATCH_DOC_A_V1)]);
+    write_embedding_config_scoped(&repo, "v1", None);
+    // A failing provider publishes the profile but zero vectors.
+    let (client, _, _) = recording_client(
+        "v1",
+        true,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let outcome = build_with_embeddings(&repo, Some(&client));
+    assert_eq!(
+        outcome.vectors_total, 0,
+        "no vectors are invented on failure"
+    );
+
+    // Unrelated vectors stored under a different profile must not satisfy
+    // coverage for the stored profile.
+    let index = status_of(&repo).index.expect("published index");
+    let (_adapter, _mode, _effective, cache) = repo.context();
+    let store = repo.store(&cache);
+    let conn = store.open().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT chunk_id FROM chunk WHERE generation_id = ?1")
+        .unwrap();
+    let chunk_ids: Vec<String> = stmt
+        .query_map([index.generation_id], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert!(!chunk_ids.is_empty());
+    let foreign = repoise_core::embed::encode_vector(&[0.25f32; 8]);
+    for chunk_id in &chunk_ids {
+        let params: [&dyn rusqlite::ToSql; 3] = [&index.generation_id, chunk_id, &foreign];
+        conn.execute(
+            "INSERT OR REPLACE INTO chunk_vec \
+             (generation_id, chunk_id, fingerprint, input_hash, dimension, vector) \
+             VALUES (?1, ?2, 'other-profile', 'not-this-profile', 8, ?3)",
+            params,
+        )
+        .unwrap();
+    }
+
+    let view = status_of(&repo);
+    let index = view.index.expect("published index");
+    assert_eq!(index.vectors, 0, "foreign-profile vectors are not counted");
+    assert_eq!(index.vectors_pending, index.eligible_chunks);
+    assert_eq!(index.embedding_coverage, "partial");
+    let result = check_of(&repo);
+    assert_eq!(
+        result.category,
+        repoise_core::check::CheckCategory::CoverageNotMet
+    );
+    assert!(!result.coverage_met);
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("await embeddings")),
+        "expected the pending-eligible reason, got {:?}",
+        result.reasons
+    );
+}
+
+#[test]
+fn lexical_only_operation_reports_no_actionable_pending() {
+    let repo = DirRepo::new(
+        "cov-lexical-only",
+        &[
+            ("docs/a.md", WATCH_DOC_A_V1),
+            ("src/math.ts", MATH_TS),
+            ("config/app.json", CONFIG_JSON),
+        ],
+    );
+    build_index(&repo); // no embedding configured
+    let view = status_of(&repo);
+    let index = view.index.as_ref().expect("published index");
+    assert!(index.vector_profile.is_none());
+    assert_eq!(index.vectors, 0);
+    assert_eq!(index.vectors_pending, 0, "no vector work is pending");
+    assert_eq!(index.embedding_coverage, "disabled");
+    assert!(index.chunks > 0);
+    let result = check_of(&repo);
+    assert_eq!(result.category, repoise_core::check::CheckCategory::Ok);
+    assert!(result.fresh);
+    assert!(result.coverage_met, "disabled embedding is not a failure");
+}
+
+#[test]
+fn empty_eligible_corpus_is_deterministic_and_not_pending() {
+    let repo = DirRepo::new("cov-empty-eligible", &[("config/app.json", CONFIG_JSON)]);
+    let config = serde_json::json!({
+        "preset": "hybrid",
+        "embedding": {
+            "provider": "openai-compatible",
+            "model": "v1",
+            "dimensions": 8
+        }
+    });
+    std::fs::write(
+        repo.root.join(repoise_core::CONFIG_FILENAME),
+        serde_json::to_string(&config).unwrap(),
+    )
+    .unwrap();
+    let (client, _, calls) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    let outcome = build_with_embeddings(&repo, Some(&client));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "an empty eligible corpus makes no provider calls"
+    );
+    assert_eq!(outcome.vectors_total, 0);
+
+    let view = status_of(&repo);
+    let index = view.index.as_ref().expect("published index");
+    assert_eq!(index.embedding_coverage, "empty");
+    assert_eq!(index.eligible_chunks, 0);
+    assert_eq!(index.vectors_pending, 0, "nothing can be pending");
+    // The gate fails (hybrid retrieval cannot run) but does not promise
+    // pending work that could never complete.
+    let result = check_of(&repo);
+    assert_eq!(
+        result.category,
+        repoise_core::check::CheckCategory::CoverageNotMet
+    );
+    assert!(result.fresh);
+    assert!(!result.coverage_met);
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("empty eligible corpus")),
+        "expected the empty-corpus reason, got {:?}",
+        result.reasons
+    );
+}
+
+#[test]
+fn changed_scope_stays_stale_and_judges_the_persisted_generation() {
+    let repo = DirRepo::new(
+        "cov-scope-change",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("src/math.ts", MATH_TS)],
+    );
+    write_embedding_config_scoped(&repo, "v1", None); // docs scope
+    let (client, _, _) = recording_client(
+        "v1",
+        false,
+        None,
+        repoise_core::embed::EmbeddingBudgets::default(),
+        repoise_core::embed::CancellationToken::new(),
+    );
+    build_with_embeddings(&repo, Some(&client));
+    let view = status_of(&repo);
+    assert_eq!(view.freshness.status, "fresh");
+    let index = view.index.as_ref().expect("published index");
+    assert_eq!(index.embedding_scope, "docs");
+    assert_eq!(index.embedding_coverage, "complete");
+
+    // Widening the scope changes the config fingerprint: the served
+    // generation is stale and its vectors are never reinterpreted under
+    // the new scope.
+    write_embedding_config_scoped(&repo, "v1", Some("all"));
+    let view = status_of(&repo);
+    assert_eq!(view.freshness.status, "stale");
+    assert!(
+        view.freshness
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("config changed")),
+        "config change must flag staleness, got {:?}",
+        view.freshness.reasons
+    );
+    let index = view.index.as_ref().expect("published index");
+    assert_eq!(index.embedding_scope, "docs", "persisted generation scope");
+    assert_eq!(index.embedding_coverage, "complete");
+
+    // check --fresh fails on staleness; the coverage-only check judges the
+    // served generation against its own persisted scope and passes.
+    assert_eq!(
+        check_with(&repo, true).category,
+        repoise_core::check::CheckCategory::Stale
+    );
+    assert_eq!(
+        check_with(&repo, false).category,
+        repoise_core::check::CheckCategory::Ok
+    );
+}
+
+#[test]
+fn partial_eligible_vectors_fail_the_coverage_gate() {
+    let repo = DirRepo::new(
+        "cov-partial",
+        &[("docs/a.md", WATCH_DOC_A_V1), ("docs/b.md", WATCH_DOC_B_V1)],
+    );
+    write_embedding_config_scoped(&repo, "v1", None);
+    // Cancel mid-embedding: the in-flight batch publishes, the rest stays
+    // pending (partial eligible coverage).
+    let token = repoise_core::embed::CancellationToken::new();
+    let budgets = repoise_core::embed::EmbeddingBudgets {
+        batch_size: 1,
+        ..repoise_core::embed::EmbeddingBudgets::default()
+    };
+    let (client, _, _) = recording_client("v1", false, Some(token.clone()), budgets, token);
+    let outcome = build_with_embeddings(&repo, Some(&client));
+    let stats = outcome.embedding.as_ref().expect("embedding ran");
+    assert!(stats.embedded > 0);
+    assert!(stats.pending > 0);
+    assert_eq!(
+        outcome.vectors_total, stats.embedded,
+        "published vectors are exactly the embedded inputs"
+    );
+
+    let view = status_of(&repo);
+    let index = view.index.as_ref().expect("published index");
+    assert_eq!(index.vectors, outcome.vectors_total as i64);
+    assert_eq!(index.vectors_pending, index.eligible_chunks - index.vectors);
+    assert_eq!(index.embedding_coverage, "partial");
+    let result = check_of(&repo);
+    assert_eq!(
+        result.category,
+        repoise_core::check::CheckCategory::CoverageNotMet
+    );
+    assert!(!result.coverage_met);
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("eligible chunk(s) await embeddings")),
+        "expected the partial reason, got {:?}",
+        result.reasons
+    );
+}

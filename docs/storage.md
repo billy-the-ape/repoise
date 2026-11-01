@@ -92,7 +92,7 @@ Tables:
 
 | Table | Role |
 | --- | --- |
-| `generation` | One row per build: snapshot id/mode, revision, manifest/config/parser fingerprints, build time, optional single-profile vector fingerprint, embedding scope (`docs` or `docs+code`), history-lane item count and the persisted history-lane coverage summary (`history_meta` JSON: enabled flag plus gaps/enrichment outcome for `status` and history search); `state` is `building` until commit |
+| `generation` | One row per build: snapshot id/mode, revision, manifest/config/parser fingerprints, build time, optional single-profile vector fingerprint, embedding scope (`docs` or `all`), history-lane item count and the persisted history-lane coverage summary (`history_meta` JSON: enabled flag plus gaps/enrichment outcome for `status` and history search); `state` is `building` until commit |
 | `file` | Per-generation file records (content hash, role, lifecycle, corpus, parser version, parser-error range count, size) |
 | `chunk` | Per-generation chunk records: opaque id, parent id, path, heading ancestry, corpus, redacted text, text hash, primary symbol, split context, exact 1-based line and byte ranges |
 | `chunk_fts` | FTS5 content index over chunk path/heading/symbol/context/body for lexical search |
@@ -135,6 +135,36 @@ Invariants:
 - `read` re-reads the file at the snapshot and validates the file content hash and the
   chunk text hash; any mismatch is a `stale` result with refresh guidance, never a
   silent substitution.
+
+## Vector coverage semantics
+
+Embedding is opt-in and scope-bounded: the generation's persisted embedding
+scope (`docs`, or `all` for docs + code) decides which chunks may ever
+carry a vector. `status`, `check` and the bench hybrid preflight share one
+scope-aware coverage computation over the published generation:
+
+- **eligible chunks** = docs chunks plus code chunks when the stored scope
+  is `all`;
+- **ineligible chunks** = every other corpus (e.g. config) — lexical-only,
+  never embedded and never pending;
+- **pending** = eligible chunks without a vector for the generation's
+  stored profile fingerprint (vectors from a different profile never
+  satisfy coverage);
+- coverage state is `disabled` (no stored profile, no embedding configured),
+  `profile-unavailable` (embeddings configured but the served generation is
+  lexical-only — a rebuild, not pending work), `empty` (stored profile over
+  an empty eligible corpus — deterministic, nothing pending, and not proof
+  of hybrid retrieval), `partial` (eligible chunks await vectors) or
+  `complete` (every eligible chunk covered).
+
+The judgment always uses the generation's persisted scope/profile, never
+today's configuration: changing the embedding scope or profile changes the
+config fingerprint (stale → rebuild required), and old vectors are never
+reinterpreted under the new profile/scope. `status` exposes the machine
+fields (`eligible_chunks`, `ineligible_chunks`, `vectors_pending`,
+`embedding_coverage`) alongside the total `chunks` count, which stays the
+lexical corpus size; no schema migration is required (the `generation` row
+already stores `vector_profile` and `embedding_scope`).
 
 Commands: `repoise index` (build/publish), `repoise status` (scope/snapshot/freshness;
 exit 3 when the index is missing or stale), `repoise search`/`repoise read` (offline

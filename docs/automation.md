@@ -98,6 +98,14 @@ embedding coverage are reported separately (`total: null` means indeterminate).
 The table is advertised by `capabilities --json` and covered by tests;
 automation should not parse human text for status.
 
+Exit code 4 reflects scope-aware embedding coverage: the served generation
+is judged against its own persisted embedding scope (docs, or docs + code),
+so lexical-only chunks outside the scope (e.g. config) never make coverage
+unmet, and a stored profile over an empty eligible corpus is reported as a
+deterministic unmet coverage (nothing pending), not as a failure. See the
+[storage guide](storage.md#vector-coverage-semantics) for the full state
+set (`disabled`, `profile-unavailable`, `empty`, `partial`, `complete`).
+
 ## Signals and cancellation
 
 - `watch` installs a `ctrlc` handler (with the `termination` feature on

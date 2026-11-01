@@ -30,6 +30,16 @@ use crate::{CACHE_ENV_VAR, CONFIG_FILENAME};
 use super::artifacts::{is_within, write_json};
 use super::suite::Suite;
 
+/// The root hybrid gate: the root index must report complete scope-aware
+/// vector coverage — a stored embedding profile and a vector for every
+/// eligible chunk under that stored scope. Chunks outside the embedding
+/// scope (config and other lexical-only corpora) never block hybrid, and a
+/// lexical-only, profile-missing, empty-corpus or partially embedded
+/// index never qualifies.
+pub fn hybrid_gate_met(index: &crate::status::StatusIndex) -> bool {
+    index.embedding_coverage == "complete"
+}
+
 /// Environment variable that pins the bench host bridge (AP-03 companion).
 pub const BRIDGE_ENV_VAR: &str = "REPOISE_BENCH_HOST_BRIDGE";
 /// Relative location of the checked-in bridge in a source checkout.
@@ -320,15 +330,14 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
             && condition.search_mode.as_deref() == Some("hybrid")
         {
             let index = status.index.as_ref();
-            let covered = index.is_some_and(|index| {
-                index.vectors > 0 && index.vectors_pending == 0 && index.vector_profile.is_some()
-            });
+            let covered = index.is_some_and(hybrid_gate_met);
             if !covered {
                 return Err(Error::Config(format!(
-                    "condition '{}' requires hybrid mode with verified vector coverage; the root \
-                     index has no complete embedding profile (a degraded lexical fallback would be \
-                     counted as hybrid). Index the root with an embedding provider, or remove the \
-                     condition.",
+                    "condition '{}' requires hybrid mode with verified vector coverage over the \
+                     eligible corpus (the stored embedding scope); the root index does not \
+                     have a complete embedding profile (a degraded lexical fallback would be \
+                     counted as hybrid). Index the root with an embedding provider, or remove \
+                     the condition.",
                     condition.id
                 )));
             }
@@ -578,8 +587,10 @@ pub fn dry_run(
             "index": {
                 "present": preflight.status.index.is_some(),
                 "vectors": preflight.status.index.as_ref().map(|i| i.vectors).unwrap_or(0),
+                "eligibleChunks": preflight.status.index.as_ref().map(|i| i.eligible_chunks).unwrap_or(0),
                 "vectorsPending": preflight.status.index.as_ref().map(|i| i.vectors_pending).unwrap_or(0),
-                "vectorProfile": preflight.status.index.as_ref().and_then(|i| i.vector_profile.clone())
+                "vectorProfile": preflight.status.index.as_ref().and_then(|i| i.vector_profile.clone()),
+                "embeddingCoverage": preflight.status.index.as_ref().map(|i| i.embedding_coverage.clone())
             },
             "guidance": &preflight.guidance,
             "warnings": &preflight.warnings
@@ -781,6 +792,40 @@ fn unknown_settings(suite: &Suite) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn status_index(embedding_coverage: &str) -> crate::status::StatusIndex {
+        crate::status::StatusIndex {
+            generation_id: 1,
+            schema_version: crate::INDEX_SCHEMA_VERSION,
+            files: 10,
+            chunks: 12,
+            built_at_ms: 0,
+            manifest_hash: "hash".into(),
+            config_fingerprint: "config".into(),
+            parser_fingerprint: "parser".into(),
+            vectors: 4,
+            vector_profile: Some("profile".into()),
+            embedding_scope: "docs".into(),
+            eligible_chunks: 4,
+            ineligible_chunks: 8,
+            vectors_pending: 0,
+            embedding_coverage: embedding_coverage.into(),
+        }
+    }
+
+    #[test]
+    fn hybrid_gate_requires_scope_aware_complete_coverage() {
+        // A complete docs-scope build with config chunks intentionally left
+        // lexical still passes (no role remapping needed).
+        assert!(hybrid_gate_met(&status_index("complete")));
+        // A partially embedded eligible corpus fails.
+        assert!(!hybrid_gate_met(&status_index("partial")));
+        // No stored profile (lexical-only or config-change rebuild needed).
+        assert!(!hybrid_gate_met(&status_index("profile-unavailable")));
+        assert!(!hybrid_gate_met(&status_index("disabled")));
+        // A stored profile over an empty eligible corpus is not proof of
+        // hybrid retrieval.
+        assert!(!hybrid_gate_met(&status_index("empty")));
+    }
 
     /// The test binary is built from this source checkout, so walking up
     /// from `current_exe()` locates the checked-in host bridge.
