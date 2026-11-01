@@ -19,7 +19,7 @@ use repoise_core::embed::{CancellationToken, EmbeddingClient};
 use repoise_core::error::Error;
 use repoise_core::search::{QueryEmbedder, SearchMode};
 use repoise_core::store::Store;
-use repoise_core::{CACHE_ENV_VAR, CONFIG_FILENAME};
+use repoise_core::{CACHE_ENV_VAR, CONFIG_FILENAME, LOCAL_CONFIG_FILENAME};
 
 mod capabilities;
 mod events;
@@ -202,6 +202,12 @@ WATCH OPTIONS:
     --interval <MS>             Poll interval (default 500)
     --debounce <MS>             Debounce before publication (default 200)
     --max-pending <N>           Bounded changed-path set; beyond it: full reparse (default 4096)
+    Live config reload: edits to the resolved configuration apply as one
+                        config-driven generation on the running watch; an
+                        invalid configuration freezes publications (throttled
+                        warning, last generation stays served), and cacheDir /
+                        sharedCache / history changes require a restart
+                        (see docs/agents.md)
 
 MCP OPTIONS:
     --allow-refresh             Expose the opt-in refresh tool (read-only by default)
@@ -1420,6 +1426,7 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
             .watch_max_pending
             .unwrap_or(repoise_core::watch::DEFAULT_MAX_PENDING_PATHS as u64)
             as usize,
+        config_warning_interval: repoise_core::watch::DEFAULT_CONFIG_WARNING_INTERVAL,
     };
     // Build the configured embedding session once for the watch process;
     // every debounced publication runs it through the shared index path.
@@ -1438,6 +1445,32 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
     let embed_cancel = CancellationToken::new();
     let client = embedding_client(&ctx.effective, embed_cancel.clone())?;
     let embed_configured = client.is_some();
+    // The resolved committed/local config sources for live reload: the
+    // explicit CLI paths when given, otherwise the repository defaults.
+    // These control files are monitored even when the policy excludes them.
+    let cli_overrides = cli_overrides(opts)?;
+    let config_sources = repoise_core::watch::ConfigSources {
+        committed: opts
+            .config
+            .clone()
+            .unwrap_or_else(|| root.join(CONFIG_FILENAME)),
+        local: opts
+            .local_config
+            .clone()
+            .unwrap_or_else(|| root.join(LOCAL_CONFIG_FILENAME)),
+        cli: cli_overrides,
+    };
+    // When the effective embedding settings move, the watcher rebuilds the
+    // session through the shared helper; a failure is reported sanitized
+    // (no endpoint/credential bytes in the warning).
+    let factory_cancel = embed_cancel.clone();
+    let client_factory: Box<repoise_core::watch::EmbeddingClientFactory> = Box::new(move |eff| {
+        embedding_client(eff, factory_cancel.clone()).map_err(|_| {
+            repoise_core::error::Error::Config(
+                "the embedding client could not be built".to_string(),
+            )
+        })
+    });
     let mut watcher = repoise_core::watch::Watcher::new(
         ctx.adapter,
         ctx.mode,
@@ -1447,7 +1480,8 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         options,
         client,
     )
-    .map_err(|err| err.to_string())?;
+    .map_err(|err| err.to_string())?
+    .with_config_sources(config_sources, Some(client_factory));
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let cancel_handler = cancel.clone();
     let cancel_token = embed_cancel;
@@ -1499,6 +1533,19 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
                             "embedding": serde_json::to_value(&outcome.embedding)
                                 .unwrap_or_default(),
                             "durationMs": outcome.duration_ms,
+                        }),
+                    );
+                }
+                Ok(repoise_core::watch::WatchStep::ConfigIssue(issue)) => {
+                    // Rejected configuration revision: throttled, sanitized;
+                    // the last published generation stays served.
+                    eprintln!("warning: {}", issue.message);
+                    stream.emit(
+                        "warning",
+                        json!({
+                            "operation": "watch",
+                            "kind": issue.kind,
+                            "message": issue.message,
                         }),
                     );
                 }
@@ -1579,6 +1626,11 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
                         );
                     }
                 }
+            }
+            Ok(repoise_core::watch::WatchStep::ConfigIssue(issue)) => {
+                // Rejected configuration revision: throttled, sanitized; the
+                // last published generation stays served.
+                eprintln!("warning: {}", issue.message);
             }
             Ok(repoise_core::watch::WatchStep::Cancelled) => break,
             Err(err) => {

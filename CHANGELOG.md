@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Live configuration reload for running watch
+
+A running `repoise watch` previously loaded the effective configuration and
+the embedding client once at startup: editing the configuration during a
+watch run had no effect until the watch was restarted. The watch now
+reconciles the resolved configuration sources on every step (the explicit
+CLI-selected paths, otherwise the committed `repoise.config.json` and the
+local override — monitored even when excluded from the corpus) and applies a
+changed effective configuration as one config-driven generation on the same
+process, without mixing old and new settings within a publication:
+
+- Include/exclude patterns, role rules, preset, max file size, and the
+  embedding model/profile/input template/scope are reloadable; unchanged
+  effective settings never trigger a rebuild. A model or input-template
+  change rebuilds the embedding client (when the watch can build one) and
+  never reuses vectors from the old profile.
+- An invalid configuration freezes new publications: a sanitized warning
+  names the broken file (never configuration bytes or credentials), repeated
+  identical warnings are throttled, and the last published generation stays
+  served. Fixing the file recovers automatically in the next generation.
+- Process-bound settings (`cacheDir`, `sharedCache`, `history`) are never
+  applied in process: the warning explicitly says a restart is required and
+  the watch keeps its startup settings.
+- `watch --events` warning payloads gain an additive `kind` field
+  (`"invalid"` / `"restart-required"`), documented in the event-stream
+  schema and the [automation guide](docs/automation.md); watch
+  `progress` publication events already carry `configChange`.
+
 ### Freshness separated from Git dirtiness
 
 `status` previously reported the working-tree index as stale whenever Git

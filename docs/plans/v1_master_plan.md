@@ -410,7 +410,9 @@ trees are disposable acceleration, not required for correctness.
 
 Publish current lexical/symbol coverage promptly while optional embeddings run
 in the same debounced publication. Implemented first stage (synchronous): the
-watch process builds the configured embedding client once and each publication
+watch process builds the configured embedding client at startup (and rebuilds
+it in-process when a live configuration reload changes the embedding
+revision, reporting restart-required when it cannot), and each publication
 runs the shared cache-first embedding pass, so unchanged chunk inputs never
 reach the provider and provider failures/cancellation leave lexical coverage
 with reported pending work. An asynchronous embedding queue (separate worker

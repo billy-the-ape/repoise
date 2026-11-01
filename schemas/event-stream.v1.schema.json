@@ -89,7 +89,12 @@
             "required": ["operation", "message"],
             "properties": {
               "operation": { "type": "string" },
-              "message": { "type": "string" }
+              "message": { "type": "string" },
+              "kind": {
+                "type": "string",
+                "enum": ["invalid", "restart-required"],
+                "description": "Watch live-config issue kind. The message is sanitized: it names the broken file and the affected settings, never configuration bytes or credentials. For invalid, the last published generation stays served until the configuration is corrected; for restart-required, restart the watch to apply the revision."
+              }
             }
           }
         }

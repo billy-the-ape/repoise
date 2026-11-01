@@ -836,6 +836,96 @@ fn watch_events_cancels_with_a_terminal_event_on_sigint() {
     assert_eq!(events.last().unwrap()["payload"]["reason"], "signal");
 }
 
+/// A config broken while `watch --events` is running yields a sanitized
+/// `warning` event with `kind: "invalid"`; fixing the config applies the
+/// revision as a config-driven generation on the same running process.
+#[cfg(unix)]
+#[test]
+fn watch_events_reports_config_issue_and_recovers() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let root = temp_root("watch-config-events");
+    std::fs::create_dir_all(root.join("private")).unwrap();
+    std::fs::write(root.join("private/notes.md"), "pangolin quokka\n").unwrap();
+    let primed = cli(&["index", "--json", root.to_str().unwrap()]);
+    assert!(primed.status.success());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repoise"))
+        .args([
+            "watch",
+            "--events",
+            "--interval",
+            "100",
+            root.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("watch should start");
+    let mut reader = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    reader.read_line(&mut line).expect("read the started event");
+    let started: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(started["type"], "started");
+
+    // Break the config while the watch is running.
+    std::fs::write(
+        root.join("repoise.config.json"),
+        r#"{"schemaVersion":1,"exclude":["private""#,
+    )
+    .unwrap();
+    // Read until the sanitized config warning arrives.
+    let warning = loop {
+        line.clear();
+        reader
+            .read_line(&mut line)
+            .expect("the watch stream stays open");
+        let event: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        if event["type"] == "warning" && event["payload"]["kind"] == "invalid" {
+            break event;
+        }
+    };
+    assert!(
+        warning["payload"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("repoise.config.json"),
+        "the warning names the broken file: {}",
+        warning["payload"]["message"]
+    );
+
+    // Fix the config: the same process applies the revision as a
+    // config-driven generation.
+    std::fs::write(
+        root.join("repoise.config.json"),
+        r#"{"schemaVersion":1,"exclude":["private"]}"#,
+    )
+    .unwrap();
+    loop {
+        line.clear();
+        reader
+            .read_line(&mut line)
+            .expect("the watch stream stays open");
+        let event: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        if event["type"] == "progress"
+            && event["payload"]["phase"] == "publication"
+            && event["payload"]["configChange"] == true
+        {
+            break;
+        }
+    }
+
+    kill(child.id(), "INT");
+    assert!(child.wait().expect("wait for watch to exit").success());
+    let mut events = vec![started, warning];
+    for result in reader.lines() {
+        let event_line = result.expect("read the remaining events");
+        events.push(serde_json::from_str(&event_line).unwrap());
+    }
+    assert_eq!(events.last().unwrap()["type"], "cancelled");
+}
+
 #[cfg(unix)]
 #[test]
 fn status_reports_the_active_watch_owner_and_clears_it_after_exit() {

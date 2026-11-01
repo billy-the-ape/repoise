@@ -65,6 +65,14 @@ Event types:
   stats and `durationMs`.
 - `warning` — non-fatal degradation or step failure (for example embedding
   configured but unavailable; a failed watch step). The run continues.
+  Watch live-config issues additionally carry `kind` (`"invalid"`: the
+  resolved configuration failed validation, so the watch publishes nothing
+  until it is corrected; `"restart-required"`: a process-bound setting —
+  `cacheDir`, `sharedCache` or `history` — changed and cannot move in
+  process). The `message` is sanitized: it names the broken file and the
+  affected settings, never configuration bytes or credentials. Repeated
+  identical issues are throttled; the last published generation stays served
+  through both states.
 - `heartbeat` — liveness only, no progress claim. Default every 15 seconds;
   override with `REPOISE_EVENTS_HEARTBEAT_MS` (floored at 10 ms). A healthy
   process waiting on an embedding provider keeps heartbeating; a dead
@@ -175,6 +183,7 @@ through supported MCP protocol mechanisms and negotiated capabilities (see
   (`capabilities_json_is_a_stable_handshake`,
   `index_events_streams_ndjson_with_one_terminal`,
   `watch_events_cancels_with_a_terminal_event_on_sigint`,
+  `watch_events_reports_config_issue_and_recovers`,
   `status_reports_the_active_watch_owner_and_clears_it_after_exit`).
 - Existing `--json` CLI and MCP behavior is unchanged and still covered by
   the existing suites.
