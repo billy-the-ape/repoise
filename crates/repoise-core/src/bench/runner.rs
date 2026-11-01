@@ -842,7 +842,12 @@ struct IndexInfo {
 /// A hybrid/vectors-only condition needs a fully published vector set: at
 /// least one vector, nothing left pending (budget/cancel) and nothing
 /// failed (batch failures after retries). A partially embedded index must
-/// not be recorded as hybrid.
+/// not be recorded as hybrid. The pending/failed counts come from the
+/// embedding session of `repoise index`, which only ever handles chunks
+/// eligible under the configured embedding scope (docs, or docs + code), so
+/// this per-trial gate is scope-aware by construction: config and other
+/// lexical-only chunks never block a hybrid trial (the same denominator
+/// fix as the root preflight's scope-aware coverage).
 fn index_viable_for_vectors(index: &IndexInfo) -> bool {
     index.vectors_total > 0 && index.vectors_pending == 0 && index.vectors_failed == 0
 }

@@ -4,12 +4,15 @@
 //! `check` reuses the operator status view (metadata only, no provider
 //! calls) and adds a stable outcome category for automation:
 //! `ok`, `missing`, `stale`, `coverage-not-met` or `error`. Coverage is the
-//! configured embedding requirement: the hybrid preset requires vectors in
-//! the served generation, and any configured embedding scope must not leave
-//! pending vectors after a build. Freshness uses the same honest judgment as
-//! `status` (manifest, config fingerprint, working-tree dirt); a stale index
-//! is only a failing outcome when `CheckOptions::require_fresh` is set
-//! (`check --fresh`).
+//! scope-aware embedding requirement: the served generation is judged
+//! against its own persisted embedding scope/profile (eligible chunks are
+//! the docs corpus plus code when the scope is `all`; config and other
+//! out-of-scope chunks are lexical-only and never pending). A hybrid preset
+//! or configured embedding requires the served generation to carry a
+//! profile (`profile-unavailable` otherwise), a non-empty eligible corpus
+//! when it wants hybrid retrieval, and no pending eligible chunks
+//! (`partial`). A stale index is only a failing outcome when
+//! `CheckOptions::require_fresh` is set (`check --fresh`).
 
 use std::path::Path;
 
@@ -84,22 +87,61 @@ pub fn check(
         reasons.extend(status.freshness.reasons.iter().cloned());
     }
 
-    // Configured embedding coverage for the served generation.
+    // Scope-aware embedding coverage for the served generation. The state is
+    // computed from the generation's persisted scope/profile (see
+    // `status`); today's config only decides whether vector work was
+    // requested at all.
     let coverage_met = match &status.index {
         Some(index) => {
             let mut met = true;
-            if eff.preset == crate::config::Preset::Hybrid && index.vectors == 0 {
-                reasons.push(
-                    "hybrid preset requires vectors in the served generation (none stored)"
-                        .to_string(),
-                );
-                met = false;
-            } else if eff.embedding.is_some() && index.vectors_pending > 0 {
-                reasons.push(format!(
-                    "{} chunk(s) await embeddings for the configured embedding scope",
-                    index.vectors_pending
-                ));
-                met = false;
+            match index.embedding_coverage.as_str() {
+                // A configured embedding profile is missing from the served
+                // generation (it was built lexical-only; a rebuild is needed,
+                // not pending embedding work).
+                "profile-unavailable" => {
+                    if eff.preset == crate::config::Preset::Hybrid {
+                        reasons.push(
+                            "hybrid preset requires vectors in the served generation (none \
+                             stored; the generation was built without an embedding profile, \
+                             rebuild the index)"
+                                .to_string(),
+                        );
+                    } else {
+                        reasons.push(
+                            "an embedding profile is configured but the served generation \
+                             has no stored vectors (built lexical-only); rebuild the index"
+                                .to_string(),
+                        );
+                    }
+                    met = false;
+                }
+                // A stored profile over an empty eligible corpus: nothing is
+                // pending, but hybrid retrieval cannot run either.
+                "empty"
+                    if eff.preset == crate::config::Preset::Hybrid || eff.embedding.is_some() =>
+                {
+                    reasons.push(
+                        "the stored embedding profile covers an empty eligible corpus \
+                         (no chunks under the embedding scope); hybrid retrieval cannot \
+                         run and no vector work is pending"
+                            .to_string(),
+                    );
+                    met = false;
+                }
+                // Eligible chunks still missing vectors under the stored
+                // profile (failed or pending embedding work).
+                "partial" => {
+                    reasons.push(format!(
+                        "{} eligible chunk(s) await embeddings under the stored embedding \
+                         scope ({}) — {}/{} eligible chunks covered",
+                        index.vectors_pending,
+                        index.embedding_scope,
+                        index.vectors,
+                        index.eligible_chunks
+                    ));
+                    met = false;
+                }
+                _ => {}
             }
             met
         }

@@ -156,7 +156,7 @@ pub struct EmbeddingConfig {
     /// Provider name chosen by the operator.
     #[serde(default)]
     pub provider: Option<String>,
-    /// Which chunks are embedded: `docs` (default) or `docs+code`.
+    /// Which chunks are embedded: `docs` (default) or `all` (docs and code).
     #[serde(default)]
     pub scope: Option<String>,
     /// Explicit versioned model input profile (e.g. `embeddinggemma-2:1`;

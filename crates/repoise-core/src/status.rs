@@ -87,8 +87,25 @@ pub struct StatusIndex {
     pub vectors: i64,
     /// Full embedding profile fingerprint when vectors are present.
     pub vector_profile: Option<String>,
-    /// Chunk records without a vector (failed or pending embedding work).
+    /// Stored embedding scope of the generation (`docs` or `all`); vectors
+    /// and pending work are always judged against this persisted scope, not
+    /// today's configuration.
+    pub embedding_scope: String,
+    /// Chunks eligible under the stored embedding scope (docs, or docs +
+    /// code when the scope is `all`).
+    pub eligible_chunks: i64,
+    /// Lexical chunks the stored embedding scope never covers (e.g. config
+    /// corpus); these are never embedded and never pending.
+    pub ineligible_chunks: i64,
+    /// Eligible chunks without a vector for the stored profile (0 when the
+    /// generation is lexical-only or the eligible corpus is empty).
     pub vectors_pending: i64,
+    /// Scope-aware coverage state: `disabled` (no embedding profile stored
+    /// and none configured today), `profile-unavailable` (embeddings are
+    /// configured today but the stored generation has no profile),
+    /// `empty` (profile stored, eligible corpus empty), `partial` (eligible
+    /// chunks await vectors) or `complete` (every eligible chunk covered).
+    pub embedding_coverage: String,
 }
 
 /// Freshness section of the status view.
@@ -196,8 +213,21 @@ pub fn status(
         .unwrap_or(0);
     let index = match current.as_ref() {
         Some(meta) => Some({
-            let (_chunk_count, vector_count) =
-                store::vector_coverage(&conn, meta.generation_id, meta.vector_profile.as_deref())?;
+            // Scope-aware coverage from the generation's persisted
+            // scope/profile and the actual chunk corpora (never today's
+            // config, which only distinguishes disabled from
+            // profile-unavailable).
+            let coverage = store::generation_vector_coverage(&conn, meta)?;
+            let embedding_coverage = match coverage.level {
+                store::CoverageLevel::NoProfile => {
+                    if eff.preset == crate::config::Preset::Hybrid || eff.embedding.is_some() {
+                        "profile-unavailable".to_string()
+                    } else {
+                        "disabled".to_string()
+                    }
+                }
+                other => format!("{other:?}").to_lowercase(),
+            };
             StatusIndex {
                 generation_id: meta.generation_id,
                 schema_version,
@@ -207,9 +237,13 @@ pub fn status(
                 manifest_hash: meta.manifest_hash.clone(),
                 config_fingerprint: meta.config_fingerprint.clone(),
                 parser_fingerprint: meta.parser_fingerprint.clone(),
-                vectors: vector_count,
+                vectors: coverage.vectors,
                 vector_profile: meta.vector_profile.clone(),
-                vectors_pending: (meta.chunks - vector_count).max(0),
+                embedding_scope: meta.embedding_scope.as_str().to_string(),
+                eligible_chunks: coverage.eligible_chunks,
+                ineligible_chunks: coverage.ineligible_chunks,
+                vectors_pending: coverage.pending,
+                embedding_coverage,
             }
         }),
         None => None,

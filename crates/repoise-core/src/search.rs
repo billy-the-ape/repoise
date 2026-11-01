@@ -194,11 +194,17 @@ pub struct ScopeView {
 pub struct Coverage {
     /// File record count.
     pub files: i64,
-    /// Chunk record count.
+    /// Chunk record count (all lexical corpora).
     pub chunks: i64,
+    /// Chunks eligible under the stored embedding scope (docs, or docs +
+    /// code when the scope is `all`).
+    pub eligible_chunks: i64,
+    /// Validated vectors stored for the generation's profile (0 when
+    /// lexical-only).
+    pub vectors: i64,
     /// Lexical coverage description.
     pub lexical: String,
-    /// Vector coverage description (none in this PR).
+    /// Vector coverage description against the eligible corpus.
     pub vector: String,
 }
 
@@ -1041,31 +1047,42 @@ pub fn search(
         snapshot_id: meta.snapshot_id.clone(),
         revision: meta.revision_id.clone(),
     };
-    let vector_count = match meta.vector_profile.as_deref() {
-        Some(fingerprint) => {
-            let (_chunks, vectors) =
-                store::vector_coverage(&conn, meta.generation_id, Some(fingerprint))?;
-            vectors
-        }
-        None => 0,
+    // Scope-aware coverage of the served generation: the vector denominator
+    // is the eligible corpus under the stored embedding scope (config and
+    // other out-of-scope chunks stay lexical and never count as missing).
+    let coverage_counts = store::generation_vector_coverage(&conn, &meta)?;
+    let vector_count = coverage_counts.vectors;
+    let vector_text = if profile_mismatch {
+        format!(
+            "none (query profile differs from the stored profile; lexical only; \
+             {vector_count} vectors stored for {} eligible chunks)",
+            coverage_counts.eligible_chunks
+        )
+    } else if meta.vector_profile.is_none() {
+        "none (offline lexical only)".to_string()
+    } else if coverage_counts.eligible_chunks == 0 {
+        "none (stored profile has an empty eligible corpus; lexical only)".to_string()
+    } else if coverage_counts.pending > 0 {
+        format!(
+            "{vector_count}/{} eligible vectors ({} pending; scope {})",
+            coverage_counts.eligible_chunks,
+            coverage_counts.pending,
+            meta.embedding_scope.as_str()
+        )
+    } else {
+        format!(
+            "{vector_count}/{} eligible vectors (one profile; scope {})",
+            coverage_counts.eligible_chunks,
+            meta.embedding_scope.as_str()
+        )
     };
     let coverage = Coverage {
         files: meta.files,
         chunks: meta.chunks,
+        eligible_chunks: coverage_counts.eligible_chunks,
+        vectors: vector_count,
         lexical: format!("{} chunks, fts5 unicode61", meta.chunks),
-        vector: if profile_mismatch {
-            format!(
-                "none (query profile differs from the stored profile; lexical only; \
-                 {vector_count} vectors stored)"
-            )
-        } else if vector_count == 0 {
-            "none (offline lexical only)".to_string()
-        } else {
-            format!(
-                "{vector_count} vectors / {} chunks (one profile)",
-                meta.chunks
-            )
-        },
+        vector: vector_text,
     };
     let truncated = more_pages || budget_exhausted;
     Ok(SearchResponse {

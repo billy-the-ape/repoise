@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
 
 use crate::Result;
 use crate::error::Error;
@@ -1372,6 +1373,104 @@ pub fn corpus_chunk_counts(conn: &Connection, generation_id: i64) -> Result<(i64
         )
         .map_err(Error::Sqlite)?;
     Ok((docs, code))
+}
+
+/// Scope-aware vector coverage level for one published generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CoverageLevel {
+    /// The generation stores no vector profile (lexical-only build; the
+    /// embedding profile was not configured at build time). No vector work
+    /// is pending; a config change or rebuild is required to embed.
+    NoProfile,
+    /// A vector profile is stored, but no chunk is eligible under the
+    /// generation's embedding scope (the eligible corpus is empty). Nothing
+    /// is pending, and hybrid retrieval cannot run.
+    Empty,
+    /// Some eligible chunks still have no vector (failed or pending
+    /// embedding work under the stored profile).
+    Partial,
+    /// Every eligible chunk has a vector for the stored profile.
+    Complete,
+}
+
+/// Scope-aware vector coverage of one published generation.
+///
+/// The denominator is the generation's own persisted embedding scope and
+/// profile, never today's configuration: eligible chunks are the docs
+/// corpus plus the code corpus when the stored scope is `all`. Chunks of
+/// corpora the scope never covers (e.g. config) are lexical-only and never
+/// count as pending. Vectors are counted only for the generation's stored
+/// profile fingerprint, so vectors from a different profile can never
+/// satisfy coverage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct VectorCoverage {
+    /// Total lexical chunk count of the generation (all corpora).
+    pub total_chunks: i64,
+    /// Chunks eligible under the stored embedding scope (docs, or docs +
+    /// code when the scope is `all`).
+    pub eligible_chunks: i64,
+    /// Lexical chunks the stored embedding scope never covers (e.g.
+    /// config corpus); these are never embedded and never pending.
+    pub ineligible_chunks: i64,
+    /// Validated vectors stored for the generation's own profile
+    /// (0 when the generation is lexical-only).
+    pub vectors: i64,
+    /// Eligible chunks without a vector for the stored profile
+    /// (0 when `NoProfile` or `Empty`).
+    pub pending: i64,
+    /// Derived coverage state.
+    pub level: CoverageLevel,
+}
+
+/// Computes the scope-aware vector coverage of one published generation
+/// from its persisted embedding scope/profile and the actual chunk
+/// corpora. Offline: no provider calls, metadata reads only.
+pub fn generation_vector_coverage(
+    conn: &Connection,
+    meta: &GenerationMeta,
+) -> Result<VectorCoverage> {
+    let includes_code = meta.embedding_scope.includes_code();
+    let (total, eligible): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), \
+             COALESCE(SUM(CASE WHEN corpus = 'docs' OR (?2 AND corpus = 'code') THEN 1 ELSE 0 END), 0) \
+             FROM chunk WHERE generation_id = ?1",
+            params![meta.generation_id, includes_code],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(Error::Sqlite)?;
+    let vectors: i64 = match meta.vector_profile.as_deref() {
+        Some(fingerprint) => conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunk_vec WHERE generation_id = ?1 AND fingerprint = ?2",
+                params![meta.generation_id, fingerprint],
+                |row| row.get(0),
+            )
+            .map_err(Error::Sqlite)?,
+        None => 0,
+    };
+    // Pending work only exists when a profile was actually stored: a
+    // lexical-only generation advertises no embedding work at all.
+    let pending = match meta.vector_profile.as_deref() {
+        Some(_) => (eligible - vectors).max(0),
+        None => 0,
+    };
+    let level = match meta.vector_profile.as_deref() {
+        None => CoverageLevel::NoProfile,
+        Some(_) if eligible == 0 => CoverageLevel::Empty,
+        Some(_) if pending > 0 => CoverageLevel::Partial,
+        Some(_) => CoverageLevel::Complete,
+    };
+    Ok(VectorCoverage {
+        total_chunks: total,
+        eligible_chunks: eligible,
+        ineligible_chunks: total - eligible,
+        vectors,
+        pending,
+        level,
+    })
 }
 
 /// (history item count, enriched item count) for one generation's history
