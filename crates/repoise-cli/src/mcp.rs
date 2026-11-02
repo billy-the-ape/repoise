@@ -12,15 +12,25 @@
 //! `mcp.refresh` or `--allow-refresh`); refresh runs the same bounded,
 //! transactional index operation as `repoise index` and never executes
 //! repository scripts.
+//!
+//! Optional operator audit: `--audit-file <PATH>` appends bounded NDJSON
+//! tool-call records to the designated file (server-side observation for the
+//! benchmark coordinator). Audit records carry only measured evidence (tool,
+//! requested/effective mode, degradation, success, duration) — never query
+//! text, excerpts or credentials — and stdout still carries JSON-RPC traffic
+//! only (see [crate::audit]).
 
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use repoise_core::adapter::SnapshotMode;
 use repoise_core::classify::Role;
 use repoise_core::related::RelationKind;
 use repoise_core::store::Store;
 use serde_json::{Map, Value, json};
+
+use crate::audit;
 
 /// Protocol versions the server negotiates with clients.
 const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
@@ -37,6 +47,22 @@ struct Server {
     /// Pinned retrieval mode (`--search-mode`); when set, tool requests
     /// naming a different mode are refused.
     search_mode: Option<repoise_core::search::SearchMode>,
+    /// Opt-in machine audit sink designated by the operator (the benchmark
+    /// coordinator provisions one per trial); absent by default.
+    audit: Option<audit::Sink>,
+}
+
+/// Audit-relevant facts the server measured for one search call (never the
+/// query text, filters or results).
+#[derive(Clone)]
+struct SearchAudit {
+    /// The retrieval mode the request resolved to (the pinned server mode
+    /// applies when the request omits `mode`); unknown before resolution.
+    requested: Option<String>,
+    /// The retrieval mode the completed search response reported.
+    effective: Option<String>,
+    /// The index generation served by a completed search.
+    served_generation: Option<i64>,
 }
 
 /// Runs the stdio MCP server until stdin closes (clean shutdown, exit 0).
@@ -50,10 +76,29 @@ pub fn run_mcp(opts: &crate::CliOptions) -> Result<ExitCode, String> {
         None => None,
         _ => unreachable!("validated in parse_args"),
     };
+    let audit = match &opts.mcp_audit_file {
+        Some(path) => match audit::Sink::create(path) {
+            Ok(sink) => {
+                eprintln!("repoise mcp: audit sink enabled: {}", path.display());
+                Some(sink)
+            }
+            Err(err) => {
+                eprintln!(
+                    "repoise mcp: audit sink unavailable at {}: {err}; the server \
+                     continues without audit (the absence of audit records is not \
+                     evidence of no tool use)",
+                    path.display()
+                );
+                None
+            }
+        },
+        None => None,
+    };
     let server = Server {
         context,
         allow_refresh,
         search_mode,
+        audit,
     };
     eprintln!(
         "repoise mcp: serving {}/{} on stdio; read-only{}",
@@ -65,14 +110,19 @@ pub fn run_mcp(opts: &crate::CliOptions) -> Result<ExitCode, String> {
             ""
         }
     );
+    if let Some(audit) = &server.audit {
+        audit.record(server.start_record());
+    }
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
+    let mut shutdown_reason = "stdin_closed";
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(line) => line,
             Err(err) => {
                 eprintln!("repoise mcp: stdin read error: {err}; shutting down");
+                shutdown_reason = "stdin_error";
                 break;
             }
         };
@@ -84,12 +134,21 @@ pub fn run_mcp(opts: &crate::CliOptions) -> Result<ExitCode, String> {
         if let Some(value) = response {
             if let Err(err) = writeln!(out, "{value}") {
                 eprintln!("repoise mcp: stdout write error: {err}; shutting down");
+                shutdown_reason = "stdout_error";
                 break;
             }
             let _ = out.flush();
         }
     }
     let _ = out.flush();
+    if let Some(audit) = &server.audit {
+        audit.record(json!({
+            "schemaVersion": audit::AUDIT_SCHEMA_VERSION,
+            "t": repoise_core::bench::runner::now_utc(),
+            "kind": "server_end",
+            "reason": shutdown_reason
+        }));
+    }
     eprintln!("repoise mcp: stdin closed; shutting down");
     Ok(ExitCode::SUCCESS)
 }
@@ -140,10 +199,25 @@ fn handle_message(server: &Server, line: &str) -> Option<Value> {
         "initialize" => Some(success_response(id, initialize_result(&params))),
         "ping" => Some(success_response(id, Value::Object(Map::new()))),
         "tools/list" => Some(success_response(id, json!({ "tools": server.tools() }))),
-        "tools/call" => match server.tool_call(&params) {
-            Ok(result) => Some(success_response(id, result)),
-            Err((code, message)) => Some(error_response(id, code, &message)),
-        },
+        "tools/call" => {
+            let started = Instant::now();
+            let tool = params
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let invocation = server.tool_call(&params);
+            if let Some(audit) = &server.audit {
+                audit.record(tool_call_record(
+                    &tool,
+                    &invocation,
+                    started.elapsed().as_millis(),
+                ));
+            }
+            match invocation {
+                Ok((result, _)) => Some(success_response(id, result)),
+                Err((code, message)) => Some(error_response(id, code, &message)),
+            }
+        }
         other => Some(error_response(
             id,
             -32601,
@@ -255,8 +329,10 @@ impl Server {
 
     /// Dispatches one `tools/call` request. Argument-validation failures are
     /// JSON-RPC `-32602` invalid-params errors (no service is invoked); service
-    /// failures are MCP tool results with `isError: true`.
-    fn tool_call(&self, params: &Value) -> Result<Value, (i64, String)> {
+    /// failures are MCP tool results with `isError: true`. The `Option` in the
+    /// success/error tuples carries the search audit facts (search calls only)
+    /// for the opt-in operator audit.
+    fn tool_call(&self, params: &Value) -> Result<(Value, Option<SearchAudit>), (i64, String)> {
         let object = match params.as_object() {
             Some(object) if object.get("name").and_then(Value::as_str).is_some() => object,
             _ => {
@@ -290,25 +366,34 @@ impl Server {
         if let Err(message) = validation {
             return Err((-32602, format!("invalid params for {name}: {message}")));
         }
-        let outcome = match name.as_str() {
-            "search_project_knowledge" => self.call_search(arguments),
-            "read_project_knowledge" => self.call_read(arguments),
-            "related_project_knowledge" => self.call_related(arguments),
-            "project_knowledge_status" => self.call_status(arguments),
-            "refresh_project_knowledge" => self.call_refresh(arguments),
+        let (outcome, search_audit) = match name.as_str() {
+            "search_project_knowledge" => match self.call_search(arguments) {
+                Ok((value, audit)) => (Ok(value), Some(audit)),
+                Err((message, audit)) => (Err(message), Some(audit)),
+            },
+            "read_project_knowledge" => (self.call_read(arguments), None),
+            "related_project_knowledge" => (self.call_related(arguments), None),
+            "project_knowledge_status" => (self.call_status(arguments), None),
+            "refresh_project_knowledge" => (self.call_refresh(arguments), None),
             other => return Err((-32602, format!("unknown tool: {other}"))),
         };
         match outcome {
             Ok(value) => {
                 let text = value.to_string();
                 if text.len() > MAX_TOOL_OUTPUT_BYTES {
-                    return Ok(tool_error(&format!(
-                        "tool result exceeded the server output cap ({MAX_TOOL_OUTPUT_BYTES} bytes); reduce maxResults or maxOutputTokens"
-                    )));
+                    return Ok((
+                        tool_error(&format!(
+                            "tool result exceeded the server output cap ({MAX_TOOL_OUTPUT_BYTES} bytes); reduce maxResults or maxOutputTokens"
+                        )),
+                        search_audit,
+                    ));
                 }
-                Ok(json!({ "content": [ { "type": "text", "text": text } ] }))
+                Ok((
+                    json!({ "content": [ { "type": "text", "text": text } ] }),
+                    search_audit,
+                ))
             }
-            Err(message) => Ok(tool_error(&message)),
+            Err(message) => Ok((tool_error(&message), search_audit)),
         }
     }
 
@@ -458,17 +543,54 @@ impl Server {
         )
     }
 
-    fn call_search(&self, args: &Map<String, Value>) -> Result<Value, String> {
-        self.check_scope(args)?;
+    /// The audit `server_start` record: the scope and configuration this
+    /// server is bound to (correlation only; no request content).
+    fn start_record(&self) -> Value {
+        json!({
+            "schemaVersion": audit::AUDIT_SCHEMA_VERSION,
+            "t": repoise_core::bench::runner::now_utc(),
+            "kind": "server_start",
+            "repoiseVersion": env!("CARGO_PKG_VERSION"),
+            "server": {
+                "repoId": self.context.repo_id,
+                "worktreeId": self.context.worktree_id,
+                "snapshotMode": match self.context.mode {
+                    SnapshotMode::WorkingTree => "working-tree",
+                    SnapshotMode::Committed => "committed",
+                    SnapshotMode::PlainDirectory => "plain-directory",
+                },
+                "pinnedSearchMode": self.search_mode.map(search_mode_label),
+                "refreshEnabled": self.allow_refresh
+            }
+        })
+    }
+
+    /// Runs the search service. The returned `SearchAudit` records the
+    /// server-measured requested/effective retrieval mode and served
+    /// generation — never the query text, filters or results.
+    fn call_search(
+        &self,
+        args: &Map<String, Value>,
+    ) -> Result<(Value, SearchAudit), (String, SearchAudit)> {
+        let unknown = SearchAudit {
+            requested: None,
+            effective: None,
+            served_generation: None,
+        };
+        let fail = |message: String| -> (String, SearchAudit) { (message, unknown.clone()) };
+        self.check_scope(args).map_err(fail)?;
         let query = required_string(args, "query");
         if query.trim().is_empty() {
-            return Err("query must not be empty".into());
+            return Err(fail("query must not be empty".into()));
         }
         let path_filter = string_arg(args, "pathFilter");
         let role_filter = match string_arg(args, "role").as_deref() {
             Some(name) => Some(
                 Role::parse(name)
-                    .ok_or_else(|| format!("unknown role: {name} (expected instruction, current-doc, decision, plan, execution-record, historical, code, or config)"))?,
+                    .ok_or_else(|| format!(
+                        "unknown role: {name} (expected instruction, current-doc, decision, plan, execution-record, historical, code, or config)"
+                    ))
+                    .map_err(fail)?,
             ),
             None => None,
         };
@@ -488,28 +610,26 @@ impl Server {
         // scope mismatch, never a silent downgrade or upgrade.
         let mode = match (self.search_mode, requested) {
             (Some(pinned), Some(requested)) if requested != pinned => {
-                let (pinned, requested) = (
-                    match pinned {
-                        repoise_core::search::SearchMode::Lexical => "lexical",
-                        repoise_core::search::SearchMode::Hybrid => "hybrid",
-                        repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
-                    },
-                    match requested {
-                        repoise_core::search::SearchMode::Lexical => "lexical",
-                        repoise_core::search::SearchMode::Hybrid => "hybrid",
-                        repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
-                    },
-                );
-                return Err(format!(
+                let (pinned, requested) = (search_mode_label(pinned), search_mode_label(requested));
+                return Err(fail(format!(
                     "scope mismatch: this server is bound to search mode {pinned}, refusing {requested}"
-                ));
+                )));
             }
             (Some(pinned), _) => pinned,
             (None, requested) => requested.unwrap_or(repoise_core::search::SearchMode::Lexical),
         };
+        let requested_mode = Some(search_mode_label(mode).to_string());
+        let not_completed = || SearchAudit {
+            requested: requested_mode.clone(),
+            effective: None,
+            served_generation: None,
+        };
         let rrf_k = u32_value(args, "rrfK");
         let query_embedder = if mode != repoise_core::search::SearchMode::Lexical {
-            crate::query_embedder_from_config(&self.context.effective)?
+            match crate::query_embedder_from_config(&self.context.effective) {
+                Ok(provider) => provider,
+                Err(err) => return Err((err.to_string(), not_completed())),
+            }
         } else {
             None
         };
@@ -530,8 +650,16 @@ impl Server {
             &request,
             query_embedder.as_deref(),
         )
-        .map_err(|err| err.to_string())?;
-        serde_json::to_value(&response).map_err(|err| err.to_string())
+        .map_err(|err| (err.to_string(), not_completed()))?;
+        let audit = SearchAudit {
+            requested: requested_mode,
+            effective: Some(response.retrieval_mode.clone()),
+            served_generation: Some(response.generation_id),
+        };
+        match serde_json::to_value(&response) {
+            Ok(value) => Ok((value, audit)),
+            Err(err) => Err((err.to_string(), audit)),
+        }
     }
 
     fn call_read(&self, args: &Map<String, Value>) -> Result<Value, String> {
@@ -649,6 +777,15 @@ fn scope_input_schema() -> Value {
     })
 }
 
+/// The retrieval mode's wire label.
+fn search_mode_label(mode: repoise_core::search::SearchMode) -> &'static str {
+    match mode {
+        repoise_core::search::SearchMode::Lexical => "lexical",
+        repoise_core::search::SearchMode::Hybrid => "hybrid",
+        repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
+    }
+}
+
 /// Description for the search tool's `mode` property, noting the pinned
 /// server mode (`--search-mode`) when one is set.
 fn search_mode_description(pinned: Option<repoise_core::search::SearchMode>) -> String {
@@ -656,14 +793,57 @@ fn search_mode_description(pinned: Option<repoise_core::search::SearchMode>) -> 
         Some(pinned) => format!(
             "Retrieval mode. This server is pinned to {}; requests naming a \
              different mode are refused.",
-            match pinned {
-                repoise_core::search::SearchMode::Lexical => "lexical",
-                repoise_core::search::SearchMode::Hybrid => "hybrid",
-                repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
-            }
+            search_mode_label(pinned)
         ),
         None => "Retrieval mode (default lexical)".to_string(),
     }
+}
+
+/// One audit `tool_call` record: only measurements the server took (tool
+/// name, requested/effective retrieval mode, degradation, success and
+/// duration). Never the request arguments or result content.
+fn tool_call_record(
+    tool: &Option<String>,
+    invocation: &Result<(Value, Option<SearchAudit>), (i64, String)>,
+    duration_ms: u128,
+) -> Value {
+    let (success, search) = match invocation {
+        Ok((result, search)) => {
+            // A tool result with `isError: true` is a failed tool call
+            // (scope mismatch, service error, output cap), not a success.
+            let is_error = result.get("isError").and_then(Value::as_bool) == Some(true);
+            (!is_error, search.as_ref())
+        }
+        Err(_) => (false, None),
+    };
+    let requested = search.and_then(|search| search.requested.clone());
+    let effective = search.and_then(|search| search.effective.clone());
+    let served_generation = search.and_then(|search| search.served_generation);
+    let degraded = match search {
+        Some(search) => match (search.requested.as_deref(), search.effective.as_deref()) {
+            (Some(requested), Some(effective)) => Some(requested != effective),
+            _ => None,
+        },
+        None => None,
+    };
+    let degradation_reason = match (degraded, effective.as_deref()) {
+        (Some(true), Some("lexical")) => Some("degraded_to_lexical".to_string()),
+        (Some(true), _) => Some("degraded".to_string()),
+        _ => None,
+    };
+    json!({
+        "schemaVersion": audit::AUDIT_SCHEMA_VERSION,
+        "t": repoise_core::bench::runner::now_utc(),
+        "kind": "tool_call",
+        "tool": tool,
+        "requestedMode": requested,
+        "effectiveMode": effective,
+        "degraded": degraded,
+        "degradationReason": degradation_reason,
+        "servedGeneration": served_generation,
+        "success": success,
+        "durationMs": duration_ms.min(u64::MAX as u128) as u64
+    })
 }
 
 /// Adds the scope-verification properties to a tool input schema.

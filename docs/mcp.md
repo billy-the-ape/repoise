@@ -155,6 +155,35 @@ settings work as in the CLI (opt-in, `env:` credential references); without them
 the server stays lexical-only, and remote history enrichment is not available
 from the MCP server in this build (the history lane remains a CLI feature).
 
+## Machine audit sink (opt-in)
+
+`repoise mcp --audit-file <PATH>` writes a machine-readable NDJSON audit of
+the server's own tool activity to `<PATH>` (one line per event,
+`schemaVersion: 1`):
+
+- `server_start` — the resolved server scope (repo/worktree, snapshot mode,
+  pinned search mode, refresh enabled), Repoise version;
+- `tool_call` — one per tool invocation: tool name, for searches the
+  requested and effective retrieval mode, the degradation reason (a
+  closed-vocabulary enum, e.g. `degraded_to_lexical`) when the search
+  degraded, the served generation (null for failed calls), success, and
+  duration;
+- `server_end` — the clean shutdown reason (`stdin_closed`, `stdin_error`);
+- `audit_error` — a bounded marker replacing an oversized record; a
+  mid-run write failure is reported on stderr (it cannot be recorded in
+  the sink it failed to write).
+
+The audit is designed for the benchmark coordinator (see
+[bench.md](bench.md#server-side-retrieval-observation)): it establishes
+trial-bound tool invocation and retrieval outcomes server-side, without
+trusting client-side telemetry. Records are size-bounded and the server
+never crashes on a full or unwritable sink (a startup failure is visible on
+stderr before the serve loop). Privacy: query text, source ids, excerpts,
+source bodies, credentials, env values and unrestricted RPC payloads are
+never recorded. The JSON-RPC stdout stays completely clean — audit bytes go
+only to the designated file, which the operator (not the served agent)
+chooses. Default is off: without `--audit-file` nothing is written.
+
 ## Validation
 
 ```sh

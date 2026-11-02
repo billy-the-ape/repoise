@@ -16,6 +16,7 @@
 //! interruption, drift). Every attempt is recorded; nothing is silently
 //! retried.
 
+use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -38,6 +39,12 @@ const CANCEL_GRACE: Duration = Duration::from_secs(15);
 const OUTER_WATCHDOG_MARGIN: Duration = Duration::from_secs(120);
 /// How often the coordinator polls the bridge for cancellation/status.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// File name of a trial's MCP server audit sink (under the trial
+/// directory, outside the agent-visible trial workspace).
+pub const AUDIT_SINK_FILENAME: &str = "mcp-audit.ndjson";
+/// Bound on how much of one trial's audit sink the coordinator reads
+/// (per-record bytes are already bounded at the server).
+const MAX_AUDIT_READ_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Everything the runner needs, shared by every trial of one experiment.
 pub struct RunContext {
@@ -290,6 +297,18 @@ impl RunContext {
         let agent_ms =
             host_elapsed_ms(&host.result).unwrap_or_else(|| agent_started.elapsed().as_millis());
 
+        // --- Server-side MCP observation (opt-in audit sink) ------------------
+        // For repoise conditions the coordinator designated a per-trial
+        // audit sink in this trial's pinned server argv (see mcp_argv);
+        // summarize whatever records the server actually wrote. A missing,
+        // truncated or absent sink is recorded as such — never as zero tool
+        // use or a pass (see summarize_mcp_audit).
+        let server_audit = if condition.retrieval_mode == "repoise" {
+            Some(summarize_mcp_audit(&trial_dir.join(AUDIT_SINK_FILENAME)))
+        } else {
+            None
+        };
+
         // --- Record -----------------------------------------------------------
         let total_ms = started.elapsed().as_millis();
         let record = serde_json::json!({
@@ -313,7 +332,7 @@ impl RunContext {
             // so pooled statistics can never silently mix versions.
             "harnessPin": self.suite.profile.harness.revision.clone(),
             "harnessVersion": observed_harness_version(&host.result),
-            "mode": mode_record(condition, &host.result),
+            "mode": mode_record(condition, &host.result, server_audit.as_ref()),
             "timings": {
                 "queueMs": queue_ms,
                 "setupMs": setup_ms,
@@ -323,6 +342,9 @@ impl RunContext {
             "status": host.status,
             "reason": host.reason,
             "usage": host.result.get("usage").cloned(),
+            // Server-side observation of this trial's Repoise MCP usage
+            // (null for baseline conditions; see summarize_mcp_audit).
+            "audit": server_audit,
             "adapterDurationMs": host.result.get("adapterDurationMs").cloned(),
             "warnings": host.result.get("warnings").cloned().unwrap_or(Value::Array(vec![])),
             "errors": host.result.get("errors").cloned().unwrap_or(Value::Array(vec![])),
@@ -332,6 +354,7 @@ impl RunContext {
                 "resultFile": "adapter/result.json",
                 "stderrLog": "adapter/stderr.log",
                 "hostLog": "host.log",
+                "mcpAuditFile": AUDIT_SINK_FILENAME,
                 "trialFile": "trial.json"
             },
             "completeness": if host.result.is_null() { "partial" } else { "complete" }
@@ -516,10 +539,26 @@ fn null_value() -> Value {
     Value::Null
 }
 
+/// Increments a u64 counter stored as a JSON value.
+fn bump(map: &mut serde_json::Map<String, Value>, key: &str) {
+    let count = map.get(key).and_then(Value::as_u64).unwrap_or(0);
+    map.insert(key.to_string(), Value::from(count + 1));
+}
+
 /// Builds the exact argv for one trial's read-only MCP server. The shape
-/// (`mcp [ROOT] --search-mode <MODE> [--committed]`) is accepted by the real
-/// CLI parser; the CLI integration test starts a server with this argv.
-pub fn mcp_argv(exe: &Path, root: &Path, search_mode: &str, committed: bool) -> Vec<String> {
+/// (`mcp [ROOT] --search-mode <MODE> [--committed] [--audit-file <PATH>]`)
+/// is accepted by the real CLI parser; the CLI integration test starts a
+/// server with this argv. `audit_file`, when present, designates this
+/// trial's unique machine audit sink: server-side observation of which
+/// tools the trial actually invoked and with what retrieval outcome
+/// (never the query or result content).
+pub fn mcp_argv(
+    exe: &Path,
+    root: &Path,
+    search_mode: &str,
+    committed: bool,
+    audit_file: Option<&Path>,
+) -> Vec<String> {
     let mut argv = vec![
         exe.to_string_lossy().into_owned(),
         "mcp".into(),
@@ -529,6 +568,10 @@ pub fn mcp_argv(exe: &Path, root: &Path, search_mode: &str, committed: bool) -> 
     ];
     if committed {
         argv.push("--committed".into());
+    }
+    if let Some(path) = audit_file {
+        argv.push("--audit-file".into());
+        argv.push(path.to_string_lossy().into_owned());
     }
     argv
 }
@@ -560,11 +603,19 @@ fn build_request(
                 .search_mode
                 .as_deref()
                 .expect("validated searchMode for repoise conditions");
+            // The per-trial audit sink lives in the trial directory
+            // (coordinator-owned artifacts), outside the agent-visible
+            // trial workspace and the indexed corpus.
+            let audit_file = ctx
+                .layout
+                .trial_dir(&trial.trial_id)
+                .join(AUDIT_SINK_FILENAME);
             let argv = mcp_argv(
                 &ctx.self_exe,
                 &workspace.path,
                 mode,
                 ctx.preflight.snapshot_kind == "commit",
+                Some(&audit_file),
             );
             (
                 "repoise",
@@ -813,47 +864,278 @@ fn observed_harness_version(host_result: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-fn mode_record(condition: &Condition, host_result: &Value) -> Value {
+/// Summarizes one trial's MCP server audit sink (the coordinator's
+/// server-side observation of the trial's pinned `repoise mcp` process).
+/// The raw NDJSON stays in the trial directory; this summary is what the
+/// report consumes.
+///
+/// `status` semantics — missing evidence is never zero use or a pass:
+/// - `unavailable`: the sink file is absent or unreadable (the server may
+///   never have started, or could not open the sink);
+/// - `observed`: at least one search tool call was recorded (a clean
+///   `server_end` is recorded separately as `cleanShutdown`);
+/// - `incomplete`: no search tool call was recorded and the audit stream
+///   never reached a clean `server_end` (cancelled/killed server,
+///   truncated write);
+/// - `not_observed`: a clean, complete audit stream with no
+///   `search_project_knowledge` tool calls.
+///
+/// Only measurements the server itself made are aggregated: per-tool call
+/// counts, search success/failure, requested/effective retrieval modes and
+/// degradation counts. Malformed records are counted, never propagated.
+pub fn summarize_mcp_audit(path: &Path) -> Value {
+    let mut notes: Vec<String> = Vec::new();
+    let text: Option<String> = match fs::File::open(path) {
+        Ok(file) => match file.metadata() {
+            Ok(meta) if meta.len() > MAX_AUDIT_READ_BYTES => {
+                notes.push(format!(
+                    "audit sink larger than {MAX_AUDIT_READ_BYTES} bytes; only the first part was read"
+                ));
+                None
+            }
+            Ok(_) => match fs::read_to_string(path) {
+                Ok(text) => Some(text),
+                Err(err) => {
+                    notes.push(format!("audit sink unreadable: {err}"));
+                    None
+                }
+            },
+            Err(err) => {
+                notes.push(format!("audit sink unreadable: {err}"));
+                None
+            }
+        },
+        Err(err) => {
+            notes.push(format!(
+                "audit sink not found: {err} (the server may never have started, \
+                 or it could not open the sink)"
+            ));
+            None
+        }
+    };
+    let Some(text) = text else {
+        return serde_json::json!({
+            "schemaVersion": 1,
+            "source": "server-side observation",
+            "status": "unavailable",
+            "notes": notes,
+            "searches": null_value()
+        });
+    };
+
+    let mut tool_calls = serde_json::Map::new();
+    let mut searches: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut searches_failed = 0u64;
+    let mut searches_degraded = 0u64;
+    let mut effective_modes: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut malformed = 0u64;
+    let mut server_end: Option<Value> = None;
+    let mut started = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            malformed += 1;
+            continue;
+        };
+        match record.get("kind").and_then(Value::as_str) {
+            Some("server_start") => started = true,
+            Some("server_end") => {
+                server_end = Some(record.get("reason").cloned().unwrap_or(Value::Null))
+            }
+            Some("tool_call") => {
+                let tool = record
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                bump(&mut tool_calls, &tool);
+                if tool == "search_project_knowledge" {
+                    if record.get("success").and_then(Value::as_bool) == Some(true) {
+                        bump(&mut searches, "succeeded");
+                        if record.get("degraded").and_then(Value::as_bool) == Some(true) {
+                            searches_degraded += 1;
+                        }
+                        if let Some(effective) = record
+                            .get("effectiveMode")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                        {
+                            bump(&mut effective_modes, &effective);
+                        }
+                    } else {
+                        searches_failed += 1;
+                    }
+                }
+            }
+            Some("audit_error") => {}
+            Some(_) | None => malformed += 1,
+        }
+    }
+    let clean = server_end.is_some();
+    let succeeded = searches
+        .get("succeeded")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if malformed > 0 {
+        notes.push(format!("{malformed} malformed audit record(s) skipped"));
+    }
+    if started && !clean {
+        notes.push(
+            "audit stream is incomplete: no clean server_end record (the server was \
+             cancelled, killed or its final write was truncated)"
+                .to_string(),
+        );
+    }
+    if !started {
+        notes.push(
+            "no server_start record: the sink predates this server or was tampered with"
+                .to_string(),
+        );
+    }
+    let status = if succeeded > 0 || searches_failed > 0 {
+        "observed"
+    } else if clean {
+        "not_observed"
+    } else {
+        "incomplete"
+    };
+    searches.insert("succeeded".to_string(), Value::from(succeeded));
+    searches.insert("failed".to_string(), Value::from(searches_failed));
+    searches.insert("degraded".to_string(), Value::from(searches_degraded));
+    searches.insert("effective".to_string(), Value::Object(effective_modes));
+    serde_json::json!({
+        "schemaVersion": 1,
+        "source": "server-side observation",
+        "status": status,
+        "cleanShutdown": clean,
+        "toolCalls": Value::Object(tool_calls),
+        "searches": Value::Object(searches),
+        "malformedRecords": malformed,
+        "notes": notes
+    })
+}
+
+fn mode_record(condition: &Condition, host_result: &Value, server_audit: Option<&Value>) -> Value {
     let requested = if condition.retrieval_mode == "repoise" {
         condition.search_mode.clone()
     } else {
         None
     };
-    let tool_telemetry = host_result
-        .pointer("/hello/capabilities/tool_telemetry")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     if requested.is_none() {
         return serde_json::json!({
             "requested": null_value(),
             "effective": null_value(),
+            "source": null_value(),
             "note": "baseline: no Repoise retrieval"
         });
     }
-    if !tool_telemetry {
+    // Server-side observation first: the trial's pinned MCP server wrote an
+    // audit sink naming each tool call and the retrieval mode each completed
+    // search actually reported. A pinned `--search-mode` argv or a passed
+    // vector preflight is configuration, not observation — only a completed
+    // hybrid search counts as observed hybrid.
+    let Some(audit) = server_audit else {
+        // Baseline or an older trial record without server-side audit.
+        let tool_telemetry = host_result
+            .pointer("/hello/capabilities/tool_telemetry")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if tool_telemetry {
+            let events = host_result.get("events").and_then(Value::as_array);
+            let used = events.is_some_and(|events| {
+                events.iter().any(|event| {
+                    matches!(
+                        event.get("t").and_then(Value::as_str),
+                        Some("tool_start") | Some("tool_end")
+                    ) && event
+                        .get("tool")
+                        .and_then(Value::as_str)
+                        .is_some_and(|tool| tool.contains("repoise"))
+                })
+            });
+            return serde_json::json!({
+                "requested": requested,
+                "effective": if used { "observed" } else { "not_observed" },
+                "source": "adapter telemetry",
+                "note": "tool-call presence from the adapter tool telemetry event stream; the executed search mode is enforced by the pinned MCP server (a vectorless trial index fails setup)"
+            });
+        }
         return serde_json::json!({
             "requested": requested,
             "effective": null_value(),
-            "note": "unverified: the adapter declares no tool telemetry; the pinned MCP server mode is the enforcement boundary, runtime degradation is not observable"
+            "source": "configuration only",
+            "note": "unverified: no server-side audit sink and the adapter declares no tool telemetry; the pinned MCP server mode is the enforcement boundary, runtime degradation is not observable"
         });
-    }
-    let events = host_result.get("events").and_then(Value::as_array);
-    let used = events.is_some_and(|events| {
-        events.iter().any(|event| {
-            matches!(
-                event.get("t").and_then(Value::as_str),
-                Some("tool_start") | Some("tool_end")
-            ) && event
-                .get("tool")
-                .and_then(Value::as_str)
-                .is_some_and(|tool| tool.contains("repoise"))
-        })
-    });
+    };
+    let audit_status = audit
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    let effective = if audit_status == "observed" {
+        audit
+            .pointer("/searches/effective")
+            .and_then(Value::as_object)
+            .and_then(|modes| {
+                let first = |name: &str| {
+                    modes.iter().find(|(mode, count)| {
+                        mode.as_str() == name && count.as_u64().unwrap_or(0) > 0
+                    })
+                };
+                first("hybrid")
+                    .or_else(|| first("lexical"))
+                    .or_else(|| first("vectors-only"))
+            })
+            .map(|(mode, _)| mode.clone())
+    } else {
+        None
+    };
+    let note = match audit_status {
+        "observed" => Some(format!(
+            "server-side observation: the trial's MCP server recorded tool calls; observed retrieval modes: {:?}",
+            effective_modes_debug(audit)
+        )),
+        "not_observed" => Some(
+            "server-side observation: the audit stream is complete (clean server end) but recorded no \
+             search_project_knowledge calls; the configured mode was not exercised"
+                .to_string(),
+        ),
+        "incomplete" => Some(
+            "server-side observation incomplete: the audit stream never reached a clean server end \
+             (cancellation, kill or truncation); observed calls so far are reported, but absence of \
+             evidence is not evidence of no use"
+                .to_string(),
+        ),
+        _ => Some(
+            "server-side observation unavailable: the trial's audit sink is absent or unreadable; \
+             the absence of audit records is not evidence of no tool use"
+                .to_string(),
+        ),
+    };
     serde_json::json!({
         "requested": requested,
-        "effective": if used { "observed" } else { "not_observed" },
-        "note": "tool-call presence from the adapter tool telemetry event stream; the executed search mode is enforced by the pinned MCP server (a vectorless trial index fails setup)"
+        "effective": effective,
+        "source": "server-side observation",
+        "observationStatus": audit_status,
+        "note": note
     })
+}
+
+/// The per-mode counts of completed searches in a summarized audit sink
+/// (debug display for the mode record note).
+fn effective_modes_debug(audit: &Value) -> Vec<String> {
+    audit
+        .pointer("/searches/effective")
+        .and_then(Value::as_object)
+        .map(|modes| {
+            modes
+                .iter()
+                .map(|(mode, count)| format!("{mode}={}", count.as_u64().unwrap_or(0)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 struct IndexInfo {
@@ -1329,6 +1611,7 @@ mod tests {
             Path::new("/tmp/trial-worktree"),
             "lexical",
             true,
+            None,
         );
         assert_eq!(
             argv,
@@ -1341,7 +1624,7 @@ mod tests {
                 "--committed".to_string()
             ]
         );
-        let argv = mcp_argv(Path::new("repoise"), Path::new("wt"), "hybrid", false);
+        let argv = mcp_argv(Path::new("repoise"), Path::new("wt"), "hybrid", false, None);
         assert_eq!(
             argv,
             vec![
@@ -1352,5 +1635,232 @@ mod tests {
                 "hybrid".to_string()
             ]
         );
+        // The per-trial audit sink is appended only when designated.
+        let argv = mcp_argv(
+            Path::new("repoise"),
+            Path::new("wt"),
+            "hybrid",
+            false,
+            Some(Path::new("/tmp/trial/mcp-audit.ndjson")),
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "repoise".to_string(),
+                "mcp".to_string(),
+                "wt".to_string(),
+                "--search-mode".to_string(),
+                "hybrid".to_string(),
+                "--audit-file".to_string(),
+                "/tmp/trial/mcp-audit.ndjson".to_string()
+            ]
+        );
+    }
+
+    fn audit_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("repoise-bench-audit-{name}-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn write_audit(path: &Path, lines: &[&str]) {
+        std::fs::write(path, lines.join("\n") + "\n").expect("write audit fixture");
+    }
+
+    #[test]
+    fn summarize_mcp_audit_counts_observed_searches_and_modes() {
+        let dir = audit_dir("observed");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start","server":{"repoId":"repo","worktreeId":"wt"}}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"search_project_knowledge","requestedMode":"hybrid","effectiveMode":"hybrid","degraded":false,"servedGeneration":7,"success":true,"durationMs":12}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"read_project_knowledge","requestedMode":null,"effectiveMode":null,"degraded":null,"servedGeneration":null,"success":true,"durationMs":3}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"project_knowledge_status","requestedMode":null,"effectiveMode":null,"degraded":null,"servedGeneration":null,"success":true,"durationMs":2}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"search_project_knowledge","requestedMode":"hybrid","effectiveMode":"lexical","degraded":true,"degradationReason":"degraded_to_lexical","servedGeneration":7,"success":true,"durationMs":5}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_closed"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "observed");
+        assert_eq!(summary["source"], "server-side observation");
+        assert_eq!(summary["cleanShutdown"], true);
+        assert_eq!(summary["toolCalls"]["search_project_knowledge"], 2);
+        assert_eq!(summary["toolCalls"]["read_project_knowledge"], 1);
+        assert_eq!(summary["toolCalls"]["project_knowledge_status"], 1);
+        assert_eq!(summary["searches"]["succeeded"], 2);
+        assert_eq!(summary["searches"]["failed"], 0);
+        assert_eq!(summary["searches"]["degraded"], 1);
+        assert_eq!(summary["searches"]["effective"]["hybrid"], 1);
+        assert_eq!(summary["searches"]["effective"]["lexical"], 1);
+        assert_eq!(summary["malformedRecords"], 0);
+        assert!(summary["notes"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_missing_sink_is_unavailable() {
+        let dir = audit_dir("missing");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "unavailable");
+        assert_eq!(summary["searches"], Value::Null);
+        // The absence of records must be explained, not treated as zero use.
+        let notes = summary["notes"].as_array().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str().is_some_and(|s| s.contains("not found")))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_incomplete_without_clean_end() {
+        let dir = audit_dir("incomplete");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"search_project_knowledge","requestedMode":"lexical","effectiveMode":"lexical","degraded":false,"success":true}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        // A recorded search exists, but the stream never ended cleanly
+        // (cancellation/kill/truncation): the use is observed, the missing
+        // clean end is reported as such, and absence of further evidence is
+        // not evidence of no use.
+        assert_eq!(summary["status"], "observed");
+        assert_eq!(summary["cleanShutdown"], false);
+        assert_eq!(summary["searches"]["succeeded"], 1);
+        let notes = summary["notes"].as_array().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str().is_some_and(|s| s.contains("incomplete")))
+        );
+        // No search records and no clean end: incomplete, unknown — not
+        // zero use.
+        let partial = dir.join("partial.ndjson");
+        write_audit(&partial, &[r#"{"schemaVersion":1,"kind":"server_start"}"#]);
+        let partial_summary = summarize_mcp_audit(&partial);
+        assert_eq!(partial_summary["status"], "incomplete");
+        assert_eq!(partial_summary["searches"]["succeeded"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_not_observed_when_complete_but_no_search() {
+        let dir = audit_dir("not_observed");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"read_project_knowledge","success":true}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_closed"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "not_observed");
+        assert_eq!(summary["cleanShutdown"], true);
+        assert_eq!(summary["searches"]["succeeded"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_counts_malformed_and_failed_searches() {
+        let dir = audit_dir("malformed");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                "not-json{",
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"search_project_knowledge","requestedMode":"hybrid","effectiveMode":null,"degraded":null,"success":false}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_error"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        // A failed search is still evidence the tool was invoked.
+        assert_eq!(summary["status"], "observed");
+        assert_eq!(summary["searches"]["failed"], 1);
+        assert_eq!(summary["malformedRecords"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn repoise_condition() -> Condition {
+        Condition {
+            id: "repoise-hybrid".to_string(),
+            retrieval_mode: "repoise".to_string(),
+            search_mode: Some("hybrid".to_string()),
+            required_capabilities: vec![],
+        }
+    }
+
+    fn baseline_condition() -> Condition {
+        Condition {
+            id: "baseline".to_string(),
+            retrieval_mode: "baseline".to_string(),
+            search_mode: None,
+            required_capabilities: vec![],
+        }
+    }
+
+    #[test]
+    fn mode_record_baseline_has_no_mode() {
+        let record = mode_record(
+            &baseline_condition(),
+            &Value::Object(serde_json::Map::new()),
+            None,
+        );
+        assert_eq!(record["requested"], Value::Null);
+        assert_eq!(record["note"], "baseline: no Repoise retrieval");
+    }
+
+    #[test]
+    fn mode_record_server_audit_observed_hybrid() {
+        let audit = serde_json::json!({
+            "status": "observed",
+            "searches": { "succeeded": 1, "failed": 0, "degraded": 0, "effective": { "hybrid": 1 } }
+        });
+        let record = mode_record(
+            &repoise_condition(),
+            &Value::Object(serde_json::Map::new()),
+            Some(&audit),
+        );
+        assert_eq!(record["requested"], "hybrid");
+        assert_eq!(record["effective"], "hybrid");
+        assert_eq!(record["source"], "server-side observation");
+        assert_eq!(record["observationStatus"], "observed");
+    }
+
+    #[test]
+    fn mode_record_server_audit_not_observed_is_not_a_pass() {
+        let audit = serde_json::json!({ "status": "not_observed" });
+        let record = mode_record(
+            &repoise_condition(),
+            &Value::Object(serde_json::Map::new()),
+            Some(&audit),
+        );
+        // Configured hybrid, but the audit proves no search ran: the
+        // effective mode is null, not "hybrid" and not "observed".
+        assert_eq!(record["effective"], Value::Null);
+        assert_eq!(record["observationStatus"], "not_observed");
+        assert_eq!(record["source"], "server-side observation");
+    }
+
+    #[test]
+    fn mode_record_unverified_without_audit_or_telemetry() {
+        let host = serde_json::json!({
+            "hello": { "capabilities": { "tool_telemetry": false } }
+        });
+        let record = mode_record(&repoise_condition(), &host, None);
+        assert_eq!(record["effective"], Value::Null);
+        assert_eq!(record["source"], "configuration only");
+        assert!(record["note"].as_str().unwrap().contains("unverified"));
     }
 }
