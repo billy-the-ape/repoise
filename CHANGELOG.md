@@ -17,10 +17,14 @@ benchmark coordinator incorporates it into trial artifacts and reports.
   duration. Query text, source ids, excerpts, source bodies, credentials
   and unrestricted RPC payloads are never recorded; records are
   size-bounded; stdout stays pure JSON-RPC; a missing/unwritable sink is
-  reported on stderr and (mid-run) as an `audit_error`, never silently.
+  reported on stderr (a mid-run write failure is stderr-only; an oversized
+  record is replaced by an `audit_error` marker), never silently.
 - The bench coordinator now designates a unique per-trial sink
   (`trials/<id>/mcp-audit.ndjson`) and passes it only to that trial's
-  pinned read-only MCP server; records survive cancellation/failure and are
+  pinned read-only MCP server; the sink is append-only (a host re-spawn of
+  the server in the same trial appends instead of truncating) and refuses
+  symlinked sink paths, so records survive cancellation, failure and
+  re-spawn; they are
   summarized into `trial.json` (`audit` field) and the per-trial `mode`
   record, which is labeled `source: "server-side observation"` with an
   `observationStatus` of `observed` / `not_observed` / `incomplete` /

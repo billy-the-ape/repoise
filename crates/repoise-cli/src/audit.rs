@@ -14,7 +14,7 @@
 //! silently read as evidence of no tool use (the benchmark coordinator
 //! labels that state `unavailable`, not zero use).
 
-use std::fs::File;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
@@ -34,10 +34,23 @@ pub struct Sink {
 }
 
 impl Sink {
-    /// Opens (creating if needed) the sink file. The parent directory must
-    /// already exist; a failure here is an `io::Error` the caller reports.
+    /// Opens the sink file for append (creating it if needed). The parent
+    /// directory must already exist. Existing records are preserved: a
+    /// re-spawned server appends to the same stream instead of truncating
+    /// the earlier `server_start`/`tool_call` records. A sink path that is
+    /// itself a symlink is refused (the sink is a coordinator-owned file
+    /// and must not be redirected elsewhere); a failure here is an
+    /// `io::Error` the caller reports.
     pub fn create(path: &Path) -> std::io::Result<Self> {
-        let file = File::create(path)?;
+        if let Ok(meta) = fs::symlink_metadata(path)
+            && meta.file_type().is_symlink()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("audit sink path is a symlink: {}", path.display()),
+            ));
+        }
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
             writer: Mutex::new(file),
         })
@@ -130,5 +143,56 @@ mod tests {
         let path = dir.join("no-such-dir").join("audit.ndjson");
         assert!(Sink::create(&path).is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn reopened_sink_appends_without_truncating() {
+        // A re-spawned server in the same trial appends to the existing
+        // stream; the earlier records survive.
+        let dir = temp_dir("append");
+        let path = dir.join("audit.ndjson");
+        {
+            let sink = Sink::create(&path).unwrap();
+            sink.record(json!({ "schemaVersion": AUDIT_SCHEMA_VERSION, "kind": "server_start" }));
+        }
+        {
+            let sink = Sink::create(&path).unwrap();
+            sink.record(json!({
+                "schemaVersion": AUDIT_SCHEMA_VERSION,
+                "kind": "tool_call",
+                "tool": "search_project_knowledge",
+                "success": true
+            }));
+        }
+        let lines: Vec<Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["kind"], "server_start");
+        assert_eq!(lines[1]["kind"], "tool_call");
+    }
+
+    #[test]
+    fn create_refuses_a_symlink_sink() {
+        let dir = temp_dir("symlink");
+        let target = dir.join("target.ndjson");
+        std::fs::write(&target, b"").unwrap();
+        let link = dir.join("link.ndjson");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::symlink_file;
+            symlink_file(&target, &link).unwrap();
+        }
+        let err = match Sink::create(&link) {
+            Err(err) => err,
+            Ok(_) => panic!("a symlink sink must be refused"),
+        };
+        assert!(err.to_string().contains("symlink"));
+        // The target must not have been touched.
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
     }
 }

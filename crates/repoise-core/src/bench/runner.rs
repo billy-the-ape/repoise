@@ -876,9 +876,13 @@ fn observed_harness_version(host_result: &Value) -> Value {
 ///   `server_end` is recorded separately as `cleanShutdown`);
 /// - `incomplete`: no search tool call was recorded and the audit stream
 ///   never reached a clean `server_end` (cancelled/killed server,
-///   truncated write);
+///   truncated write, or a broken stdio transport);
 /// - `not_observed`: a clean, complete audit stream with no
 ///   `search_project_knowledge` tool calls.
+///
+/// A `server_end` is clean only with reason `stdin_closed`; a
+/// `stdin_error`/`stdout_error` reason (or a missing `server_end`) leaves
+/// the stream incomplete.
 ///
 /// Only measurements the server itself made are aggregated: per-tool call
 /// counts, search success/failure, requested/effective retrieval modes and
@@ -889,7 +893,7 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
         Ok(file) => match file.metadata() {
             Ok(meta) if meta.len() > MAX_AUDIT_READ_BYTES => {
                 notes.push(format!(
-                    "audit sink larger than {MAX_AUDIT_READ_BYTES} bytes; only the first part was read"
+                    "audit sink larger than {MAX_AUDIT_READ_BYTES} bytes; not read"
                 ));
                 None
             }
@@ -974,7 +978,11 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
             Some(_) | None => malformed += 1,
         }
     }
-    let clean = server_end.is_some();
+    // Only a `server_end` with reason `stdin_closed` is a clean shutdown:
+    // `stdin_error`/`stdout_error` mean the stdio transport broke, so the
+    // stream after the last recorded event is unknown even though a
+    // `server_end` record exists.
+    let clean = server_end.as_ref().and_then(Value::as_str) == Some("stdin_closed");
     let succeeded = searches
         .get("succeeded")
         .and_then(Value::as_u64)
@@ -983,11 +991,18 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
         notes.push(format!("{malformed} malformed audit record(s) skipped"));
     }
     if started && !clean {
-        notes.push(
-            "audit stream is incomplete: no clean server_end record (the server was \
-             cancelled, killed or its final write was truncated)"
-                .to_string(),
-        );
+        match server_end.as_ref() {
+            Some(reason) => notes.push(format!(
+                "audit stream is incomplete: server_end reason {reason} is not a clean \
+                 shutdown (the stdio transport broke); the stream after the last \
+                 recorded event is unknown"
+            )),
+            None => notes.push(
+                "audit stream is incomplete: no clean server_end record (the server was \
+                 cancelled, killed or its final write was truncated)"
+                    .to_string(),
+            ),
+        }
     }
     if !started {
         notes.push(
@@ -1768,6 +1783,63 @@ mod tests {
         assert_eq!(summary["status"], "not_observed");
         assert_eq!(summary["cleanShutdown"], true);
         assert_eq!(summary["searches"]["succeeded"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_respawned_stream_keeps_counts() {
+        // The host may re-spawn the pinned server inside one trial; the
+        // append-only sink then holds two `server_start` records and one
+        // final `server_end`. Counts must survive, and the earlier
+        // records must not be lost.
+        let dir = audit_dir("respawn");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"search_project_knowledge","requestedMode":"hybrid","effectiveMode":"hybrid","degraded":false,"success":true}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_error"}"#,
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"search_project_knowledge","requestedMode":"hybrid","effectiveMode":"lexical","degraded":true,"success":true}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_closed"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "observed");
+        assert_eq!(summary["cleanShutdown"], true);
+        assert_eq!(summary["searches"]["succeeded"], 2);
+        assert_eq!(summary["searches"]["degraded"], 1);
+        assert_eq!(summary["searches"]["effective"]["hybrid"], 1);
+        assert_eq!(summary["searches"]["effective"]["lexical"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_broken_transport_is_not_not_observed() {
+        // A `server_end` with a non-`stdin_closed` reason means the stdio
+        // transport broke: with no recorded searches the stream is
+        // incomplete (unknown), never "no searches happened".
+        let dir = audit_dir("transport");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"read_project_knowledge","success":true}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdout_error"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "incomplete");
+        assert_eq!(summary["cleanShutdown"], false);
+        assert_eq!(summary["searches"]["succeeded"], 0);
+        let notes = summary["notes"].as_array().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str().is_some_and(|s| s.contains("stdout_error")))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

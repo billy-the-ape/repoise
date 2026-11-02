@@ -168,7 +168,9 @@ the server's own tool activity to `<PATH>` (one line per event,
   closed-vocabulary enum, e.g. `degraded_to_lexical`) when the search
   degraded, the served generation (null for failed calls), success, and
   duration;
-- `server_end` — the clean shutdown reason (`stdin_closed`, `stdin_error`);
+- `server_end` — the shutdown reason (`stdin_closed`, `stdin_error`,
+  `stdout_error`); only `stdin_closed` is a clean end — a broken stdio
+  transport leaves the audit stream incomplete;
 - `audit_error` — a bounded marker replacing an oversized record; a
   mid-run write failure is reported on stderr (it cannot be recorded in
   the sink it failed to write).

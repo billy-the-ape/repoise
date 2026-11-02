@@ -296,10 +296,12 @@ degradation counts, malformed-record count, notes) and labels `mode` with
   call; an observed hybrid means an actual completed search result
   reported hybrid (a pinned `--search-mode` argv or a passed vector
   preflight is not enough);
-- **not observed** — a complete audit stream (clean `server_end`) with no
-  search calls; the configured mode was not exercised;
+- **not observed** — a complete audit stream (a `server_end` with reason
+  `stdin_closed`) with no search calls; the configured mode was not
+  exercised;
 - **incomplete / unavailable** — the stream never reached a clean end
-  (cancellation, kill, truncation) or the sink is absent/unreadable:
+  (cancellation, kill, truncation, or a broken stdio transport reported as
+  `stdin_error`/`stdout_error`) or the sink is absent/unreadable:
   missing evidence is unknown, never zero use or a pass.
 
 An audit failure is visible (a stderr note at startup or mid-run; an
