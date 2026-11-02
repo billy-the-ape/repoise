@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Code chunk bounds across all declaration forms
+
+TS/JS ordinary function declarations used size-aware splitting, but arrow
+functions, function expressions, variable-bound classes, methods, nested
+functions and generic declarations were emitted through `emit_unit`
+regardless of size, and a single oversized statement or block item could be
+retained whole. A routes-table arrow function like the pilot's
+`chatRoutes` therefore produced a chunk far beyond the embedding model
+context and had to be excluded per repository.
+
+- One size-aware emission/splitting path now covers every declaration form:
+  statements/body items group into bounded spans (function and class
+  splitting), single oversized items split by line windows, and the
+  line-window fallback for non-grammar code uses the same strict packing.
+- The 1,000-estimated-token ceiling (characters ÷ 4, an estimate — not a
+  promise about any provider's tokenization or context window) now holds on
+  every splittable emitted chunk, counting the inter-line newlines that the
+  older per-line packing ignored.
+- Irreducible input — a single source line already larger than the budget —
+  is a documented exception: the line is emitted whole, exactly (exact
+  line/byte ranges, full text, searchable and exact-readable) and labeled
+  via the parse result's `oversized` flag; it is never truncated, dropped or
+  silently relabeled. Blank lines and pure boundary-punctuation lines (e.g.
+  a lone closing brace) remain intentionally outside every unit's range, as
+  before.
+- Parser/artifact fingerprints bump to `ts/tree-sitter-0.23.2/2`,
+  `js/tree-sitter-0.25.0/2` and `code-line/2`.
+
+**Compatibility note:** code files reparse once on the next index (chunk ids
+bind the parser version), and their embedding inputs change, so
+profile-keyed embedding cache entries for affected chunks regenerate
+automatically. No destructive storage migration: older shared parse
+artifacts (older artifact format version or parser rule version) are safe
+misses that force a reparse and are overwritten by the refreshed artifact;
+no config, environment or deployment action is required.
+
 ### Authoritative one-writer-per-scope ownership lock
 
 `OwnerGuard` previously published a best-effort advisory `owner.json`

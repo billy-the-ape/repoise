@@ -16,7 +16,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{MAX_CHUNK_TOKENS, PARSER_VERSION_CODE_LINE, join_lines, split_by_lines};
+use super::{
+    MAX_CHUNK_TOKENS, PARSER_VERSION_CODE_LINE, ceiling_line_parts, estimate_tokens, join_lines,
+};
 
 /// The kind of symbol a code symbol record describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +86,11 @@ pub struct CodeUnit {
     pub symbol: String,
     /// Parent/signature context for a split (e.g. `Widget > run (signature)`).
     pub context: Option<String>,
+    /// Whether the chunk's estimated token count exceeds the hard ceiling.
+    /// Only irreducible input produces one (a single source line already
+    /// larger than the budget); such a chunk keeps its exact text and range
+    /// and is a documented exception, never truncated or dropped.
+    pub oversized: bool,
 }
 
 /// One defined symbol in a code file (opaque ids are assigned by the indexer).
@@ -152,24 +159,29 @@ pub fn parse_code(language: &str, text: &str) -> CodeParse {
 }
 
 /// Deterministic line-window fallback: windows of source lines capped at the
-/// hard token ceiling. Chunks have no heading, symbol or context.
+/// hard token ceiling (counting the inter-line newlines). Chunks have no
+/// heading, symbol or context.
 pub fn line_window_fallback(text: &str) -> CodeParse {
     let lines: Vec<String> = text.lines().map(|line| line.to_string()).collect();
     let mut units = Vec::new();
-    let mut running = 0usize;
-    for part in split_by_lines(&lines, MAX_CHUNK_TOKENS) {
-        let line_start = running as u32 + 1;
-        let line_end = line_start + (part.len() - 1) as u32;
-        running += part.len();
+    for (part_start, part_end) in ceiling_line_parts(&lines) {
+        let part = &lines[part_start..=part_end];
+        let line_start = part_start as u32 + 1;
+        let line_end = part_end as u32 + 1;
+        let text = join_lines(part);
+        // A single-line part that still exceeds the ceiling is irreducible
+        // input: keep it exact and label it, never truncate it.
+        let oversized = estimate_tokens(&text) > MAX_CHUNK_TOKENS;
         units.push(CodeUnit {
             ordinal: units.len() as u32,
             parent: None,
             heading_path: Vec::new(),
-            text: join_lines(&part),
+            text,
             line_start,
             line_end,
             symbol: String::new(),
             context: None,
+            oversized,
         });
     }
     CodeParse {

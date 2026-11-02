@@ -200,7 +200,13 @@ with code 4 as documented.
     ~5k tokens; not yet probed chunk-by-chunk).
   - One chunk is over the model's entire 8192-token context:
     `chatRoutes` in `src/routes/chat.ts` (57,909 chars, ~14.5k tokens).
-    That file is excluded from the corpus (recorded confound).
+    That file is excluded from the corpus (recorded confound). Addressed
+    prospectively by the unified code chunk bounds (chunker rule 2,
+    parser versions `ts/tree-sitter-0.23.2/2`, `js/tree-sitter-0.25.0/2`,
+    `code-line/2`): every splittable chunk now meets the
+    1,000-estimated-token ceiling, so a new index of this file needs no
+    such exclusion; the historic config and results above are retained
+    unchanged.
 - **Unmeasured**: model comparisons, harness comparisons, cross-repository
   effects, cold-cache behavior, and any speed/token improvement claims
   (the smoke run's single repetition cannot estimate effects).
@@ -261,7 +267,9 @@ state is modified.
   the Repoise corpus in all conditions (its largest symbol chunk exceeds
   the embedding model's context). The baseline condition can still read
   the file directly; no smoke task targets that file, but the asymmetry
-  is recorded.
+  is recorded. (Prospective note: the unified code chunk bounds remove
+  the oversized-chunk cause for new indexes; this confound applies to
+  the recorded smoke run only.)
 - **Private artifacts**: the suite, patch snapshot, config and staged
   runner live in the operator's local private directory and are not
   committed; the sha256 values above pin them for reproduction.

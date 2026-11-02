@@ -8,7 +8,12 @@
 //! Size policy: aim at 300–700 estimated tokens, hard ceiling 1,000
 //! (character count divided by 4 is an estimate until a tokenizer/profile is
 //! configured). Oversized units split into labeled child chunks that repeat
-//! the heading/context, keep exact ranges and reference their parent.
+//! the heading/context, keep exact ranges and reference their parent. The
+//! only exception is an irreducible unit (a single source line already
+//! larger than the budget): it is emitted whole, exactly, and labeled
+//! `oversized` (code corpus) rather than truncated or dropped. The ceiling
+//! bounds estimated chunk size — it is not a promise about any provider's
+//! tokenization or context window.
 
 pub mod code;
 pub mod config_fmt;
@@ -29,14 +34,19 @@ pub const PARSER_VERSION_MARKDOWN: &str = "markdown/1";
 pub const PARSER_VERSION_TEXT: &str = "text/1";
 pub const PARSER_VERSION_CONFIG: &str = "config/1";
 /// TypeScript/TSX structural parser (pinned `tree-sitter-typescript`
-/// grammar version + chunker rule version).
-pub const PARSER_VERSION_TS: &str = "ts/tree-sitter-0.23.2/1";
+/// grammar version + chunker rule version). Rule 2 unifies the size-aware
+/// emission/splitting path across all declaration forms (declarations,
+/// arrow functions, function expressions, variable-bound classes, methods,
+/// nested functions) and line-window-splits single oversized statements or
+/// block items.
+pub const PARSER_VERSION_TS: &str = "ts/tree-sitter-0.23.2/2";
 /// JavaScript/JSX structural parser (pinned `tree-sitter-javascript`
-/// grammar version + chunker rule version).
-pub const PARSER_VERSION_JS: &str = "js/tree-sitter-0.25.0/1";
+/// grammar version + chunker rule version; same rule 2 change as TS).
+pub const PARSER_VERSION_JS: &str = "js/tree-sitter-0.25.0/2";
 /// Line-window fallback for code without a shipped grammar (and for
-/// parser-error ranges of grammar files).
-pub const PARSER_VERSION_CODE_LINE: &str = "code-line/1";
+/// parser-error ranges of grammar files). Rule 2 labels chunks whose single
+/// source line exceeds the ceiling (irreducible input).
+pub const PARSER_VERSION_CODE_LINE: &str = "code-line/2";
 
 /// Logical corpus a chunk belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +154,35 @@ pub fn split_by_lines(lines: &[String], max_tokens: u64) -> Vec<Vec<String>> {
     }
     if !current.is_empty() {
         parts.push(current);
+    }
+    parts
+}
+
+/// Splits `lines` into consecutive inclusive 0-based part ranges whose
+/// joined span (including the inter-line newlines) stays within the hard
+/// token ceiling. Unlike [`split_by_lines`] — which packs by per-line
+/// estimates and can overshoot by the newline count — every part here is
+/// strictly within the ceiling unless it is a single irreducible line
+/// larger than the budget.
+pub fn ceiling_line_parts(lines: &[String]) -> Vec<(usize, usize)> {
+    let mut parts: Vec<(usize, usize)> = Vec::new();
+    let mut start: usize = 0;
+    let mut span_chars: u64 = 0;
+    for (index, line) in lines.iter().enumerate() {
+        let line_chars = line.chars().count() as u64;
+        if index == start {
+            span_chars = line_chars;
+            continue;
+        }
+        span_chars += 1 + line_chars; // the joining newline plus the line
+        if span_chars.div_ceil(4) > MAX_CHUNK_TOKENS {
+            parts.push((start, index - 1));
+            start = index;
+            span_chars = line_chars;
+        }
+    }
+    if !lines.is_empty() {
+        parts.push((start, lines.len() - 1));
     }
     parts
 }

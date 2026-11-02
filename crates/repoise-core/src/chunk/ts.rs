@@ -1,11 +1,19 @@
 //! Structural TS/TSX/JS/JSX chunking over pinned tree-sitter grammars.
 //!
-//! Walks the concrete syntax tree (no query files): top-level declarations
-//! become symbol chunks, classes extract methods, functions extract nested
-//! named functions, and everything else (imports, bare statements, comments)
-//! is grouped into module chunks. Oversized units split at statement/block
-//! boundaries with a parent reference and a signature context. Parser-error
-//! ranges are recorded and their top-level regions fall back to line windows.
+//! Walks the concrete syntax tree (no query files): every declaration form
+//! (named declarations, arrow functions, function expressions,
+//! variable-bound classes) goes through one size-aware emission path — a
+//! single chunk when the exact range fits the estimated token ceiling,
+//! otherwise a structural split at statement/block boundaries with a parent
+//! reference and a signature context. Single statements or block items
+//! larger than the ceiling are line-window split into bounded child chunks.
+//! Classes extract methods, functions extract nested named functions, when
+//! the whole declaration fits in one chunk; everything else (imports, bare
+//! statements, comments) is grouped into module chunks. Parser-error ranges
+//! are recorded and their top-level regions fall back to line windows. The
+//! only exception to the ceiling is an irreducible single source line
+//! larger than the budget: it is emitted whole, exactly and labeled
+//! `oversized`, never truncated.
 
 use std::collections::HashSet;
 
@@ -14,8 +22,8 @@ use tree_sitter_language::LanguageFn;
 
 use super::code::{CodeImport, CodeParse, CodeRef, CodeSymbol, CodeUnit, RefKind, SymbolKind};
 use super::{
-    MAX_CHUNK_TOKENS, PARSER_VERSION_JS, PARSER_VERSION_TS, estimate_tokens, join_lines,
-    split_by_lines,
+    MAX_CHUNK_TOKENS, PARSER_VERSION_JS, PARSER_VERSION_TS, ceiling_line_parts, estimate_tokens,
+    join_lines,
 };
 
 /// Identifier-like node kinds that yield local reference hints.
@@ -226,16 +234,22 @@ impl<'t> Builder<'t> {
         if start > end || start == 0 || end > self.lines.count() {
             return u32::MAX;
         }
+        let text = self.lines.span(start, end);
+        // Irreducible-input policy: a range that still exceeds the ceiling
+        // holds a single source line larger than the budget. It is emitted
+        // whole and exactly and labeled `oversized`, never truncated.
+        let oversized = estimate_tokens(&text) > MAX_CHUNK_TOKENS;
         let ordinal = self.units.len() as u32;
         self.units.push(CodeUnit {
             ordinal,
             parent,
             heading_path: heading.to_vec(),
-            text: self.lines.span(start, end),
+            text,
             line_start: start,
             line_end: end,
             symbol: symbol.to_string(),
             context,
+            oversized,
         });
         ordinal
     }
@@ -300,18 +314,14 @@ impl<'t> Builder<'t> {
         gaps.sort();
         for (start, end) in gaps {
             let lines = &self.lines.texts[(start - 1) as usize..end as usize];
-            let mut running = 0usize;
-            for part in split_by_lines(lines, MAX_CHUNK_TOKENS) {
-                let part_start = running as u32 + 1;
-                let part_end = part_start + (part.len() - 1) as u32;
-                running += part.len();
+            for (part_start, part_end) in ceiling_line_parts(lines) {
                 self.emit_unit(
                     None,
                     &[],
                     "",
                     None,
-                    start + (part_start - 1),
-                    start + (part_end - 1),
+                    start + part_start as u32,
+                    start + part_end as u32,
                 );
             }
         }
@@ -502,7 +512,9 @@ impl<'t> Builder<'t> {
     }
 
     /// Handles `const`/`let`/`var` statements: declarators bound to
-    /// functions/classes become symbol units; everything else is module gap.
+    /// functions/classes become symbol units through the shared size-aware
+    /// path (an oversized binding splits into bounded chunks); everything
+    /// else is module gap.
     fn handle_variables(&mut self, node: Node, start: u32, _end: u32, exported: bool) {
         let (stmt_start, stmt_end) = self.node_range(node);
         let unit_start_base = start.min(stmt_start);
@@ -517,7 +529,7 @@ impl<'t> Builder<'t> {
             };
             let (decl_start, decl_end) = self.node_range(decl);
             let mut name = None;
-            let mut value_kind = None;
+            let mut value: Option<(Node, SymbolKind)> = None;
             for j in 0..decl.child_count() {
                 let Some(child) = decl.child(j) else {
                     continue;
@@ -525,19 +537,20 @@ impl<'t> Builder<'t> {
                 match child.kind() {
                     "identifier" => name = Some(self.text_of(child)),
                     "arrow_function" | "function_expression" => {
-                        value_kind = Some(SymbolKind::Function)
+                        value = Some((child, SymbolKind::Function))
                     }
-                    "class" => value_kind = Some(SymbolKind::Class),
+                    "class" => value = Some((child, SymbolKind::Class)),
                     _ => {}
                 }
             }
-            if let (Some(name), Some(kind)) = (name, value_kind) {
+            if let (Some(name), Some((value_node, kind))) = (name, value) {
                 let unit_start = if first { unit_start_base } else { decl_start };
                 self.claim_lines(unit_start, decl_end);
                 self.flush_gaps();
                 let heading = vec![name.clone()];
-                self.emit_unit(None, &heading, &name, None, unit_start, decl_end);
-                self.add_symbol(name, kind, unit_start, decl_end, None, exported);
+                self.emit_symbol_unit(
+                    value_node, &name, &heading, kind, exported, unit_start, decl_end,
+                );
                 extracted.push((unit_start, decl_end));
             }
             first = false;
@@ -568,10 +581,15 @@ impl<'t> Builder<'t> {
     ) {
         let Some(name) = self.decl_name(node) else {
             // Unnamed declaration (e.g. anonymous `export default class`):
-            // keep it as a module chunk.
+            // keep it as a module chunk, split by line windows when the exact
+            // range exceeds the ceiling.
             let start = start_override.unwrap_or_else(|| self.leading_start(node));
             let end = self.node_range(node).1;
-            self.emit_unit(None, &[], "", None, start, end);
+            if estimate_tokens(&self.lines.span(start, end)) <= MAX_CHUNK_TOKENS {
+                self.emit_unit(None, &[], "", None, start, end);
+            } else {
+                self.split_generic("", &[], start, end);
+            }
             return;
         };
         let kind_enum = match kind {
@@ -585,28 +603,47 @@ impl<'t> Builder<'t> {
         };
         let start = start_override.unwrap_or_else(|| self.leading_start(node));
         let end = self.node_range(node).1;
-        self.claim_lines(start, end);
-        self.add_symbol(name.clone(), kind_enum, start, end, None, exported);
         let heading = vec![name.clone()];
+        self.emit_symbol_unit(node, &name, &heading, kind_enum, exported, start, end);
+    }
+
+    /// Emits one named declaration (or a variable-bound function/class)
+    /// through the single size-aware path: one chunk when the exact range
+    /// fits the estimated token ceiling, otherwise a structural split
+    /// (statement or block-item groups under a hosting chunk) or a
+    /// line-window split. Methods and nested named functions are emitted
+    /// only when the whole declaration fits in one chunk.
+    #[allow(clippy::too_many_arguments)] // one value per emission concern
+    fn emit_symbol_unit(
+        &mut self,
+        node: Node,
+        name: &str,
+        heading: &[String],
+        kind: SymbolKind,
+        exported: bool,
+        start: u32,
+        end: u32,
+    ) {
+        self.claim_lines(start, end);
+        let symbol_index = self.add_symbol(name.to_string(), kind, start, end, None, exported);
         if estimate_tokens(&self.lines.span(start, end)) <= MAX_CHUNK_TOKENS {
-            self.emit_unit(None, &heading, &name, None, start, end);
-            if kind_enum == SymbolKind::Class {
-                self.emit_methods(node, &name, Some(self.symbols.len() - 1));
-            } else if kind_enum == SymbolKind::Function {
-                self.emit_nested_functions(node, &name, Some(self.symbols.len() - 1));
+            self.emit_unit(None, heading, name, None, start, end);
+            if kind == SymbolKind::Class {
+                self.emit_methods(node, name, Some(symbol_index));
+            } else if kind == SymbolKind::Function {
+                self.emit_nested_functions(node, name, Some(symbol_index));
             }
-        } else if matches!(
-            kind,
-            "function_declaration" | "generator_function_declaration"
-        ) && node
+            return;
+        }
+        let block_body = node
             .child_by_field_name("body")
-            .is_some_and(|body| body.kind() == "statement_block")
-        {
-            self.split_function(node, &name, &heading, start, end);
-        } else if matches!(kind, "class_declaration" | "abstract_class_declaration") {
-            self.split_class(node, &name, &heading, start, end);
-        } else {
-            self.split_generic(&name, &heading, start, end);
+            .is_some_and(|body| body.kind() == "statement_block");
+        match kind {
+            SymbolKind::Function if block_body => {
+                self.split_function(node, name, heading, start, end)
+            }
+            SymbolKind::Class => self.split_class(node, name, heading, start, end),
+            _ => self.split_generic(name, heading, start, end),
         }
     }
 
@@ -670,19 +707,20 @@ impl<'t> Builder<'t> {
         }
     }
 
-    /// Groups consecutive statement/item ranges so each group's joined text
-    /// stays within the hard token ceiling.
+    /// Groups consecutive statement/item ranges so each group's joined span
+    /// (counting the inter-line newlines) stays within the hard token
+    /// ceiling. A single item may still exceed it; the caller line-window-
+    /// splits such a group.
     fn group_ranges(&self, ranges: &[(u32, u32)]) -> Vec<Vec<(u32, u32)>> {
         let mut groups: Vec<Vec<(u32, u32)>> = Vec::new();
         let mut current: Vec<(u32, u32)> = Vec::new();
-        let mut current_tokens = 0u64;
         for (start, end) in ranges {
-            let tokens = estimate_tokens(&self.lines.span(*start, *end));
-            if !current.is_empty() && current_tokens + tokens > MAX_CHUNK_TOKENS {
+            let oversized_span = current.first().is_some_and(|&(group_start, _)| {
+                estimate_tokens(&self.lines.span(group_start, *end)) > MAX_CHUNK_TOKENS
+            });
+            if oversized_span {
                 groups.push(std::mem::take(&mut current));
-                current_tokens = 0;
             }
-            current_tokens += tokens;
             current.push((*start, *end));
         }
         if !current.is_empty() {
@@ -753,13 +791,52 @@ impl<'t> Builder<'t> {
         for group in groups.iter().skip(1) {
             let group_start = group.first().unwrap().0;
             let group_end = group.last().unwrap().1;
-            self.emit_unit(
-                Some(hosting_ordinal),
+            self.emit_group_children(
+                hosting_ordinal,
                 heading,
                 name,
-                Some(context.clone()),
+                &context,
                 group_start,
                 group_end,
+            );
+        }
+    }
+
+    /// Emits one statement/item group of a structural split as child chunks
+    /// of the hosting chunk. A group whose exact span exceeds the estimated
+    /// token ceiling (a single oversized statement or block item) falls
+    /// back to a line-window split; every part is parented to the hosting
+    /// chunk (the flat parent/child shape the indexer and the related
+    /// service resolve), so every splittable part stays within the ceiling.
+    fn emit_group_children(
+        &mut self,
+        hosting: u32,
+        heading: &[String],
+        name: &str,
+        context: &str,
+        start: u32,
+        end: u32,
+    ) {
+        if estimate_tokens(&self.lines.span(start, end)) <= MAX_CHUNK_TOKENS {
+            self.emit_unit(
+                Some(hosting),
+                heading,
+                name,
+                Some(context.to_string()),
+                start,
+                end,
+            );
+            return;
+        }
+        let lines = &self.lines.texts[(start - 1) as usize..end as usize];
+        for (part_start, part_end) in ceiling_line_parts(lines) {
+            self.emit_unit(
+                Some(hosting),
+                heading,
+                name,
+                Some(context.to_string()),
+                start + part_start as u32,
+                start + part_end as u32,
             );
         }
     }
@@ -788,11 +865,11 @@ impl<'t> Builder<'t> {
         for group in groups.iter().skip(1) {
             let group_start = group.first().unwrap().0;
             let group_end = group.last().unwrap().1;
-            self.emit_unit(
-                Some(hosting_ordinal),
+            self.emit_group_children(
+                hosting_ordinal,
                 heading,
                 name,
-                Some(context.clone()),
+                &context,
                 group_start,
                 group_end,
             );
@@ -802,32 +879,32 @@ impl<'t> Builder<'t> {
     /// Splits any other oversized declaration by line windows.
     fn split_generic(&mut self, name: &str, heading: &[String], start: u32, end: u32) {
         let lines = &self.lines.texts[(start - 1) as usize..end as usize];
-        let parts = split_by_lines(lines, MAX_CHUNK_TOKENS);
-        let first_len = parts.first().map(Vec::len).unwrap_or(0);
-        if first_len == 0 {
+        let parts = ceiling_line_parts(lines);
+        let Some(&(first_start, first_end)) = parts.first() else {
             return;
-        }
+        };
         let hosting_ordinal = self.emit_unit(
             None,
             heading,
             name,
             None,
-            start,
-            start + first_len as u32 - 1,
+            start + first_start as u32,
+            start + first_end as u32,
         );
-        let context = self.split_context(heading, start, start + first_len as u32 - 1);
-        let mut running = first_len;
-        for part in parts.iter().skip(1) {
-            let part_len = part.len() as u32;
+        let context = self.split_context(
+            heading,
+            start + first_start as u32,
+            start + first_end as u32,
+        );
+        for &(part_start, part_end) in parts.iter().skip(1) {
             self.emit_unit(
                 Some(hosting_ordinal),
                 heading,
                 name,
-                Some(context.clone()),
-                start + running as u32,
-                start + running as u32 + part_len - 1,
+                Some(context.to_string()),
+                start + part_start as u32,
+                start + part_end as u32,
             );
-            running += part.len();
         }
     }
 
