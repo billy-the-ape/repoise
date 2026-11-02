@@ -880,9 +880,12 @@ fn observed_harness_version(host_result: &Value) -> Value {
 /// - `not_observed`: a clean, complete audit stream with no
 ///   `search_project_knowledge` tool calls.
 ///
-/// A `server_end` is clean only with reason `stdin_closed`; a
-/// `stdin_error`/`stdout_error` reason (or a missing `server_end`) leaves
-/// the stream incomplete.
+/// A stream is complete only when every recorded server is matched: the
+/// final `server_end` has reason `stdin_closed` and no `server_start` is
+/// left open (the sink is append-only across re-spawns, so a later
+/// cancelled/killed server without a final end leaves its tail unknown);
+/// a `stdin_error`/`stdout_error` end, a missing `server_end`, or more
+/// ends than starts all leave the stream incomplete.
 ///
 /// Only measurements the server itself made are aggregated: per-tool call
 /// counts, search success/failure, requested/effective retrieval modes and
@@ -935,6 +938,7 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
     let mut malformed = 0u64;
     let mut server_end: Option<Value> = None;
     let mut started = false;
+    let mut open_servers = 0i64;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -945,8 +949,12 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
             continue;
         };
         match record.get("kind").and_then(Value::as_str) {
-            Some("server_start") => started = true,
+            Some("server_start") => {
+                started = true;
+                open_servers += 1;
+            }
             Some("server_end") => {
+                open_servers -= 1;
                 server_end = Some(record.get("reason").cloned().unwrap_or(Value::Null))
             }
             Some("tool_call") => {
@@ -978,11 +986,14 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
             Some(_) | None => malformed += 1,
         }
     }
-    // Only a `server_end` with reason `stdin_closed` is a clean shutdown:
-    // `stdin_error`/`stdout_error` mean the stdio transport broke, so the
-    // stream after the last recorded event is unknown even though a
-    // `server_end` record exists.
-    let clean = server_end.as_ref().and_then(Value::as_str) == Some("stdin_closed");
+    // A stream is complete only when every recorded server is matched: the
+    // final `server_end` has reason `stdin_closed` and no `server_start` is
+    // left open (the sink is append-only across re-spawns, so a later
+    // cancelled/killed server without a final end leaves its tail unknown).
+    // A `stdin_error`/`stdout_error` end means the stdio transport broke,
+    // and more ends than starts means the sink was tampered with.
+    let clean =
+        server_end.as_ref().and_then(Value::as_str) == Some("stdin_closed") && open_servers == 0;
     let succeeded = searches
         .get("succeeded")
         .and_then(Value::as_u64)
@@ -991,17 +1002,32 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
         notes.push(format!("{malformed} malformed audit record(s) skipped"));
     }
     if started && !clean {
-        match server_end.as_ref() {
-            Some(reason) => notes.push(format!(
-                "audit stream is incomplete: server_end reason {reason} is not a clean \
-                 shutdown (the stdio transport broke); the stream after the last \
-                 recorded event is unknown"
-            )),
-            None => notes.push(
-                "audit stream is incomplete: no clean server_end record (the server was \
-                 cancelled, killed or its final write was truncated)"
+        if open_servers > 0 {
+            notes.push(format!(
+                "audit stream is incomplete: {open_servers} server_start record(s) have no \
+                 matching server_end (a later re-spawned server was cancelled, killed or \
+                 its final write was truncated); the stream after its last recorded \
+                 event is unknown"
+            ));
+        } else if open_servers < 0 {
+            notes.push(
+                "audit stream is incomplete: more server_end records than server_start \
+                 (the sink was tampered with or predates this server)"
                     .to_string(),
-            ),
+            );
+        } else {
+            match server_end.as_ref() {
+                Some(reason) => notes.push(format!(
+                    "audit stream is incomplete: server_end reason {reason} is not a clean \
+                     shutdown (the stdio transport broke); the stream after the last \
+                     recorded event is unknown"
+                )),
+                None => notes.push(
+                    "audit stream is incomplete: no clean server_end record (the server was \
+                     cancelled, killed or its final write was truncated)"
+                        .to_string(),
+                ),
+            }
         }
     }
     if !started {
@@ -1840,6 +1866,43 @@ mod tests {
                 .iter()
                 .any(|note| note.as_str().is_some_and(|s| s.contains("stdout_error")))
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_respawn_without_final_end_is_incomplete() {
+        // A re-spawned server that is cancelled/killed without a final
+        // clean end leaves its tail unknown, even though an earlier server
+        // ended cleanly: incomplete, never not_observed (zero use).
+        let dir = audit_dir("respawn-open");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_closed"}"#,
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "incomplete");
+        assert_eq!(summary["cleanShutdown"], false);
+        assert_eq!(summary["searches"]["succeeded"], 0);
+        let notes = summary["notes"].as_array().unwrap();
+        assert!(notes.iter().any(|note| {
+            note.as_str()
+                .is_some_and(|s| s.contains("no matching server_end"))
+        }));
+        // More ends than starts (tampered or pre-existing sink) is not
+        // clean either.
+        let tampered = dir.join("tampered.ndjson");
+        write_audit(
+            &tampered,
+            &[r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_closed"}"#],
+        );
+        let tampered_summary = summarize_mcp_audit(&tampered);
+        assert_eq!(tampered_summary["status"], "incomplete");
+        assert_eq!(tampered_summary["cleanShutdown"], false);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
