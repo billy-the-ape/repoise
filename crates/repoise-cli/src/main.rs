@@ -21,6 +21,7 @@ use repoise_core::search::{QueryEmbedder, SearchMode};
 use repoise_core::store::Store;
 use repoise_core::{CACHE_ENV_VAR, CONFIG_FILENAME, LOCAL_CONFIG_FILENAME};
 
+mod audit;
 mod capabilities;
 mod events;
 mod mcp;
@@ -93,6 +94,8 @@ struct CliOptions {
     allow_refresh: bool,
     /// Pinned retrieval mode for `repoise mcp` (`--search-mode`).
     mcp_search_mode: Option<String>,
+    /// Opt-in machine audit file for `repoise mcp` (`--audit-file`).
+    mcp_audit_file: Option<PathBuf>,
     events: bool,
     suite_path: Option<PathBuf>,
     bench_runner: Option<PathBuf>,
@@ -214,6 +217,10 @@ MCP OPTIONS:
     --search-mode <MODE>        Pin the retrieval mode for this server:
                                 lexical (default), hybrid, vectors-only. Tool
                                 requests naming a different mode are refused.
+    --audit-file <PATH>         Opt-in machine audit: append bounded NDJSON tool
+                                call records to PATH (never to stdout; see
+                                docs/mcp.md). `repoise bench` designates one
+                                per trial for server-side retrieval evidence.
 
 OVERLAY OPTIONS:
     uninstall | update          Overlay action (uninstall removes; update migrates)
@@ -275,6 +282,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         worktree_id: None,
         allow_refresh: false,
         mcp_search_mode: None,
+        mcp_audit_file: None,
         events: false,
         suite_path: None,
         bench_runner: None,
@@ -435,6 +443,14 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
                         ));
                     }
                 }
+            }
+            "--audit-file" => {
+                i += 1;
+                let value = require_value(args, i, "--audit-file")?;
+                if value.is_empty() {
+                    return Err("--audit-file must name a file".to_string());
+                }
+                opts.mcp_audit_file = Some(PathBuf::from(value));
             }
             "--repo-id" => {
                 i += 1;

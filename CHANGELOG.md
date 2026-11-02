@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Server-side retrieval audit for benchmark trials
+
+Trials proved only that a pinned MCP server was configured, never that the
+agent called it or that a hybrid search actually ran hybrid. The Repoise
+MCP server gains a minimal, explicitly enabled machine audit sink, and the
+benchmark coordinator incorporates it into trial artifacts and reports.
+
+- New opt-in `repoise mcp --audit-file <PATH>` flag (default off; not a
+  config key, not exposed as an MCP tool). The server appends NDJSON
+  records (`server_start`, `tool_call`, `server_end`, `audit_error`)
+  carrying only measurements it made itself: tool name, requested/effective
+  retrieval mode, degradation reason, served generation, success and
+  duration. Query text, source ids, excerpts, source bodies, credentials
+  and unrestricted RPC payloads are never recorded — an unknown or missing
+  tool name is recorded as `unknown`, never verbatim; records are
+  size-bounded; stdout stays pure JSON-RPC; a missing/unwritable sink is
+  reported on stderr (a mid-run write failure is stderr-only; an oversized
+  record is replaced by an `audit_error` marker), never silently.
+- The bench coordinator now designates a unique per-trial sink
+  (`trials/<id>/mcp-audit.ndjson`) and passes it only to that trial's
+  pinned read-only MCP server; the sink is append-only (a host re-spawn of
+  the server in the same trial appends instead of truncating) and refuses
+  symlinked sink paths, so records survive cancellation, failure and
+  re-spawn; they are
+  summarized into `trial.json` (`audit` field) and the per-trial `mode`
+  record, which is labeled `source: "server-side observation"` with an
+  `observationStatus` of `observed` / `not_observed` / `incomplete` /
+  `unavailable`. Observed hybrid means an actual completed search result
+  reported hybrid — a pinned argv or vector preflight no longer counts as
+  evidence; status/read/related calls never count as searches; missing
+  evidence is unknown, never zero use or a pass.
+- Cline's `tool_telemetry: false` capability is unchanged: the observation
+  covers only this Repoise server, not the agent's other tools, and no
+  efficiency conclusions follow from logging alone.
+
 ### Benchmark harness version pin and explicit update control
 
 The AP-06 pilot's `CLINE_NO_AUTO_UPDATE=1` never reached the Cline CLI

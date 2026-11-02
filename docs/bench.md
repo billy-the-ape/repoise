@@ -230,7 +230,10 @@ randomized per task/repetition block with the recorded seed). Each trial:
    with `infra_error` if the trial index has no published vectors for a
    hybrid/vectors-only condition, so a hybrid run can never silently
    degrade to lexical; the effective mode and any degradation are recorded
-   in `trial.json` `mode`);
+   in `trial.json` `mode`), and given a per-trial machine audit sink
+   (`--audit-file trials/<id>/mcp-audit.ndjson`) so the coordinator can
+   observe — server-side — which tools the trial actually invoked and with
+   what retrieval outcome (see Server-side retrieval observation);
 3. writes a redacted copy of the AP-03 request
    (`trials/<id>/request.json`; `condition.mcp.env` values are replaced with
    a placeholder so secrets stay out of shareable artifacts) and sends the
@@ -258,6 +261,56 @@ wall-clock deadline, the trial is recorded as `infra_error` (or `cancelled`
 on a coincident interrupt) with reason `host_watchdog`; the report still
 counts it as a censored timeout (it keeps its recorded agentMs at or above
 the cap) rather than as an infra failure.
+
+## Server-side retrieval observation
+
+Trials cannot prove that the agent actually used the pinned MCP server, or
+that a hybrid request ran hybrid rather than degraded. The coordinator
+therefore designates a per-trial machine audit sink
+(`trials/<id>/mcp-audit.ndjson`) through the server's opt-in
+`--audit-file` flag: only that trial's pinned read-only server writes to
+it, and the sink lives in the trial directory (coordinator-owned
+artifacts), outside the agent-visible worktree and the indexed corpus.
+
+The sink is NDJSON (records carry `schemaVersion: 1`, a UTC `t`
+timestamp, and a `kind` of `server_start`, `tool_call`, `server_end` or
+`audit_error`). A `tool_call` record carries only measurements the server
+itself made: the tool name, the requested and effective retrieval mode for
+searches, the degradation reason (closed-vocabulary enum) when the search
+degraded, the served generation (null for failed calls), success, and
+duration. Query text, source ids, excerpts, source bodies, credentials,
+env values and unrestricted RPC payloads are never recorded; records are
+size-bounded; the server tolerates a full sink (later writes are
+skipped and noted) and the coordinator's summary tolerates malformed or
+truncated records. A status, read or related call is recorded as its own
+tool and never counts as a search.
+
+The trial's `trial.json` summarizes the sink in `audit` (per-tool call
+counts, search success/failure, requested/effective retrieval modes,
+degradation counts, malformed-record count, notes) and labels `mode` with
+`source: "server-side observation"`. The evidence semantics:
+
+- **configured** — the pinned argv proves the server was configured for
+  the declared mode, nothing more;
+- **observed** — the trial's server recorded at least one search tool
+  call; an observed hybrid means an actual completed search result
+  reported hybrid (a pinned `--search-mode` argv or a passed vector
+  preflight is not enough);
+- **not observed** — a complete audit stream (a `server_end` with reason
+  `stdin_closed`) with no search calls and no malformed records; the
+  configured mode was not exercised;
+- **incomplete / unavailable** — the stream never reached a clean end
+  (cancellation, kill, truncation, or a broken stdio transport reported as
+  `stdin_error`/`stdout_error`) or the sink is absent/unreadable:
+  missing evidence is unknown, never zero use or a pass.
+
+An audit failure is visible (a stderr note at startup or mid-run; an
+`audit_error` marker replaces an oversized record) and must never silently
+become proof of no tool use. This observation covers only this Repoise
+server: the Cline adapter still declares `tool_telemetry: false`, and no
+claim about the agent's other tools follows. Audit overhead is one bounded
+record per tool call plus start/end records; do not draw efficiency
+conclusions from logging alone.
 
 ## Grading (AP-05)
 
@@ -362,6 +415,7 @@ Under `<output.dir>/<experiment.id>/`:
 | `trials/<id>/grading.json` | One trial's grading record (schema v1); engine records carry `source: "engine"`, operator manual records do not |
 | `trials/<id>/grading.json.rejected` | Operator manual record the engine replaced without honoring (invalid, unparseable, or left on a censored trial); the engine never overwrites operator bytes in place |
 | `trials/<id>/request.json` | The AP-03 request with `condition.mcp.env` values redacted (names kept; the live request with real values goes only to the host bridge over stdin; a local artifact) |
+| `trials/<id>/mcp-audit.ndjson` | The trial's server-side audit sink (opt-in `--audit-file`; NDJSON machine audit of tool calls written only by the trial's pinned MCP server; see Server-side retrieval observation) |
 | `trials/<id>/adapter/` | `events.ndjson`, `result.json`, `stderr.log` (adapter diagnostics) |
 | `trials/<id>/host.log` | Coordinator-side bridge stderr |
 | `cache/` | Trial index DBs and the shared family store (declared, content-addressed) |

@@ -745,6 +745,7 @@ fn bench_generated_mcp_argv_is_accepted_and_pins_search_mode() {
         &root,
         "lexical",
         false,
+        None,
     );
     let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
     for arg in &argv[1..] {
@@ -844,6 +845,7 @@ fn hybrid_pinned_server_accepts_modeless_searches() {
         &root,
         "hybrid",
         false,
+        None,
     );
     let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
     for arg in &argv[1..] {
@@ -926,4 +928,365 @@ fn hybrid_pinned_server_accepts_modeless_searches() {
     assert!(message.contains("scope mismatch"), "{message}");
     drop(stdin);
     child.wait().expect("server should exit");
+}
+/// The opt-in `--audit-file` sink: a synthetic JSON-RPC client actually
+/// searches (lexical), reads, checks status and triggers a scope mismatch;
+/// the sink must record exactly those tool calls with their outcomes, and
+/// every stdout line must remain pure JSON-RPC (no audit bytes leak).
+#[test]
+fn audit_file_records_tool_calls_and_keeps_stdout_clean() {
+    let root = temp_root("audit");
+    std::fs::write(root.join("README.md"), "retrieval marker alpha\n").unwrap();
+    let root_arg = root.to_string_lossy().into_owned();
+    cli_json(&["index", "--json", &root_arg]);
+    let sink = temp_root("audit-sink").join("mcp-audit.ndjson");
+    let mut mcp = Mcp::spawn(
+        &root,
+        &[
+            "--search-mode",
+            "lexical",
+            "--audit-file",
+            sink.to_str().expect("sink path"),
+        ],
+    );
+    let init = mcp.request(1, "initialize", json!({}));
+    assert_eq!(init["result"]["serverInfo"]["name"], "repoise");
+    // A completed lexical search (the index exists): the audit must record
+    // success, the effective mode and the served generation.
+    let search = mcp.tool_result(
+        2,
+        "search_project_knowledge",
+        json!({ "query": "retrieval" }),
+    );
+    assert_eq!(search["retrieval_mode"], "lexical");
+    // A scope mismatch (hybrid request on a lexical-pinned server): the
+    // audit must record a failed search tool call.
+    let mismatch = mcp.tool_error(
+        3,
+        "search_project_knowledge",
+        json!({ "query": "retrieval", "mode": "hybrid" }),
+    );
+    assert!(mismatch.contains("scope mismatch"), "{mismatch}");
+    // A read and a status call: both must be recorded as their own tools,
+    // never counted as searches.
+    mcp.call(
+        4,
+        "read_project_knowledge",
+        json!({ "sourceId": "sentinel-source-id" }),
+    );
+    mcp.tool_result(5, "project_knowledge_status", json!({}));
+    let status = mcp.close();
+    assert!(status.success(), "clean shutdown expected");
+
+    let ndjson = std::fs::read_to_string(&sink).expect("audit sink should exist");
+    let records: Vec<Value> = ndjson
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("audit lines must be valid JSON: {line}"))
+        .collect();
+    let kinds = records
+        .iter()
+        .map(|record| record["kind"].as_str().expect("kind"))
+        .collect::<Vec<_>>();
+    assert_eq!(kinds.first(), Some(&"server_start"), "{kinds:?}");
+    assert_eq!(kinds.last(), Some(&"server_end"), "{kinds:?}");
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["kind"] == "tool_call")
+            .count(),
+        4,
+        "exactly one record per tool call, no duplicates: {ndjson}"
+    );
+    let searches: Vec<&Value> = records
+        .iter()
+        .filter(|record| {
+            record["kind"] == "tool_call" && record["tool"] == "search_project_knowledge"
+        })
+        .collect();
+    assert_eq!(searches.len(), 2);
+    assert_eq!(searches[0]["success"], json!(true));
+    assert_eq!(searches[0]["requestedMode"], json!("lexical"));
+    assert_eq!(searches[0]["effectiveMode"], json!("lexical"));
+    assert_eq!(searches[0]["degraded"], json!(false));
+    assert_eq!(searches[1]["success"], json!(false));
+    assert_eq!(searches[1]["effectiveMode"], Value::Null);
+    let reads = records
+        .iter()
+        .filter(|record| {
+            record["kind"] == "tool_call" && record["tool"] == "read_project_knowledge"
+        })
+        .count();
+    let statuses = records
+        .iter()
+        .filter(|record| {
+            record["kind"] == "tool_call" && record["tool"] == "project_knowledge_status"
+        })
+        .count();
+    assert_eq!(reads, 1);
+    assert_eq!(statuses, 1);
+    // No query text or source ids may appear in the audit.
+    assert!(!ndjson.contains("retrieval"), "{ndjson}");
+    assert!(!ndjson.contains("sentinel-source-id"), "{ndjson}");
+    // The coordinator's summary must classify this trial as observed.
+    let summary = repoise_core::bench::runner::summarize_mcp_audit(&sink);
+    assert_eq!(summary["status"], "observed");
+    assert_eq!(summary["toolCalls"]["search_project_knowledge"], 2);
+    assert_eq!(summary["searches"]["succeeded"], 1);
+    assert_eq!(summary["searches"]["failed"], 1);
+    assert_eq!(summary["searches"]["effective"]["lexical"], 1);
+}
+
+/// A hybrid-pinned server whose query embedding is unavailable must record
+/// a completed search that degraded to lexical (success with
+/// `effectiveMode: "lexical"`, `degraded: true`) — never a hybrid success.
+#[cfg(feature = "remote-embedding")]
+#[test]
+fn audit_records_degraded_hybrid_search() {
+    let root = temp_root("audit-degraded");
+    std::fs::write(root.join("README.md"), "hello world\n").unwrap();
+    let root_arg = root.to_string_lossy().into_owned();
+    cli_json(&["index", "--json", &root_arg]);
+    let sink = temp_root("audit-degraded-sink").join("mcp-audit.ndjson");
+    // A syntactically valid endpoint that never answers: the query embed
+    // fails deterministically, so the search degrades to lexical.
+    let env = [
+        ("REPOISE_EMBEDDING_ENDPOINT", "http://127.0.0.1:9/v1"),
+        ("REPOISE_EMBEDDING_API_KEY", "sk-test"),
+        ("REPOISE_EMBEDDING_MODEL", "text-embedding-3-small"),
+    ];
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
+    for arg in [
+        "mcp",
+        root.to_str().expect("root path"),
+        "--search-mode",
+        "hybrid",
+        "--audit-file",
+        sink.to_str().expect("sink path"),
+    ] {
+        command.arg(arg);
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("mcp server should start");
+    let mut stdin = child.stdin.take().expect("stdin pipe");
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout pipe"));
+    let send = |line: &str, stdin: &mut std::process::ChildStdin| {
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .expect("stdin write should succeed");
+    };
+    let response = |reader: &mut BufReader<std::process::ChildStdout>| -> Value {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("stdout read should succeed");
+        serde_json::from_str(&line).expect("valid JSON-RPC response: {line}")
+    };
+    send(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "audit-test", "version": "1" }
+            }
+        })
+        .to_string(),
+        &mut stdin,
+    );
+    let _ = response(&mut reader); // initialize response
+    send(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "search_project_knowledge", "arguments": { "query": "anything" } }
+        })
+        .to_string(),
+        &mut stdin,
+    );
+    let search = response(&mut reader);
+    assert!(
+        !search["result"]
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "degraded search must still complete successfully: {search}"
+    );
+    drop(stdin);
+    let output = child.wait_with_output().expect("server should exit");
+    assert!(output.status.success());
+    let ndjson = std::fs::read_to_string(&sink).expect("audit sink should exist");
+    let searches: Vec<Value> = ndjson
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|record| {
+            record["kind"] == "tool_call" && record["tool"] == "search_project_knowledge"
+        })
+        .collect();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0]["requestedMode"], json!("hybrid"));
+    assert_eq!(searches[0]["effectiveMode"], json!("lexical"));
+    assert_eq!(searches[0]["degraded"], json!(true));
+    assert_eq!(searches[0]["success"], json!(true));
+    let summary = repoise_core::bench::runner::summarize_mcp_audit(&sink);
+    assert_eq!(summary["status"], "observed");
+    assert_eq!(summary["searches"]["succeeded"], 1);
+    assert_eq!(summary["searches"]["degraded"], 1);
+    // No hybrid success may be counted.
+    assert_eq!(summary["searches"]["effective"].get("hybrid"), None);
+}
+
+/// A designated sink that cannot be created (unwritable parent directory)
+/// must not crash or start the server: the failure is visible on stderr.
+#[test]
+fn audit_file_unwritable_parent_fails_visible() {
+    let root = temp_root("audit-unwritable");
+    // A regular file as the sink's parent: File::create must fail (reliable
+    // even when the test runs as root, unlike chmod-based setups).
+    let blocker = temp_root("audit-unwritable-blocker").join("blocker");
+    std::fs::write(&blocker, b"").expect("create blocker file");
+    let sink = blocker.join("nested").join("mcp-audit.ndjson");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
+    for arg in [
+        "mcp",
+        root.to_str().expect("root path"),
+        "--audit-file",
+        sink.to_str().expect("sink path"),
+    ] {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("mcp server should start");
+    // Closing stdin immediately; the server must not have started serving.
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("server should exit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The server must have reported the audit failure (visible, not silent)
+    // and must not have published audit records into the trial directory.
+    assert!(stderr.contains("audit sink unavailable"), "{stderr}");
+    assert!(
+        output.status.success(),
+        "a failed audit sink must not fail the server startup: {stderr}"
+    );
+    assert!(!sink.exists());
+}
+
+/// A `tools/call` for an unknown tool and an RPC failure must not produce
+/// spurious search audit records; the stream still ends cleanly.
+#[test]
+fn audit_ignores_non_search_calls_and_keeps_clean_end() {
+    let root = temp_root("audit-nosearch");
+    let sink = temp_root("audit-nosearch-sink").join("mcp-audit.ndjson");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_repoise"));
+    for arg in [
+        "mcp",
+        root.to_str().expect("root path"),
+        "--audit-file",
+        sink.to_str().expect("sink path"),
+    ] {
+        command.arg(arg);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("mcp server should start");
+    let mut stdin = child.stdin.take().expect("stdin pipe");
+    let mut reader = BufReader::new(child.stdout.take().expect("stdout pipe"));
+    let send = |line: &str, stdin: &mut std::process::ChildStdin| {
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .expect("stdin write should succeed");
+    };
+    let response = |reader: &mut BufReader<std::process::ChildStdout>| -> Value {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .expect("stdout read should succeed");
+        serde_json::from_str(&line).expect("valid JSON-RPC response: {line}")
+    };
+    send(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": { "name": "audit-test", "version": "1" }
+            }
+        })
+        .to_string(),
+        &mut stdin,
+    );
+    let _ = response(&mut reader);
+    // Unknown tool: a JSON-RPC invalid-params error, not a tool call.
+    send(
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "no_such_tool", "arguments": {} }
+        })
+        .to_string(),
+        &mut stdin,
+    );
+    let unknown = response(&mut reader);
+    assert_eq!(unknown["error"]["code"], json!(-32602));
+    drop(stdin);
+    let output = child.wait_with_output().expect("server should exit");
+    assert!(output.status.success());
+    let ndjson = std::fs::read_to_string(&sink).expect("audit sink should exist");
+    let records: Vec<Value> = ndjson
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("audit lines must be valid JSON: {line}"))
+        .collect();
+    // The unknown-tool attempt is recorded as a failed attempt under the
+    // fixed label "unknown" — the raw client-supplied name is never
+    // recorded — and it is never a search.
+    let attempts: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["kind"] == "tool_call")
+        .collect();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0]["tool"], "unknown");
+    assert!(!ndjson.contains("no_such_tool"), "{ndjson}");
+    assert_eq!(attempts[0]["success"], json!(false));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["kind"] == "tool_call"
+                && record["tool"] == "search_project_knowledge")
+            .count(),
+        0
+    );
+    assert_eq!(
+        records
+            .last()
+            .expect("records")
+            .get("kind")
+            .and_then(Value::as_str),
+        Some("server_end")
+    );
+    let summary = repoise_core::bench::runner::summarize_mcp_audit(&sink);
+    // Complete stream with zero search calls: not observed, not zero-use.
+    assert_eq!(summary["status"], "not_observed");
 }

@@ -293,6 +293,7 @@ state is modified.
   now forwards the approved `CLINE_NO_AUTO_UPDATE=1` value only, and
   enforces the suite's `profile.harness.revision` pin fail-closed before
   agent work.
+- **Runtime tool use and hybrid execution unverified (pilot run; observation added in main)**: the pilot proved each trial's MCP server was configured and pinned to its declared mode, but whether the agent actually called the tools, or whether a hybrid request ran hybrid rather than silently degrading, was not observable at runtime; the recorded results stand as measured, unverified in that respect. A server-side retrieval audit has since landed in main ([bench.md](bench.md#server-side-retrieval-observation)): per-trial `--audit-file` sinks record the tool calls the trial's own server executed and the retrieval mode each completed search actually reported, so future runs can verify this instead of assuming it.
 - **Local inference preset not fully exercised**: the evaluated preset's
   model is used, but the original `nomic-embed-text-v1.5` selection from
   the preset could not be loaded alongside the coding model under the
