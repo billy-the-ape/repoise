@@ -25,7 +25,15 @@ function emit(obj) {
 }
 
 if (process.argv[2] === "version") {
-  process.stdout.write("1.0.0-stub\n");
+  // CLONE_STUB_VERSION lets a test simulate a drifted executable; the
+  // version probe failing entirely is CLONE_STUB_VERSION_FAIL=1.
+  if (process.env.CLONE_STUB_VERSION_FAIL === "1") {
+    process.stderr.write(
+      `{"type":"error","message":"stub version probe failure"}\n`,
+    );
+    process.exit(1);
+  }
+  process.stdout.write(`${process.env.CLONE_STUB_VERSION ?? "1.0.0-stub"}\n`);
   process.exit(0);
 }
 
