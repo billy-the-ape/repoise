@@ -17,6 +17,7 @@ use repoise_core::embed::{
 };
 use repoise_core::error::Error;
 use repoise_core::indexing::{self, IndexRequest};
+use repoise_core::related::{self, RelatedRequest, RelationKind};
 use repoise_core::search::{self, SearchMode, SearchRequest};
 use repoise_core::store::{self, Store};
 
@@ -57,6 +58,21 @@ fn oversized_statement() -> String {
     out.push_str("  const warmup = payload.length;\n");
     out.push_str("  const table = {\n");
     for i in 0..200 {
+        out.push_str(&format!("    field{i}: \"data-{i}\",\n"));
+    }
+    out.push_str("  };\n");
+    out.push_str("  return warmup + table.field0;\n");
+    out.push_str("};\n");
+    out
+}
+
+/// A function whose single object-literal statement is large enough to
+/// line-window split into at least three parts (for stored-parent checks).
+fn huge_statement() -> String {
+    let mut out = String::from("export function ship(payload: string): string {\n");
+    out.push_str("  const warmup = payload.length;\n");
+    out.push_str("  const table = {\n");
+    for i in 0..340 {
         out.push_str(&format!("    field{i}: \"data-{i}\",\n"));
     }
     out.push_str("  };\n");
@@ -242,16 +258,10 @@ fn assert_split_children(parsed: &repoise_core::chunk::code::CodeParse, symbol: 
                 .is_some_and(|context| !context.is_empty()),
             "split child of {symbol} lacks context"
         );
-        // Parent links stay inside the split (hosting or a chained part).
-        let parent_ordinal = child.parent.expect("child has a parent");
-        assert_ne!(parent_ordinal, child.ordinal);
-        let parent_unit = units
-            .iter()
-            .find(|unit| unit.ordinal == parent_ordinal)
-            .expect("parent ordinal exists");
-        assert_eq!(parent_unit.symbol, symbol);
+        // The flat parent/child shape: every split part is parented to the
+        // hosting chunk, which the indexer registers in its parent-id map.
+        assert_eq!(child.parent, Some(hosting.ordinal));
     }
-    let _ = hosting;
 }
 
 #[test]
@@ -634,4 +644,101 @@ fn routes_file_indexes_without_exclusion_under_provider_bound() {
             .any(|hit| hit.path == "src/routes/chat.ts"),
         "a split routes chunk must stay reachable"
     );
+}
+
+/// The indexer must store every split part with a parent link: all parts
+/// resolve to the hosting chunk's stored id (the flat parent/child shape),
+/// and the related service returns them as children.
+#[test]
+fn split_children_keep_stored_parent_links() {
+    let source = huge_statement();
+    let root = temp_dir("stored-parents");
+    std::fs::write(root.join("repoise.config.json"), "{}\n").unwrap();
+    let mut tree = BTreeMap::new();
+    tree.insert("src/ship.ts".to_string(), source.as_bytes().to_vec());
+    let mut revisions = BTreeMap::new();
+    revisions.insert("fake:v1".to_string(), tree);
+    let adapter = FakeRevisionAdapter::new(&root, revisions);
+    let effective = EffectiveConfig::resolve(&root, &CliOverrides::default()).unwrap();
+    let cache = CachePaths::resolve(&root, ".repoise", None).unwrap();
+    let (repo_id, worktree_id, _) =
+        search::scope_for_search(&adapter, SnapshotMode::PlainDirectory).unwrap();
+    let store = Store::new(cache.db_path(&repo_id, &worktree_id));
+    indexing::index(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &effective,
+        &store,
+        &cache,
+        &IndexRequest::default(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let conn = store.open().unwrap();
+    let generation = store::load_generation(&conn, &repo_id, &worktree_id)
+        .unwrap()
+        .unwrap();
+    let chunks: Vec<_> = generation
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.path == "src/ship.ts")
+        .collect();
+    let hosting = chunks
+        .iter()
+        .find(|chunk| chunk.parent_chunk_id.is_none() && chunk.text.contains("function ship"))
+        .expect("the hosting chunk");
+    let children: Vec<_> = chunks
+        .iter()
+        .filter(|chunk| chunk.parent_chunk_id.is_some())
+        .collect();
+    assert!(children.len() >= 3, "the huge statement line-window splits");
+    for child in &children {
+        assert_eq!(
+            child.parent_chunk_id.as_deref(),
+            Some(hosting.chunk_id.as_str()),
+            "every stored part keeps its parent link to the hosting chunk"
+        );
+    }
+    // The parts cover the whole huge statement (no lost lines): the table
+    // close is the line just before the return statement.
+    let table_end = (source
+        .lines()
+        .collect::<Vec<_>>()
+        .iter()
+        .position(|line| line.trim().starts_with("return"))
+        .unwrap()
+        + 1) as u32
+        - 1;
+    assert!(
+        children.iter().map(|c| c.line_end).max().unwrap() >= table_end,
+        "the last part reaches the end of the statement"
+    );
+
+    // The related service resolves the same flat shape.
+    let response = related::related(
+        &adapter,
+        SnapshotMode::PlainDirectory,
+        &store,
+        &RelatedRequest {
+            source_id: hosting.chunk_id.clone(),
+            kinds: vec![RelationKind::Children],
+            limit: Some(20),
+            max_output_tokens: None,
+        },
+    )
+    .unwrap();
+    let related_ids: Vec<&str> = response
+        .results
+        .iter()
+        .map(|hit| hit.source_id.as_str())
+        .collect();
+    for child in &children {
+        assert!(
+            related_ids.contains(&child.chunk_id.as_str()),
+            "related must return every stored child part"
+        );
+    }
 }

@@ -805,8 +805,9 @@ impl<'t> Builder<'t> {
     /// Emits one statement/item group of a structural split as child chunks
     /// of the hosting chunk. A group whose exact span exceeds the estimated
     /// token ceiling (a single oversized statement or block item) falls
-    /// back to a line-window split, with each part chained
-    /// parent-to-child, so every splittable part stays within the ceiling.
+    /// back to a line-window split; every part is parented to the hosting
+    /// chunk (the flat parent/child shape the indexer and the related
+    /// service resolve), so every splittable part stays within the ceiling.
     fn emit_group_children(
         &mut self,
         hosting: u32,
@@ -828,10 +829,9 @@ impl<'t> Builder<'t> {
             return;
         }
         let lines = &self.lines.texts[(start - 1) as usize..end as usize];
-        let mut parent = hosting;
         for (part_start, part_end) in ceiling_line_parts(lines) {
-            parent = self.emit_unit(
-                Some(parent),
+            self.emit_unit(
+                Some(hosting),
                 heading,
                 name,
                 Some(context.to_string()),
