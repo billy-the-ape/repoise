@@ -1117,10 +1117,10 @@ fn audit_records_degraded_hybrid_search() {
     );
     let search = response(&mut reader);
     assert!(
-        search["result"]
+        !search["result"]
             .get("isError")
             .and_then(Value::as_bool)
-            .unwrap_or(true),
+            .unwrap_or(false),
         "degraded search must still complete successfully: {search}"
     );
     drop(stdin);
