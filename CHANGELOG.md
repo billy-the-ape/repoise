@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Benchmark harness version pin and explicit update control
+
+The AP-06 pilot's `CLINE_NO_AUTO_UPDATE=1` never reached the Cline CLI
+(dropped by the adapter's child-environment allowlist), so the installed
+CLI could change between preparation and execution, and per-trial version
+recording was evidence, not an enforced pin. Version/update control is now
+explicit, narrow and verifiable.
+
+- New optional `profile.harness.revision` (suite and adapter-request
+  contract): an expected harness version pin (dotted version, e.g.
+  `3.0.74`; malformed pins fail validation in the suite schema, the
+  protocol host and the adapter itself — never later string parsing).
+- The Cline adapter probes the selected executable (`cline version`)
+  before any agent work, emits a `harness_version` note, and enforces the
+  pin fail-closed: a probe failure or a version mismatch ends the trial
+  before spawn as `adapter_error/harness_version_unresolved` /
+  `adapter_error/harness_version_mismatch` (no model request starts), with
+  both versions preserved in the effective-config artifact. A changed
+  executable between trials fails the later launch, and the drifted record
+  is preserved rather than pooled. Unpinned runs (no pin) record their
+  observed version but are labeled unpinned, never treated as
+  reproducible.
+- Verified update-control forwarding: the installed Cline CLI 3.0.74 skips
+  its startup auto-update check only when `CLINE_NO_AUTO_UPDATE` is
+  exactly `1`. The adapter forwards only that exact approved value (to the
+  CLI and to the version probe) and records `harness.updateControl:
+  "disabled"`; any other value is not forwarded and is recorded as
+  `not_forwarded`. The whole parent environment is never forwarded;
+  credential handling and redaction are unchanged. This suppresses the
+  CLI's startup auto-update check only — it does not stop other local
+  processes from replacing the CLI, which is what the version pin guards
+  against.
+- Bench trials record `harnessPin`/`harnessVersion` in every `trial.json`,
+  and the report gains a `harness` section (`versions`, `drift` + note)
+  that labels pooled statistics spanning more than one completed-trial
+  version; unpinned runs are labeled as such in the frozen manifest
+  (`unknownSettings` `harness` state) and the report.
+
+**Compatibility note:** fully backward compatible — existing suites without
+`profile.harness.revision` run unchanged (labeled unpinned). New optional
+environment behavior: setting `CLINE_NO_AUTO_UPDATE=1` in the adapter's
+process environment is the documented way to suppress the CLI's startup
+auto-update check for benchmark trials (other values are ignored on
+purpose). No migration, no deployment action.
+
+
 ### Code chunk bounds across all declaration forms
 
 TS/JS ordinary function declarations used size-aware splitting, but arrow

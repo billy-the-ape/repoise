@@ -788,6 +788,24 @@ pub fn write_manifest(
 /// Settings that are unknown by construction, recorded explicitly.
 fn unknown_settings(suite: &Suite) -> Vec<String> {
     let mut unknowns: Vec<String> = Vec::new();
+    match &suite.profile.harness.revision {
+        // Labeled, never silent: a pinned run is reproducible against the
+        // per-trial probe; an unpinned run records its observed version but
+        // is not a reproducible pin.
+        Some(revision) => unknowns.push(format!(
+            "harness version pinned to {revision}: every trial probes the \
+             executable before agent work and fails closed on an unresolved \
+             probe or a version mismatch (adapter_error/harness_version_unresolved \
+             / harness_version_mismatch); mismatched trials stay recorded, never \
+             pooled as completed"
+        )),
+        None => unknowns.push(
+            "harness version unpinned (profile.harness.revision unset): trials \
+             record their observed version but the run is labeled unpinned and \
+             is not a reproducible pin"
+                .to_string(),
+        ),
+    }
     if suite
         .profile
         .model
@@ -838,6 +856,35 @@ mod tests {
         // A stored profile over an empty eligible corpus is not proof of
         // hybrid retrieval.
         assert!(!hybrid_gate_met(&status_index("empty")));
+    }
+
+    #[test]
+    fn unknown_settings_labels_the_harness_pin_state() {
+        fn suite_with_revision(revision: serde_json::Value) -> Suite {
+            let value = serde_json::json!({
+                "id": "exp",
+                "root": "/tmp/repo",
+                "tasks": [{ "id": "task-a", "prompt": "do it" }],
+                "conditions": [{ "id": "baseline", "retrievalMode": "baseline" }],
+                "adapter": { "executable": "node" },
+                "profile": { "harness": { "name": "fake", "revision": revision } }
+            });
+            serde_json::from_value(value).unwrap()
+        }
+        let pinned = unknown_settings(&suite_with_revision(serde_json::json!("3.0.74")));
+        assert!(
+            pinned
+                .iter()
+                .any(|unknown| unknown.starts_with("harness version pinned to 3.0.74")),
+            "{pinned:?}"
+        );
+        let unpinned = unknown_settings(&suite_with_revision(serde_json::Value::Null));
+        assert!(
+            unpinned
+                .iter()
+                .any(|unknown| unknown.starts_with("harness version unpinned")),
+            "{unpinned:?}"
+        );
     }
 
     /// The test binary is built from this source checkout, so walking up

@@ -128,7 +128,14 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   preflight; only names ever reach artifacts.
 - `profile` — mirrors the AP-03 request `profile` group (harness, provider
   with opt-in `credentialRef` and optional `endpoint`, model, reasoning,
-  compaction, free-form sampling). The provider `endpoint` (e.g. an
+  compaction, free-form sampling). The optional `harness.revision` is the
+  expected harness version pin (a dotted version such as `3.0.74`;
+  malformed pins fail suite validation). The adapter probes the executable
+  and enforces the pin fail-closed before any agent work (a probe failure
+  or mismatch is a recorded `adapter_error`, never pooled into completed
+  results); without it the run is labeled unpinned in the manifest and
+  report, never treated as reproducible — see the [agent adapter
+  guide](agent-adapters.md#cline-adapter). The provider `endpoint` (e.g. an
   OpenAI-compatible base URL) is forwarded verbatim to the adapter, which
   materializes it in its own configuration surface — the Cline adapter
   writes it as the per-trial provider settings `baseUrl`, because without
@@ -234,7 +241,10 @@ randomized per task/repetition block with the recorded seed). Each trial:
    its recorded process tree at the outer wall-clock deadline, and marks
    remaining trials `not_started`;
 5. writes `trial.json` (status, timings `queueMs`/`setupMs`/`agentMs`/
-   `totalMs`, usage, hello/adapter/harness provenance, mode, errors,
+   `totalMs`, usage, hello/adapter/harness provenance, per-trial
+   `harnessPin` and `harnessVersion` (the suite's expected pin and the
+   adapter's observed version, so drift across trials is visible in every
+   record), mode, errors,
    completeness), removes the worktree (unless `output.keepWorkspaces`),
    and continues — one failed trial never aborts the experiment.
 
@@ -303,6 +313,10 @@ Method handling:
   correctness rate over graded trials (`heldOutTasks` / `developmentTasks`
   split included); per-condition `attempted` excludes not-started slots,
   matching the global counts and the `timeoutRate` denominator.
+- `harness` — the distinct observed harness versions among completed trials
+  (`versions`) and whether they differ (`drift`); a drifted run labels the
+  pooled statistics as spanning those versions (mismatched trials never
+  complete, so this surfaces unpinned runs only).
 - `analysis` — present only when `gates` is declared: for each declared
   improvement, the median per-task paired difference and reduction (candidate
   minus baseline, over tasks with measured data on both sides; metric values
@@ -342,7 +356,7 @@ Under `<output.dir>/<experiment.id>/`:
 | Path | Content |
 | ---- | ------- |
 | `manifest.json` | Immutable frozen experiment: suite hash, overrides, snapshot, conditions, plan, adapter/host, budgets, guidance, unknowns |
-| `report.json` | Final report (schema v1): status, duration, per-trial records, `counts`, `grading`, `analysis` (when gates declared) and `qualityGate` |
+| `report.json` | Final report (schema v1): status, duration, per-trial records (including `harnessPin`/`harnessVersion`), `counts`, `grading`, `harness` (version drift), `analysis` (when gates declared) and `qualityGate` |
 | `report.md` | Human-readable rendering of `report.json` (derived from the same object) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
 | `trials/<id>/grading.json` | One trial's grading record (schema v1); engine records carry `source: "engine"`, operator manual records do not |

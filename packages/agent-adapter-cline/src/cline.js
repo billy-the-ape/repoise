@@ -42,6 +42,20 @@ export function resolveClineExecutable() {
   return { executable: "cline", prefixArgs: [], error: null };
 }
 
+// The verified update-control input for the Cline CLI: the CLI's startup
+// auto-update check returns early only when CLINE_NO_AUTO_UPDATE is exactly
+// "1" (verified against the installed CLI 3.0.74 source, 2026-11-02 — the
+// same value the CLI itself sets for its own managed child processes).
+// Any other value is not honored by the CLI and is never forwarded.
+const UPDATE_CONTROL_VAR = "CLINE_NO_AUTO_UPDATE";
+
+/** "disabled" when the approved update-control value is set in the adapter
+ * process environment, "not_forwarded" otherwise. Recorded in the
+ * effective-config artifact (never approximated). */
+export function updateControlStatus() {
+  return process.env[UPDATE_CONTROL_VAR] === "1" ? "disabled" : "not_forwarded";
+}
+
 /** Best-effort `cline version` probe; null when unavailable. */
 export function probeClineVersion(launch) {
   const result = spawnSync(
@@ -53,6 +67,17 @@ export function probeClineVersion(launch) {
         HOME: process.env.HOME,
         USERPROFILE: process.env.USERPROFILE,
         SystemRoot: process.env.SystemRoot,
+        // Documented adapter-specific passthrough namespace (e.g. test stubs).
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([name]) =>
+            name.startsWith("CLONE_"),
+          ),
+        ),
+        // The probe itself must not trigger the CLI's startup auto-update
+        // check: forward the verified update-control value when it is set.
+        ...(updateControlStatus() === "disabled"
+          ? { [UPDATE_CONTROL_VAR]: "1" }
+          : {}),
       },
       encoding: "utf8",
       timeout: 10_000,
@@ -155,10 +180,16 @@ export function buildInvocation(
   }
   env.CLINE_MCP_SETTINGS_PATH = mcpSettingsPath;
   env.CLINE_LOG_PATH = join(dataDir, "logs", "cline.log");
+  // Verified update-control input: the CLI's startup auto-update check
+  // returns early only for the exact value "1", so that is the only value
+  // ever forwarded (see docs/agent-adapters.md). Unrelated environment
+  // variables are never forwarded.
+  const updateControl = updateControlStatus();
+  if (updateControl === "disabled") env[UPDATE_CONTROL_VAR] = "1";
   if (credential) env[credential.name] = process.env[credential.name];
 
   // Append last so the positional prompt is always the final argv element;
   // the caller inserts the credential `-k` flag before it at spawn time.
   argv.push(prompt);
-  return { argv, env, prompt, mcpServers, credential };
+  return { argv, env, prompt, mcpServers, credential, updateControl };
 }

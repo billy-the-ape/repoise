@@ -38,9 +38,10 @@ remains unexecuted.
   default host is `localhost:1234`). A separate one-trial suite
   (sha256 `50f1209627eafb75bee2662e0ded6e765ff78c07b8bf3c89ffac158489a5e2dc`)
   is staged for the SIGINT cancellation check. Both suites' adapter env
-  sets `CLINE_NO_AUTO_UPDATE=1`, but the Cline adapter's child
-  environment allowlist does not currently forward that variable, so
-  this is an unenforced pin (see limitations). The suite, patch and
+  sets `CLINE_NO_AUTO_UPDATE=1`, but at the time of the run the Cline
+  adapter's child environment allowlist did not forward that variable, so
+  this was an unenforced pin (see limitations; since fixed in main). The
+  suite, patch and
   config live outside the benchmarked repository in the operator's
   local private directory (`~/bench-pilot/`); no suite content is
   committed to Repoise.
@@ -280,14 +281,18 @@ state is modified.
   share one GPU/gateway; embedding batches were observed to fail or slow
   under concurrent load, which is why budgets are lenient and runs are
   sequential.
-- **Cline version pin not enforced**: the Cline adapter spawns the CLI
-  with a fixed environment allowlist ([agent adapters](agent-adapters.md))
-  that does not include `CLINE_NO_AUTO_UPDATE`, so the suites' pin does
+- **Cline version pin not enforced (pilot run; since fixed in main)**: the
+  Cline adapter at the time spawned the CLI with a fixed environment
+  allowlist ([agent adapters](agent-adapters.md)) that does not include
+  `CLINE_NO_AUTO_UPDATE`, so the suites' pin does
   not reach the CLI and a background auto-update could change the
-  version mid-run. Mitigations: each trial's adapter events record the
+  version mid-run (consistent with the 3.0.61 → 3.0.74 drift recorded
+  above). Mitigations at the time: each trial's adapter events record the
   exact CLI version (`harness_version`), and the operator confirms
-  `cline --version` before and after the run. Forwarding the variable
-  is a follow-up adapter change.
+  `cline --version` before and after the run. Since fixed: the adapter
+  now forwards the approved `CLINE_NO_AUTO_UPDATE=1` value only, and
+  enforces the suite's `profile.harness.revision` pin fail-closed before
+  agent work.
 - **Local inference preset not fully exercised**: the evaluated preset's
   model is used, but the original `nomic-embed-text-v1.5` selection from
   the preset could not be loaded alongside the coding model under the

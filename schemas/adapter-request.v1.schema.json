@@ -109,7 +109,11 @@
           "required": ["name"],
           "properties": {
             "name": { "type": "string", "minLength": 1 },
-            "revision": { "type": ["string", "null"] }
+            "revision": {
+              "type": ["string", "null"],
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9][A-Za-z0-9_.]*)?$",
+              "description": "Optional expected harness version pin (a dotted version such as 3.0.74). The adapter probes the executable before agent work and fails closed on an unresolved probe or a mismatch; unpinned runs are labeled unpinned and never treated as reproducible."
+            }
           }
         },
         "provider": {
@@ -138,7 +142,9 @@
         "reasoning": {
           "type": ["object", "null"],
           "required": ["level"],
-          "properties": { "level": { "enum": ["none", "low", "medium", "high", "xhigh"] } }
+          "properties": {
+            "level": { "enum": ["none", "low", "medium", "high", "xhigh"] }
+          }
         },
         "compaction": {
           "type": ["object", "null"],

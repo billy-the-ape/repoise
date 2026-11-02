@@ -73,6 +73,21 @@ export function validateRequest(request) {
     !isNonEmptyString(profile.harness.name)
   ) {
     errors.push("profile.harness.name is required");
+  } else {
+    // The optional expected harness version pin must be a dotted version
+    // (matching the version-probe parsing), so a malformed pin fails
+    // validation here instead of later string parsing in the adapter.
+    const revision = profile.harness.revision;
+    if (
+      revision != null &&
+      !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9][A-Za-z0-9_.]*)?$/.test(
+        revision,
+      )
+    ) {
+      errors.push(
+        "profile.harness.revision must be null or a dotted version like 3.0.74",
+      );
+    }
   }
   // The adapter is a standalone CLI: do not rely on the host's validation.
   // Only env: references can be handled safely; anything else (including a

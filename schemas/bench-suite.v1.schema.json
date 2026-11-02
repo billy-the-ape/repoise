@@ -77,7 +77,15 @@
           },
           "category": {
             "type": "string",
-            "enum": ["exact-identifier", "conceptual-discovery", "cross-file-explanation", "debugging", "small-implementation", "documentation-reconciliation", "other"],
+            "enum": [
+              "exact-identifier",
+              "conceptual-discovery",
+              "cross-file-explanation",
+              "debugging",
+              "small-implementation",
+              "documentation-reconciliation",
+              "other"
+            ],
             "description": "AP-05 assessment category of the task."
           },
           "heldOut": {
@@ -137,7 +145,11 @@
                       "type": "string",
                       "enum": ["containsAny", "containsAll", "notContains"]
                     },
-                    "values": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                    "values": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": { "type": "string" }
+                    },
                     "note": { "type": "string" }
                   }
                 }
@@ -233,7 +245,11 @@
           "required": ["name"],
           "properties": {
             "name": { "type": "string" },
-            "revision": { "type": "string" }
+            "revision": {
+              "type": ["string", "null"],
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9][A-Za-z0-9_.]*)?$",
+              "description": "Expected harness version pin (a dotted version such as 3.0.74). Forwarded to the adapter as profile.harness.revision, which probes the executable and enforces the pin fail-closed (a mismatch is a recorded adapter_error, never pooled). Omit for an unpinned run; unpinned runs are labeled unpinned and never treated as reproducible."
+            }
           }
         },
         "provider": {
@@ -348,7 +364,10 @@
                 "minLength": 1,
                 "description": "Condition id compared against the baseline (never the baseline itself)."
               },
-              "metric": { "type": "string", "enum": ["agentMs", "inputTokens"] },
+              "metric": {
+                "type": "string",
+                "enum": ["agentMs", "inputTokens"]
+              },
               "threshold": {
                 "type": "number",
                 "exclusiveMinimum": 0,

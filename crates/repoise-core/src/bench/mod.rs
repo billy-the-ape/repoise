@@ -511,6 +511,11 @@ fn assemble_report(
                     .as_ref()
                     .and_then(|grading| grading.get("status").cloned())
                     .unwrap_or(Value::Null),
+                "harnessVersion": data
+                    .trial
+                    .get("harnessVersion")
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 "timings": data.trial.get("timings").cloned().unwrap_or(Value::Null),
                 "usage": data.trial.get("usage").cloned().unwrap_or(Value::Null)
             })
@@ -538,6 +543,7 @@ fn assemble_report(
         "trials": records,
         "counts": counts,
         "grading": grading,
+        "harness": analysis::harness_drift(input.trials),
         "analysis": paired,
         "qualityGate": gate
     })

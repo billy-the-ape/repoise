@@ -505,6 +505,198 @@ test("missing explicit executable maps to adapter_error cline_not_found", async 
   assert.equal(result.reason, "cline_not_found");
 });
 
+function readEffectiveConfig(result) {
+  const artifact = result.events.find(
+    (a) => a.t === "artifact" && a.kind === "effective-config",
+  );
+  assert.ok(artifact, "effective-config artifact missing");
+  return JSON.parse(readFileSync(artifact.path, "utf8"));
+}
+
+function pinnedProfile(revision) {
+  return {
+    harness: { name: "cline", revision },
+    provider: {
+      id: "stub-provider",
+      credentialRef: "env:STUB_API_KEY",
+      endpoint: "http://127.0.0.1:9999/v1",
+    },
+    model: { id: "stub-model" },
+    reasoning: { level: "low" },
+    compaction: { mode: "basic" },
+  };
+}
+
+test("approved update-control value is forwarded to the CLI; unrelated env is dropped", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    extraEnv: {
+      CLINE_NO_AUTO_UPDATE: "1",
+      SENSITIVE_TOKEN: "secret-value-must-not-forward",
+    },
+  });
+  assert.equal(result.status, "completed");
+  const manifest = JSON.parse(
+    readFileSync(join(workspace, "stub-manifest.json"), "utf8"),
+  );
+  assert.ok(
+    manifest.envNames.includes("CLINE_NO_AUTO_UPDATE"),
+    "the approved update-control value must reach the CLI",
+  );
+  assert.equal(
+    manifest.envNames.includes("SENSITIVE_TOKEN"),
+    false,
+    "unrelated environment values must stay absent",
+  );
+  const effective = readEffectiveConfig(result);
+  assert.equal(effective.harness.updateControl, "disabled");
+  // Unpinned runs are labeled unpinned, never silently reproducible.
+  assert.equal(effective.harness.pinned, false);
+  assert.equal(effective.harness.match, null);
+});
+
+test("unsupported update-control values are not forwarded", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    extraEnv: { CLINE_NO_AUTO_UPDATE: "true" },
+  });
+  assert.equal(result.status, "completed");
+  const manifest = JSON.parse(
+    readFileSync(join(workspace, "stub-manifest.json"), "utf8"),
+  );
+  assert.equal(
+    manifest.envNames.includes("CLINE_NO_AUTO_UPDATE"),
+    false,
+    "only the exact value '1' is honored by the CLI and forwarded",
+  );
+  const effective = readEffectiveConfig(result);
+  assert.equal(effective.harness.updateControl, "not_forwarded");
+});
+
+test("pinned version match: normal execution, effective config records the pin", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: { profile: pinnedProfile("1.0.0-stub") },
+  });
+  assert.equal(result.status, "completed");
+  const effective = readEffectiveConfig(result);
+  assert.equal(effective.harness.revision, "1.0.0-stub");
+  assert.equal(effective.harness.expected, "1.0.0-stub");
+  assert.equal(effective.harness.pinned, true);
+  assert.equal(effective.harness.match, true);
+});
+
+test("version mismatch: no model request starts, artifacts carry a stable reason", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: { profile: pinnedProfile("9.9.9") },
+  });
+  assert.equal(result.status, "adapter_error");
+  assert.ok(
+    result.reason.startsWith("harness_version_mismatch"),
+    `reason: ${result.reason}`,
+  );
+  assert.ok(result.reason.includes("9.9.9"));
+  assert.ok(result.reason.includes("1.0.0-stub"));
+  assert.equal(
+    existsSync(join(workspace, "stub-manifest.json")),
+    false,
+    "no model request may start on a version mismatch",
+  );
+  const effective = readEffectiveConfig(result);
+  assert.equal(effective.harness.expected, "9.9.9");
+  assert.equal(effective.harness.revision, "1.0.0-stub");
+  assert.equal(effective.harness.pinned, true);
+  assert.equal(effective.harness.match, false);
+});
+
+test("pinned trial with a failed version probe fails closed before any model request", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: { profile: pinnedProfile("1.0.0-stub") },
+    extraEnv: { CLONE_STUB_VERSION_FAIL: "1" },
+  });
+  assert.equal(result.status, "adapter_error");
+  assert.ok(
+    result.reason.startsWith("harness_version_unresolved"),
+    `reason: ${result.reason}`,
+  );
+  assert.equal(existsSync(join(workspace, "stub-manifest.json")), false);
+});
+
+test("unpinned trial with a failed version probe still runs (best-effort)", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    extraEnv: { CLONE_STUB_VERSION_FAIL: "1" },
+  });
+  assert.equal(result.status, "completed");
+  assert.ok(
+    result.events.some(
+      (e) => e.t === "warning" && e.code === "harness_version_unresolved",
+    ),
+  );
+});
+
+test("drift between trials is detected on the later launch; records are preserved", async () => {
+  const first = makeRoot();
+  const { result: firstResult } = await runAdapterTrial({
+    workspace: first.workspace,
+    artifacts: first.artifacts,
+    requestOverrides: { profile: pinnedProfile("1.0.0-stub") },
+  });
+  assert.equal(firstResult.status, "completed");
+  // The executable drifts (simulated by a changed stub version) before the
+  // second trial: the later launch must fail closed, and both per-trial
+  // records must be preserved rather than pooled.
+  const second = makeRoot();
+  const { result: secondResult } = await runAdapterTrial({
+    workspace: second.workspace,
+    artifacts: second.artifacts,
+    requestOverrides: { profile: pinnedProfile("1.0.0-stub") },
+    extraEnv: { CLONE_STUB_VERSION: "2.0.0" },
+  });
+  assert.equal(secondResult.status, "adapter_error");
+  assert.ok(
+    secondResult.reason.startsWith("harness_version_mismatch"),
+    `reason: ${secondResult.reason}`,
+  );
+  const firstRecord = JSON.parse(
+    readFileSync(join(first.artifacts, "result.json"), "utf8"),
+  );
+  const secondRecord = JSON.parse(
+    readFileSync(join(second.artifacts, "result.json"), "utf8"),
+  );
+  assert.equal(firstRecord.status, "completed");
+  assert.equal(secondRecord.status, "adapter_error");
+});
+
+test("a malformed version pin is rejected before any effective-config", async () => {
+  const { workspace, artifacts } = makeRoot();
+  const { result } = await runAdapterTrial({
+    workspace,
+    artifacts,
+    requestOverrides: { profile: pinnedProfile("latest") },
+  });
+  assert.equal(result.status, "protocol_error");
+  assert.equal(result.reason, "invalid_request");
+  assert.ok(
+    result.errors.some((e) => e.includes("profile.harness.revision")),
+    "the invalid-request errors must name the pin field",
+  );
+});
+
 test("checked-in schemas accept the adapter's own request and events", async () => {
   const { workspace, artifacts } = makeRoot();
   const { request, result } = await runAdapterTrial({ workspace, artifacts });

@@ -331,6 +331,12 @@ pub struct ProfileSpec {
     pub sampling: Option<Value>,
 }
 
+/// Agent harness selection. `revision` is the optional expected harness
+/// version pin (a dotted version such as `3.0.74`): it is forwarded to the
+/// adapter as `profile.harness.revision`, which probes the executable and
+/// enforces the pin fail-closed (a mismatch is a recorded `adapter_error`,
+/// never pooled into completed results). Omitted: the run is unpinned and is
+/// labeled unpinned, never treated as reproducible.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HarnessSpec {
@@ -423,6 +429,45 @@ impl Default for OutputSpec {
             keep_workspaces: false,
         }
     }
+}
+
+/// The expected harness version pin must match the shape the adapters'
+/// version probes parse: `MAJOR.MINOR.PATCH` with an optional pre-release or
+/// build suffix (`3.0.74`, `3.0.74-beta.1`, `3.0.74+build.5`).
+fn is_dotted_version(value: &str) -> bool {
+    // Split the optional pre-release/build suffix off first (`3.0.74-beta.1`),
+    // so its dots do not count as extra version components.
+    let (core, suffix) = match value.split_once(['-', '+']) {
+        Some((core, suffix)) => (core, Some(suffix)),
+        None => (value, None),
+    };
+    let mut parts = core.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    let Some(patch) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        // More than three components (e.g. "3.0.74.1") is not a dotted pin.
+        return false;
+    }
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    digits(major)
+        && digits(minor)
+        && digits(patch)
+        && suffix.is_none_or(|suffix| {
+            suffix
+                .bytes()
+                .next()
+                .is_some_and(|first| first.is_ascii_alphanumeric())
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+        })
 }
 
 /// Declared artifact names are read as `adapter/<name>` in the trial's
@@ -886,6 +931,18 @@ impl Suite {
         if self.profile.harness.name.trim().is_empty() {
             problems.push("profile.harness.name must not be empty".into());
         }
+        // The expected harness version pin must be a dotted version (the
+        // same shape the adapters' version probes parse), so a malformed
+        // pin fails suite validation instead of later string parsing in
+        // the adapter.
+        if let Some(revision) = &self.profile.harness.revision
+            && !is_dotted_version(revision)
+        {
+            problems.push(format!(
+                "profile.harness.revision '{revision}' must be a dotted \
+                 version like 3.0.74 (the expected harness version pin)"
+            ));
+        }
         if let Some(reasoning) = &self.profile.reasoning {
             match reasoning.level.as_str() {
                 "none" | "low" | "medium" | "high" | "xhigh" => {}
@@ -994,6 +1051,28 @@ mod tests {
     fn valid_ids_pass_validation() {
         let suite: Suite = serde_json::from_value(valid_suite_json()).unwrap();
         assert!(suite.validate().is_ok());
+    }
+
+    #[test]
+    fn harness_version_pins_must_be_dotted_versions() {
+        for revision in ["3.0.74", "3.0.74-beta.1", "3.0.74+build.5"] {
+            let mut value = valid_suite_json();
+            value["profile"]["harness"]["revision"] = serde_json::json!(revision);
+            let suite: Suite = serde_json::from_value(value).unwrap();
+            assert!(suite.validate().is_ok(), "{revision}");
+        }
+        for revision in [
+            "latest", "3.0", "v3.0.74", "3.0.74.", "3.0.74.1", "3.0.74-", "3.0.74+.",
+        ] {
+            let mut value = valid_suite_json();
+            value["profile"]["harness"]["revision"] = serde_json::json!(revision);
+            let suite: Suite = serde_json::from_value(value).unwrap();
+            let err = suite.validate().unwrap_err();
+            assert!(
+                err.to_string().contains("profile.harness.revision"),
+                "{revision}: {err}"
+            );
+        }
     }
 
     #[test]
