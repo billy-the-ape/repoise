@@ -163,7 +163,9 @@ the server's own tool activity to `<PATH>` (one line per event,
 
 - `server_start` — the resolved server scope (repo/worktree, snapshot mode,
   pinned search mode, refresh enabled), Repoise version;
-- `tool_call` — one per tool invocation: tool name, for searches the
+- `tool_call` — one per tool invocation: tool name (the fixed known tool
+  vocabulary; an unknown or missing client-supplied name is recorded as
+  `unknown`, never verbatim), for searches the
   requested and effective retrieval mode, the degradation reason (a
   closed-vocabulary enum, e.g. `degraded_to_lexical`) when the search
   degraded, the served generation (null for failed calls), success, and

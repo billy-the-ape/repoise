@@ -799,6 +799,20 @@ fn search_mode_description(pinned: Option<repoise_core::search::SearchMode>) -> 
     }
 }
 
+/// The fixed audit label for a tool name: only the known tool vocabulary
+/// is ever recorded. The raw client-supplied `params.name` (untrusted,
+/// unbounded and attacker-controllable) never reaches the sink.
+fn audit_tool_label(name: &Option<String>) -> &'static str {
+    match name.as_deref() {
+        Some("search_project_knowledge") => "search_project_knowledge",
+        Some("read_project_knowledge") => "read_project_knowledge",
+        Some("related_project_knowledge") => "related_project_knowledge",
+        Some("project_knowledge_status") => "project_knowledge_status",
+        Some("refresh_project_knowledge") => "refresh_project_knowledge",
+        _ => "unknown",
+    }
+}
+
 /// One audit `tool_call` record: only measurements the server took (tool
 /// name, requested/effective retrieval mode, degradation, success and
 /// duration). Never the request arguments or result content.
@@ -835,7 +849,7 @@ fn tool_call_record(
         "schemaVersion": audit::AUDIT_SCHEMA_VERSION,
         "t": repoise_core::bench::runner::now_utc(),
         "kind": "tool_call",
-        "tool": tool,
+        "tool": audit_tool_label(tool),
         "requestedMode": requested,
         "effectiveMode": effective,
         "degraded": degraded,

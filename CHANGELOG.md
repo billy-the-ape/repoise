@@ -15,7 +15,8 @@ benchmark coordinator incorporates it into trial artifacts and reports.
   carrying only measurements it made itself: tool name, requested/effective
   retrieval mode, degradation reason, served generation, success and
   duration. Query text, source ids, excerpts, source bodies, credentials
-  and unrestricted RPC payloads are never recorded; records are
+  and unrestricted RPC payloads are never recorded — an unknown or missing
+  tool name is recorded as `unknown`, never verbatim; records are
   size-bounded; stdout stays pure JSON-RPC; a missing/unwritable sink is
   reported on stderr (a mid-run write failure is stderr-only; an oversized
   record is replaced by an `audit_error` marker), never silently.

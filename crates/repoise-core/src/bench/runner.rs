@@ -878,7 +878,9 @@ fn observed_harness_version(host_result: &Value) -> Value {
 ///   never reached a clean `server_end` (cancelled/killed server,
 ///   truncated write, or a broken stdio transport);
 /// - `not_observed`: a clean, complete audit stream with no
-///   `search_project_knowledge` tool calls.
+///   `search_project_knowledge` tool calls and no malformed records (a
+///   lost/truncated line could have been a search, so any malformed record
+///   keeps the stream `incomplete`);
 ///
 /// A stream is complete only when every recorded server is matched: the
 /// final `server_end` has reason `stdin_closed` and no `server_start` is
@@ -1038,7 +1040,9 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
     }
     let status = if succeeded > 0 || searches_failed > 0 {
         "observed"
-    } else if clean {
+    } else if clean && malformed == 0 {
+        // A lost (malformed) line could have been a search: never report
+        // "no searches happened" when part of the stream is unreadable.
         "not_observed"
     } else {
         "incomplete"
@@ -1865,6 +1869,34 @@ mod tests {
             notes
                 .iter()
                 .any(|note| note.as_str().is_some_and(|s| s.contains("stdout_error")))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_malformed_record_blocks_not_observed() {
+        // A garbled/truncated line between a clean start and end could have
+        // been a search: the stream is incomplete, never not_observed.
+        let dir = audit_dir("malformed-clean");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"tool_call","tool":"search_project_know"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_closed"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "incomplete");
+        assert_eq!(summary["cleanShutdown"], true);
+        assert_eq!(summary["searches"]["succeeded"], 0);
+        assert_eq!(summary["malformedRecords"], 1);
+        let notes = summary["notes"].as_array().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str().is_some_and(|s| s.contains("malformed")))
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

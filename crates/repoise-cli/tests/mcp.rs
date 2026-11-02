@@ -1260,13 +1260,15 @@ fn audit_ignores_non_search_calls_and_keeps_clean_end() {
         .map(|line| serde_json::from_str(line).expect("audit lines must be valid JSON: {line}"))
         .collect();
     // The unknown-tool attempt is recorded as a failed attempt under the
-    // requested name — honest evidence — but it is never a search.
+    // fixed label "unknown" — the raw client-supplied name is never
+    // recorded — and it is never a search.
     let attempts: Vec<&Value> = records
         .iter()
         .filter(|record| record["kind"] == "tool_call")
         .collect();
     assert_eq!(attempts.len(), 1);
-    assert_eq!(attempts[0]["tool"], "no_such_tool");
+    assert_eq!(attempts[0]["tool"], "unknown");
+    assert!(!ndjson.contains("no_such_tool"), "{ndjson}");
     assert_eq!(attempts[0]["success"], json!(false));
     assert_eq!(
         records
