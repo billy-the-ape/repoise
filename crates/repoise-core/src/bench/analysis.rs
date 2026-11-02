@@ -43,6 +43,41 @@ pub fn is_timed_out(trial: &Value) -> bool {
         .is_some_and(|reason| matches!(reason, "wall_clock_exceeded" | "host_watchdog"))
 }
 
+/// Harness version drift across completed trials: the distinct observed
+/// harness versions (`harnessVersion` per trial) among completed trials.
+/// With more than one version, pooled per-condition statistics span
+/// different harness builds — the records are preserved per trial and the
+/// drift is labeled here, never silently pooled. (A pinned run cannot drift:
+/// mismatched trials fail closed and are never completed; this surfaces
+/// unpinned runs.)
+pub fn harness_drift(trials: &[TrialData]) -> Value {
+    let mut versions: Vec<String> = Vec::new();
+    for trial in trials {
+        if trial.trial["status"].as_str() == Some("completed")
+            && let Some(version) = trial.trial["harnessVersion"].as_str()
+            && !versions.iter().any(|existing| existing == version)
+        {
+            versions.push(version.to_string());
+        }
+    }
+    versions.sort();
+    serde_json::json!({
+        "versions": versions,
+        "drift": versions.len() > 1,
+        "note": if versions.len() > 1 {
+            Value::String(format!(
+                "completed trials ran on {} different harness versions ({}): per-trial \
+                 records are preserved and pooled statistics span those versions — \
+                 pin profile.harness.revision to enforce a single version fail-closed",
+                versions.len(),
+                versions.join(", ")
+            ))
+        } else {
+            Value::Null
+        }
+    })
+}
+
 fn grading_status(trial: &TrialData) -> Option<&str> {
     trial
         .grading
@@ -715,6 +750,26 @@ pub fn render_markdown(report: &Value) -> String {
         }
     }
     md.push('\n');
+    if let Some(harness) = report["harness"].as_object()
+        && harness["drift"].as_bool() == Some(true)
+    {
+        let versions = harness["versions"]
+            .as_array()
+            .map(|versions| {
+                versions
+                    .iter()
+                    .map(|version| version.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        md.push_str(&format!(
+            "## Harness version drift\n\n- Completed trials ran on: {versions}.\n\n"
+        ));
+        if let Some(note) = harness["note"].as_str() {
+            md.push_str(&format!("- {note}\n\n"));
+        }
+    }
     if let Some(grading) = report["grading"].as_object() {
         md.push_str("## Grading\n\n");
         let overall = &grading["overall"];

@@ -307,6 +307,12 @@ impl RunContext {
             "hello": host.result.get("hello").cloned(),
             "adapter": host.result.get("adapter").cloned(),
             "harness": host.result.get("harness").cloned(),
+            // The per-trial effective harness version (from the adapter's
+            // `harness_version` note) and the suite's expected pin: together
+            // they make drift across trials visible in every recorded trial,
+            // so pooled statistics can never silently mix versions.
+            "harnessPin": self.suite.profile.harness.revision.clone(),
+            "harnessVersion": observed_harness_version(&host.result),
             "mode": mode_record(condition, &host.result),
             "timings": {
                 "queueMs": queue_ms,
@@ -787,6 +793,26 @@ fn host_elapsed_ms(host_result: &Value) -> Option<u128> {
         .and_then(|value| (value >= 0.0).then_some(value.round() as u128))
 }
 
+/// The adapter's observed harness version for this trial: the Cline adapter
+/// emits a `harness_version` note event carrying `data.revision` when the
+/// version probe succeeded. Null when the adapter could not resolve it (or
+/// the adapter does not report it), so drift detection never invents a
+/// version.
+fn observed_harness_version(host_result: &Value) -> Value {
+    host_result
+        .get("events")
+        .and_then(Value::as_array)
+        .and_then(|events| {
+            events.iter().find(|event| {
+                event.get("t").and_then(Value::as_str) == Some("note")
+                    && event.get("code").and_then(Value::as_str) == Some("harness_version")
+            })
+        })
+        .and_then(|event| event.pointer("/data/revision"))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 fn mode_record(condition: &Condition, host_result: &Value) -> Value {
     let requested = if condition.retrieval_mode == "repoise" {
         condition.search_mode.clone()
@@ -1240,6 +1266,27 @@ mod tests {
         assert_eq!(host_elapsed_ms(&serde_json::json!({})), None);
     }
 
+    #[test]
+    fn observed_harness_version_reads_the_probe_note_only() {
+        // The adapter's resolved version arrives as a `harness_version` note.
+        let host = serde_json::json!({
+            "events": [
+                { "t": "note", "code": "harness_version", "data": { "surface": "cli", "revision": "3.0.74" } },
+                { "t": "note", "code": "something_else", "data": { "revision": "9.9.9" } }
+            ]
+        });
+        assert_eq!(observed_harness_version(&host), serde_json::json!("3.0.74"));
+
+        // No probe note (probe failed, or adapter silent) is null, never a guess.
+        assert_eq!(
+            observed_harness_version(&serde_json::json!({ "events": [] })),
+            Value::Null
+        );
+        assert_eq!(
+            observed_harness_version(&serde_json::json!({})),
+            Value::Null
+        );
+    }
     #[test]
     fn mcp_env_carries_cache_and_embedding_variables() {
         // Simulated environment: the declared embedding variables are set.

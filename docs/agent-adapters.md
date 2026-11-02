@@ -147,6 +147,33 @@ trailing positional argument.
   scripts); a bare `cline` resolves through `PATH` at spawn time — on
   Windows the npm `.cmd` shim cannot be spawned without a shell, so use an
   explicit script path or a native executable there.
+- **Version pin and update control.** A suite may set
+  `profile.harness.revision` to an expected harness version pin (a dotted
+  version such as `3.0.74`; malformed pins fail request validation — the
+  host checks before spawn and the suite schema enforces the same shape).
+  The adapter probes the selected executable (`cline version`) before any
+  agent work, emits a `harness_version` note, records
+  `harness: { revision, expected, pinned, match, updateControl }` in the
+  effective-config artifact, and enforces the pin fail-closed: a failed
+  probe or a version mismatch ends the trial before spawn as
+  `adapter_error/harness_version_unresolved` or
+  `adapter_error/harness_version_mismatch` (no model request starts), and
+  the failed record and both versions are preserved — results from
+  different versions are never pooled. An unpinned run (no
+  `profile.harness.revision`) records its observed version but is labeled
+  unpinned and is never treated as a reproducible pin.
+- **Auto-update control.** The installed Cline CLI 3.0.74 skips its
+  startup auto-update check only when `CLINE_NO_AUTO_UPDATE` is exactly
+  `1` (verified against the installed CLI's source, 2026-11-02; the CLI
+  sets the same value for its own managed child processes). When the
+  adapter's environment carries that exact value, the adapter forwards it
+  to the CLI — and to the version probe itself — and records
+  `harness.updateControl: "disabled"`; any other value or no value is not
+  forwarded and is recorded as `"not_forwarded"`. This suppresses the
+  CLI's *startup* auto-update check for the trial; it cannot stop other
+  local processes from replacing the installed CLI, which is exactly what
+  the version pin above guards against. The whole parent environment is
+  never forwarded; credential handling and redaction are unchanged.
 - Cancellation is race-free: the Cline child runs in its own process group
   on POSIX (detached spawn), so the host's group-level SIGINT reaches only
   this adapter — the child's `aborted` result can no longer race the
@@ -203,7 +230,14 @@ effective-config redaction (credential and prompt), status mapping for
 cancellation and failure,
 rejection of non-`env:` credential references, credential scrubbing from
 forwarded CLI output (including a key straddling the unparsed-line
-truncation boundary), a `cancel` control line arriving in the same stdin
+truncation boundary), version-pin enforcement (a matching pin runs normally;
+a version mismatch or a failed probe fails closed before any model request
+with a stable reason and both versions preserved in the effective-config
+artifact; drift between trials is detected on the later launch with both
+records preserved; unpinned runs are labeled unpinned; the approved
+`CLINE_NO_AUTO_UPDATE=1` value is forwarded to the CLI while unrelated
+environment values stay absent, and unsupported values are not forwarded; a
+malformed pin is rejected at request validation), a `cancel` control line arriving in the same stdin
 chunk as the request, a leaked grandchild inside the Cline child group
 being swept with the trial, cross-platform launching of explicit Node
 script executables, and acceptance of the adapter's own request and every

@@ -135,6 +135,18 @@ export function validateRequest(request) {
       errors.push("profile.harness is required");
     } else if (!isNonEmptyString(profile.harness.name)) {
       errors.push("profile.harness.name must be a non-empty string");
+    } else if (
+      profile.harness.revision != null &&
+      !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9][A-Za-z0-9_.]*)?$/.test(
+        profile.harness.revision,
+      )
+    ) {
+      // The expected harness version pin must be a dotted version, so a
+      // malformed pin fails validation here, not later string parsing in the
+      // adapter.
+      errors.push(
+        "profile.harness.revision must be null or a dotted version like 3.0.74",
+      );
     }
     const provider = profile.provider;
     if (provider != null) {

@@ -241,6 +241,14 @@ export async function main() {
     dataDir,
     mcpSettingsPath,
   });
+  // The optional expected harness version pin (the suite's
+  // profile.harness.revision): when set, the probed version must match it
+  // exactly before any agent work starts (validated as a dotted version by
+  // request.js, never parsed later).
+  const expectedVersion =
+    typeof request.profile.harness.revision === "string"
+      ? request.profile.harness.revision
+      : null;
   if (invocation.prompt === null) {
     emitFinal("adapter_error", "prompt_file_missing");
     return;
@@ -304,7 +312,14 @@ export async function main() {
   const effectiveConfig = {
     protocolVersion: 1,
     adapter: { name: "cline", version: ADAPTER_VERSION },
-    harness: { surface: "cli", revision: version },
+    harness: {
+      surface: "cli",
+      revision: version,
+      expected: expectedVersion,
+      pinned: expectedVersion !== null,
+      match: expectedVersion === null ? null : version === expectedVersion,
+      updateControl: invocation.updateControl,
+    },
     identity: request.identity,
     workspace: {
       root: request.workspace.root,
@@ -424,6 +439,28 @@ export async function main() {
   if (stopKind !== null) {
     emitFinal("cancelled", "host_requested");
     return;
+  }
+
+  // Version pin enforcement (fail-closed, before spawn — no model request):
+  // a drifted executable (e.g. a background auto-update between preparation
+  // and execution) must never be pooled into completed results; the failed
+  // record is preserved with a stable, actionable reason and the effective-
+  // config artifact already carries both versions.
+  if (expectedVersion !== null) {
+    if (version === null) {
+      emitFinal(
+        "adapter_error",
+        `harness_version_unresolved (expected ${expectedVersion}): the version probe failed, so the pin cannot be verified — restore the pinned executable and re-run`,
+      );
+      return;
+    }
+    if (version !== expectedVersion) {
+      emitFinal(
+        "adapter_error",
+        `harness_version_mismatch (expected ${expectedVersion}, CLI reports ${version}): the CLI may have been auto-updated or replaced — restore the pinned version or re-pin (suite profile.harness.revision), then re-run`,
+      );
+      return;
+    }
   }
 
   try {
