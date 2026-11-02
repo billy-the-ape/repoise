@@ -758,7 +758,7 @@ pub fn render_markdown(report: &Value) -> String {
             .map(|versions| {
                 versions
                     .iter()
-                    .map(|version| version.to_string())
+                    .filter_map(|version| version.as_str().map(str::to_owned))
                     .collect::<Vec<_>>()
                     .join(", ")
             })
@@ -1570,6 +1570,77 @@ mod tests {
         assert!(md.contains("success-only median agentMs"));
         assert!(md.contains("## Quality gate: pass"));
         assert!(md.contains("censored"));
+    }
+
+    #[test]
+    fn markdown_labels_harness_version_drift_with_plain_versions() {
+        let mut trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(1000),
+                Some(10.0),
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "completed",
+                None,
+                Some(900),
+                Some(9.0),
+                Some("pass"),
+            ),
+        ];
+        // Observed versions differ across completed trials (an unpinned run).
+        trials[0].trial["harnessVersion"] = json!("3.0.74");
+        trials[1].trial["harnessVersion"] = json!("1.0.0-stub");
+        let report = json!({
+            "experimentId": "exp-drift",
+            "status": "completed",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "endedAtUtc": "2026-01-01T00:01:00Z",
+            "durationMs": 60000,
+            "counts": counts(&trials, 2),
+            "grading": grading_summary(&trials, &base_tasks()),
+            "harness": harness_drift(&trials),
+            "qualityGate": quality_gate(&trials, &conditions(), None, None)
+        });
+        let md = render_markdown(&report);
+        // The version list must be plain strings: `Value::to_string()` keeps
+        // the JSON quotes and would render `"1.0.0-stub", "3.0.74"`.
+        assert!(md.contains("## Harness version drift"));
+        assert!(md.contains("- Completed trials ran on: 1.0.0-stub, 3.0.74."));
+        assert!(!md.contains("\"1.0.0-stub\""));
+        assert!(!md.contains("\"3.0.74\""));
+        // The note below the list uses the same plain versions.
+        assert!(md.contains("different harness versions (1.0.0-stub, 3.0.74)"));
+        // A single observed version is not drift: no section at all.
+        let mut single = vec![trial(
+            "task-a",
+            "baseline",
+            "completed",
+            None,
+            Some(1000),
+            Some(10.0),
+            Some("pass"),
+        )];
+        single[0].trial["harnessVersion"] = json!("3.0.74");
+        let single_report = json!({
+            "experimentId": "exp-single",
+            "status": "completed",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "endedAtUtc": "2026-01-01T00:01:00Z",
+            "durationMs": 60000,
+            "counts": counts(&single, 1),
+            "grading": grading_summary(&single, &base_tasks()),
+            "harness": harness_drift(&single),
+            "qualityGate": quality_gate(&single, &conditions(), None, None)
+        });
+        let single_md = render_markdown(&single_report);
+        assert!(!single_md.contains("## Harness version drift"));
     }
 
     #[test]
