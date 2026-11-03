@@ -1,40 +1,12 @@
 import * as vscode from "vscode";
-import {
-  CapabilitiesDoc,
-  checkCapabilities,
-  parseCapabilities,
-} from "../core/capabilities";
-import { CliSource, discoverCli } from "../core/discovery";
+import { checkCapabilities, parseCapabilities } from "../core/capabilities";
+import { discoverCli } from "../core/discovery";
 import { runCli } from "../core/run";
+import { CliSession, CliFailure, isCliSession } from "../core/cliSession";
 import { log, truncate } from "./output";
 
-/**
- * Resolves and caches the installed Repoise CLI plus its capabilities
- * handshake result. Discovery runs in the extension host, so on remote
- * workspaces it resolves the binary where the workspace filesystem lives.
- */
-
-export interface CliSession {
-  binary: string;
-  source: CliSource;
-  version: string;
-  compatible: boolean;
-  problems: string[];
-  searched: string[];
-  capabilities: CapabilitiesDoc;
-}
-
-export type CliFailure =
-  | { problem: "not-found"; message: string }
-  | { problem: "override-not-found"; message: string }
-  | { problem: "capabilities-failed"; message: string }
-  | { problem: "incompatible"; message: string };
-
-export function isCliSession(
-  value: CliSession | CliFailure,
-): value is CliSession {
-  return "binary" in value;
-}
+export type { CliSession, CliFailure };
+export { isCliSession };
 
 export class CliManager implements vscode.Disposable {
   private cached: CliSession | CliFailure | null = null;
@@ -56,10 +28,18 @@ export class CliManager implements vscode.Disposable {
 
   async refresh(): Promise<CliSession | CliFailure> {
     const config = vscode.workspace.getConfiguration("repoise");
-    const override = config.get<string>("cliPath") ?? "";
-    const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map(
-      (folder) => folder.uri.fsPath,
-    );
+    // Repository-local binaries only resolve in a trusted workspace; in
+    // Restricted Mode discovery falls back to PATH (no override path, no
+    // per-folder node_modules probe).
+    const trusted = vscode.workspace.isTrusted;
+    const override = trusted
+      ? (config.get<string>("cliPath") ?? "").trim()
+      : "";
+    const workspaceRoots = trusted
+      ? (vscode.workspace.workspaceFolders ?? []).map(
+          (folder) => folder.uri.fsPath,
+        )
+      : [];
     const discovery = discoverCli({
       override: override.trim(),
       workspaceRoots,

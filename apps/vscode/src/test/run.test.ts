@@ -138,27 +138,53 @@ test("spawn failure surfaces as a spawnError without throwing", async () => {
   assert.notEqual(missingResult.spawnError, null);
 });
 
-test("Windows .cmd shims route through cmd.exe with escaped arguments", () => {
-  const invocation = buildWindowsShimInvocation("/tools/repoise.cmd", [
+test("Windows .cmd shims build a single fully-quoted cmd.exe payload", () => {
+  const invocation = buildWindowsShimInvocation("C:\\tools\\repoise.cmd", [
     "index",
-    "/a b/c root",
-    'quote"arg',
+    "C:\\a b&c root",
+    "x&calc",
+    "a^b",
   ]);
+  assert.ok(invocation !== null);
   assert.equal(invocation.binary, "cmd.exe");
-  assert.deepEqual(invocation.args.slice(0, 4), [
+  // One /c payload: every token (shim included) quoted, metacharacters
+  // inside quotes are literal to cmd.exe.
+  assert.deepEqual(invocation.args, [
     "/d",
     "/s",
     "/c",
-    "/tools/repoise.cmd",
+    '"C:\\tools\\repoise.cmd" "index" "C:\\a b&c root" "x&calc" "a^b"',
   ]);
-  assert.equal(invocation.args[4], "index");
-  assert.equal(invocation.args[5], '"/a b/c root"');
-  assert.equal(invocation.args[6], '"quote\\"arg"');
 });
 
-test("runCli rewrites .cmd binaries to the cmd.exe invocation on win32", () => {
-  let captured: { binary: string; args: string[] } | null = null;
-  const capture = (): { binary: string; args: string[] } | null => captured;
+test("Windows shim invocations fail closed on unsafe characters", () => {
+  // Percent (expansion), quotes (break the quoted region) and line breaks
+  // cannot be made literal inside a quoted cmd.exe token.
+  assert.equal(
+    buildWindowsShimInvocation("C:\\tools\\repoise.cmd", ["100%"]),
+    null,
+  );
+  assert.equal(
+    buildWindowsShimInvocation("C:\\tools\\repoise.cmd", ['a"b']),
+    null,
+  );
+  assert.equal(
+    buildWindowsShimInvocation("C:\\tools\\repoise.cmd", ["a\nb"]),
+    null,
+  );
+});
+
+test("runCli rewrites .cmd binaries to a verbatim cmd.exe payload on win32", () => {
+  let captured: {
+    binary: string;
+    args: string[];
+    verbatim: boolean;
+  } | null = null;
+  const capture = (): {
+    binary: string;
+    args: string[];
+    verbatim: boolean;
+  } | null => captured;
   const dummyChild = {
     pid: 4242,
     exitCode: null,
@@ -169,12 +195,20 @@ test("runCli rewrites .cmd binaries to the cmd.exe invocation on win32", () => {
     kill: () => true,
   } as unknown as import("node:child_process").ChildProcess;
   const handle = runCli({
-    binary: "/tools/repoise.cmd",
-    args: ["index", "/a b/c root"],
+    binary: "C:\\tools\\repoise.cmd",
+    args: ["index", "C:\\a b&c"],
     platform: "win32",
     // A structurally valid dummy child; the promise is never awaited here.
-    spawnImpl: ((binary: string, args: string[]) => {
-      captured = { binary, args };
+    spawnImpl: ((
+      binary: string,
+      args: string[],
+      options: Record<string, unknown>,
+    ) => {
+      captured = {
+        binary,
+        args,
+        verbatim: options.windowsVerbatimArguments === true,
+      };
       return dummyChild;
     }) as unknown as typeof spawn,
   });
@@ -188,10 +222,35 @@ test("runCli rewrites .cmd binaries to the cmd.exe invocation on win32", () => {
     "/d",
     "/s",
     "/c",
-    "/tools/repoise.cmd",
-    "index",
-    '"/a b/c root"',
+    '"C:\\tools\\repoise.cmd" "index" "C:\\a b&c"',
   ]);
+  assert.equal(call.verbatim, true);
+});
+
+test("runCli rejects unsafe Windows shim arguments without spawning", async () => {
+  let spawned = 0;
+  const dummyChild = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    stdout: null,
+    stderr: null,
+    on: () => undefined,
+    kill: () => true,
+  } as unknown as import("node:child_process").ChildProcess;
+  const handle = runCli({
+    binary: "C:\\tools\\repoise.cmd",
+    args: ["index", "100%"],
+    platform: "win32",
+    spawnImpl: (() => {
+      spawned += 1;
+      return dummyChild;
+    }) as unknown as typeof spawn,
+  });
+  const result = await handle.promise;
+  assert.equal(spawned, 0);
+  assert.equal(result.exitCode, null);
+  assert.match(result.spawnError ?? "", /unsafe characters/);
 });
 
 test("synchronous spawn failure settles with a spawnError", async () => {

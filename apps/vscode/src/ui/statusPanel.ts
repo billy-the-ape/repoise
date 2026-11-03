@@ -196,7 +196,7 @@ export class StatusPanel implements vscode.Disposable {
    */
   private async maybeAutoStartWatch(): Promise<void> {
     const path = this.selected;
-    if (path === null) {
+    if (path === null || !vscode.workspace.isTrusted) {
       return;
     }
     const autoStart =

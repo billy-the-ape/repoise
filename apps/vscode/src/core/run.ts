@@ -14,7 +14,7 @@ export interface CliRunOptions {
   env?: NodeJS.ProcessEnv;
   /** Hard wall-clock bound; when it fires the run is cancelled and marked timedOut. */
   timeoutMs?: number;
-  /** Platform used to choose the cancellation signal (defaults to process.platform). */
+  /** Platform used to choose the cancellation signal and whether a .cmd/.bat shim is routed through cmd.exe (defaults to process.platform). */
   platform?: NodeJS.Platform;
   /** Called once per complete stdout line (newline characters stripped). */
   onStdoutLine?: (line: string) => void;
@@ -62,20 +62,30 @@ function splitLines(
 /**
  * Windows .cmd/.bat shims cannot be spawned directly: since Node
  * 18.20.2 / 20.12.2 (CVE-2024-27980) doing so throws EINVAL. Route them
- * through `cmd.exe /d /s /c` with strictly escaped arguments — the npm
- * shims still receive their argument array, and no shell parsing of our
- * values happens (every argument is quoted and embedded quotes are
- * backslash-escaped per the cmd quoting rules).
+ * through `cmd.exe /d /s /c` with a single payload in which every token —
+ * including the shim itself — is wrapped in double quotes; inside quotes
+ * cmd.exe treats every metacharacter (`&`, `|`, `<`, `>`, `^`, `(`, `)`,
+ * `!`) as literal. The spawn then uses `windowsVerbatimArguments` so Node
+ * does not re-quote the tokens.
+ *
+ * Arguments that can never be made literal inside a quoted cmd.exe token —
+ * `"` (breaks the quoted region), `%` (variable expansion happens even
+ * inside quotes) and CR/LF (line breaks) — make the whole invocation
+ * fail closed: the function returns null and the caller reports a
+ * spawnError instead of building a command line. Windows path names cannot
+ * contain `"` in the first place, so this only fires on genuinely unsafe
+ * input.
  */
 export function buildWindowsShimInvocation(
   binary: string,
   args: string[],
-): { binary: string; args: string[] } {
-  const escaped = args.map((arg) => {
-    const quoted = `"${arg.replace(/"/g, '\\"')}"`;
-    return /[ \t"]/.test(arg) ? quoted : arg;
-  });
-  return { binary: "cmd.exe", args: ["/d", "/s", "/c", binary, ...escaped] };
+): { binary: string; args: string[] } | null {
+  const tokens = [binary, ...args];
+  if (tokens.some((token) => /["%\r\n]/.test(token))) {
+    return null;
+  }
+  const payload = tokens.map((token) => `"${token}"`).join(" ");
+  return { binary: "cmd.exe", args: ["/d", "/s", "/c", payload] };
 }
 
 function needsWindowsShim(platform: NodeJS.Platform, binary: string): boolean {
@@ -159,16 +169,27 @@ export function runCli(options: CliRunOptions): CliRunHandle {
 
   let launchBinary = options.binary;
   let launchArgs = options.args;
+  let verbatimArguments = false;
   if (needsWindowsShim(platform, launchBinary)) {
     const shim = buildWindowsShimInvocation(launchBinary, launchArgs);
+    if (shim === null) {
+      // Fail closed: rather than hand cmd.exe a string it can interpret,
+      // report the run as un-launchable.
+      state.spawnError =
+        "unsafe characters (double quote, percent or line break) in the Windows shim invocation; refusing to build a cmd.exe command line";
+      finish(null, null);
+      return handle;
+    }
     launchBinary = shim.binary;
     launchArgs = shim.args;
+    verbatimArguments = true;
   }
   try {
     child = (options.spawnImpl ?? spawn)(launchBinary, launchArgs, {
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      windowsVerbatimArguments: verbatimArguments,
     });
   } catch (err) {
     // Synchronous spawn failures (e.g. EINVAL when a Windows .cmd shim is

@@ -88,10 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
   );
-  const mcpDisposable = registerMcpProvider(context, cli);
-  if (mcpDisposable !== null) {
-    context.subscriptions.push(mcpDisposable);
-  }
+  registerMcpProvider(context, cli);
   context.subscriptions.push(panel, watch);
 }
 

@@ -23,6 +23,14 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": [
+        "repoise.cliPath"
+      ]
+    }
+  },
   "contributes": {
     "mcpServerDefinitionProviders": [
       {

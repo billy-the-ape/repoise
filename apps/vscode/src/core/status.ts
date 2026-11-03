@@ -114,7 +114,7 @@ function parseWriter(
 
 export function parseStatusView(
   requestedRoot: string,
-  raw: string | unknown,
+  raw: unknown,
 ): { ok: true; status: RootStatus } | { ok: false; problem: string } {
   let view: unknown;
   if (typeof raw === "string") {

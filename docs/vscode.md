@@ -43,8 +43,17 @@ arrays and renders the AP-02 machine contracts
   snippet for Cline/Codex-style clients. The extension never writes to
   client settings files.
 - **Trust gating**: repository-local binaries only run in a trusted
-  workspace; commands on an untrusted checkout prompt for trust and never
-  launch code.
+  workspace. The extension activates in Restricted Mode with
+  `untrustedWorkspaces.supported: limited` and `repoise.cliPath` as a
+  restricted setting; in an untrusted checkout discovery falls back to PATH
+  only (no override path, no per-folder `node_modules` probe), commands
+  prompt for trust, and auto-watch never starts — no repository-local code
+  is launched.
+- **Windows launch safety**: when the selected binary is an npm `.cmd`/`.bat`
+  shim, it is invoked through `cmd.exe /d /s /c` with a single payload in
+  which every token (shim included) is double-quoted, so metacharacters in
+  paths are literal; arguments containing `"`, `%` or line breaks are
+  rejected with a panel error instead of being spliced into a command line.
 
 ## Settings
 

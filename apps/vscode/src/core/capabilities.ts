@@ -44,7 +44,7 @@ function asNumberArray(value: unknown): number[] | null {
     : null;
 }
 
-export function parseCapabilities(raw: string | unknown): CapabilitiesParse {
+export function parseCapabilities(raw: unknown): CapabilitiesParse {
   let doc: unknown;
   if (typeof raw === "string") {
     try {

@@ -1,20 +1,37 @@
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
 import { EventStream } from "../core/events";
 import { RepoiseEvent } from "../core/types";
 import { runCli, CliRunHandle } from "../core/run";
-import { runStatus } from "../core/status";
+import { runStatus, StatusOutcome } from "../core/status";
 import {
   WatchInfo,
   WatchDecision,
   decideWatchNextExit,
   initialWatchInfo,
 } from "../core/watchPolicy";
-import { CliManager, isCliSession } from "./cliManager";
-import { log } from "./output";
+import { isCliSession } from "../core/cliSession";
+import type { CliManager } from "./cliManager";
 
 export interface WatchCallbacks {
   onEvent: (root: string, event: RepoiseEvent) => void;
   onStateChange: (root: string) => void;
+}
+
+/**
+ * Minimal logging surface (structurally satisfied by
+ * `vscode.OutputChannel`) so the supervisor stays importable without the
+ * vscode module.
+ */
+export interface WatchLogSink {
+  appendLine(line: string): void;
+}
+
+/** Test hooks; production callers leave these unset. */
+export interface WatchManagerHooks {
+  /** Replaces the `status --json` ownership probe. */
+  probeStatus?: (binary: string, root: string) => Promise<StatusOutcome>;
+  /** Replaces the CLI process runner used for the watch process. */
+  runProcess?: typeof runCli;
 }
 
 /**
@@ -37,13 +54,22 @@ export class WatchManager implements vscode.Disposable {
   private infos = new Map<string, WatchInfo>();
   private runs = new Map<string, CliRunHandle>();
   private timers = new Map<string, NodeJS.Timeout>();
+  /** Roots with an in-flight `start()` probe; claimed synchronously. */
+  private inflight = new Set<string>();
+  /** Per-root invalidation counter; bumping it voids probes in flight. */
+  private epochs = new Map<string, number>();
   private stopping = false;
 
   constructor(
     private readonly cli: CliManager,
-    private readonly output: vscode.OutputChannel,
+    private readonly output: WatchLogSink,
     private readonly callbacks: WatchCallbacks,
+    private readonly hooks: WatchManagerHooks = {},
   ) {}
+
+  private epochOf(root: string): number {
+    return this.epochs.get(root) ?? 0;
+  }
 
   info(root: string): WatchInfo {
     let info = this.infos.get(root);
@@ -64,41 +90,62 @@ export class WatchManager implements vscode.Disposable {
   }
 
   async start(root: string): Promise<void> {
-    if (this.runs.has(root) || this.timers.has(root)) {
+    if (
+      this.runs.has(root) ||
+      this.timers.has(root) ||
+      this.inflight.has(root)
+    ) {
       return;
     }
-    const session = await this.cli.resolve();
-    if (!isCliSession(session)) {
-      this.setOutcome(
-        root,
-        "stopped",
-        `cannot start watch: ${session.message}`,
-      );
-      return;
-    }
-    const status = await runStatus(session.binary, root);
-    if (status.ok) {
-      const state = status.status.writer?.state;
-      if (state === "owned" || state === "busy") {
-        const owner = status.status.writer?.owner;
+    // Claim the root synchronously: concurrent starts (auto-start plus the
+    // webview ready message, double-clicks) must not all probe the scope
+    // lock and all spawn.
+    this.inflight.add(root);
+    const epoch = this.epochOf(root);
+    try {
+      const session = await this.cli.resolve();
+      if (!isCliSession(session)) {
         this.setOutcome(
           root,
-          "external",
-          `scope is owned by ${
-            owner ? `${owner.operation} (pid ${owner.pid})` : "another writer"
-          }; displaying its status, not starting a competing writer`,
+          "stopped",
+          `cannot start watch: ${session.message}`,
         );
         return;
       }
-    } else {
-      this.setOutcome(
+      const status = await (this.hooks.probeStatus ?? runStatus)(
+        session.binary,
         root,
-        "stopped",
-        `cannot verify scope ownership: ${status.detail}`,
       );
-      return;
+      if (status.ok) {
+        const state = status.status.writer?.state;
+        if (state === "owned" || state === "busy") {
+          const owner = status.status.writer?.owner;
+          this.setOutcome(
+            root,
+            "external",
+            `scope is owned by ${
+              owner ? `${owner.operation} (pid ${owner.pid})` : "another writer"
+            }; displaying its status, not starting a competing writer`,
+          );
+          return;
+        }
+      } else {
+        this.setOutcome(
+          root,
+          "stopped",
+          `cannot verify scope ownership: ${status.detail}`,
+        );
+        return;
+      }
+      if (this.epochOf(root) !== epoch) {
+        // A stop() landed while the probe was in flight; the spawn for this
+        // root was invalidated.
+        return;
+      }
+      this.spawn(root, session.binary, 1);
+    } finally {
+      this.inflight.delete(root);
     }
-    this.spawn(root, session.binary, 1);
   }
 
   private spawn(root: string, binary: string, attempt: number): void {
@@ -109,7 +156,7 @@ export class WatchManager implements vscode.Disposable {
     this.callbacks.onStateChange(root);
 
     const stream = new EventStream();
-    const handle = runCli({
+    const handle = (this.hooks.runProcess ?? runCli)({
       binary,
       args: ["watch", "--events", root],
       onStdoutLine: (line) => {
@@ -127,10 +174,8 @@ export class WatchManager implements vscode.Disposable {
               ? `malformed stream line (${outcome.problem})`
               : outcome.kind === "unsupported-version"
                 ? `unsupported event-stream version ${String(outcome.version)}`
-                : outcome.kind
-                  ? String(outcome.kind)
-                  : "stream error";
-          log(this.output, `watch stream issue for ${root}: ${problem}`);
+                : outcome.kind;
+          this.output.appendLine(`watch stream issue for ${root}: ${problem}`);
         }
       },
     });
@@ -138,6 +183,11 @@ export class WatchManager implements vscode.Disposable {
     info.pid = handle.pid;
 
     void handle.promise.then((result) => {
+      // A different handle (or no handle) now owns this root: this run was
+      // orphaned, and its settlement must not touch the shared state.
+      if (this.runs.get(root) !== handle) {
+        return;
+      }
       this.runs.delete(root);
       info.pid = null;
       const summary = stream.summary();
@@ -160,8 +210,7 @@ export class WatchManager implements vscode.Disposable {
         info.status = "waiting-restart";
         info.nextRestartAtMs = Date.now() + decision.delayMs;
         this.callbacks.onStateChange(root);
-        log(
-          this.output,
+        this.output.appendLine(
           `watch for ${root} exiting abnormally (exit ${result.exitCode ?? "n/a"}); restarting in ${decision.delayMs}ms (attempt ${decision.attempt})`,
         );
         const timer = setTimeout(() => {
@@ -175,7 +224,7 @@ export class WatchManager implements vscode.Disposable {
         const label =
           decision.reason === "external-owner" ? "external" : "stopped";
         this.setOutcome(root, label, decision.detail);
-        log(this.output, `watch for ${root} stopped: ${decision.detail}`);
+        this.output.appendLine(`watch for ${root} stopped: ${decision.detail}`);
       }
     });
   }
@@ -194,6 +243,10 @@ export class WatchManager implements vscode.Disposable {
   }
 
   stop(root: string): void {
+    // Invalidate an in-flight start() probe (if any) so it cannot spawn
+    // after we've stopped.
+    this.inflight.delete(root);
+    this.epochs.set(root, this.epochOf(root) + 1);
     const timer = this.timers.get(root);
     if (timer !== undefined) {
       clearTimeout(timer);
@@ -214,6 +267,10 @@ export class WatchManager implements vscode.Disposable {
   /** Cancel every owned watch (window reload, deactivation, root disposal). */
   stopAll(): void {
     this.stopping = true;
+    this.inflight.clear();
+    for (const root of this.infos.keys()) {
+      this.epochs.set(root, this.epochOf(root) + 1);
+    }
     for (const [root, timer] of this.timers) {
       clearTimeout(timer);
       this.timers.delete(root);
@@ -228,5 +285,7 @@ export class WatchManager implements vscode.Disposable {
     this.stopAll();
     this.infos.clear();
     this.runs.clear();
+    this.inflight.clear();
+    this.epochs.clear();
   }
 }
