@@ -85,8 +85,11 @@ credentials or installed CLI are required; the fake's signal handlers are
 armed before first output because a parent that kills the child in the same
 instant it observes the first line must never race handler setup. CI runs the
 suite in all three Check jobs (Linux/macOS/Windows) via `turbo run test`;
-Windows cancellation asserts the abrupt `TerminateProcess` semantics
-documented in [automation.md](automation.md) rather than a terminal event.
+Windows cancellation asserts the documented abrupt `TerminateProcess`
+semantics (via a whole-process-tree `taskkill /PID <pid> /T /F` when the npm
+cmd shim is involved, so the node launcher and native descendants cannot
+survive holding the scope lock and inherited pipes) rather than a terminal
+event.
 
 Verified against the installed CLI: `capabilities --json`, `status --json`
 (snake_case view, top-level owner marker), `index --events` and

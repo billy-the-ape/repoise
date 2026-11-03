@@ -3,8 +3,10 @@ import { ChildProcess, spawn } from "node:child_process";
 /**
  * CLI process runner. Always spawns with an argument array (never a shell),
  * keeps protocol records on stdout and diagnostics on stderr, and supports
- * cooperative cancellation: SIGTERM on Unix, plain termination (the
- * TerminateProcess path) on Windows.
+ * cooperative cancellation: SIGTERM on Unix; on Windows a plain
+ * termination (the TerminateProcess path) for native binaries, and a
+ * whole-process-tree kill (`taskkill /PID <pid> /T /F`) for cmd-shim
+ * launches, whose node-launcher descendants would otherwise survive.
  */
 
 export interface CliRunOptions {
@@ -151,10 +153,29 @@ export function runCli(options: CliRunOptions): CliRunHandle {
       }
       state.cancelledByUs = true;
       try {
-        // On Windows process.kill() maps to TerminateProcess (abrupt); on
-        // Unix SIGTERM lets watch/index cancel cooperatively at the next
+        // On Unix SIGTERM lets watch/index cancel cooperatively at the next
         // checkpoint (docs/automation.md).
-        if (platform === "win32") {
+        if (platform === "win32" && verbatimArguments) {
+          // cmd.exe /d /s /c starts the npm node launcher, which starts
+          // repoise: a TerminateProcess of cmd.exe alone orphans the
+          // descendants — they keep the scope lock and the inherited
+          // stdout/stderr pipe ends (so 'close' may never fire). Kill the
+          // whole tree; taskkill runs as a plain argument-array spawn.
+          const pid = child.pid;
+          if (pid === null || pid === undefined) {
+            child.kill();
+          } else {
+            (options.spawnImpl ?? spawn)("taskkill", [
+              "/PID",
+              String(pid),
+              "/T",
+              "/F",
+            ]);
+          }
+        } else if (platform === "win32") {
+          // A native binary (e.g. repoise.exe) has no launcher
+          // descendants: plain TerminateProcess is the documented
+          // abrupt-cancel semantics.
           child.kill();
         } else {
           child.kill("SIGTERM");

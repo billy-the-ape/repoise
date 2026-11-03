@@ -254,6 +254,77 @@ test("runCli rejects unsafe Windows shim arguments without spawning", async () =
   assert.equal(result.exitCode, null);
   assert.match(result.spawnError ?? "", /unsafe characters/);
 });
+test("cancelling a Windows shim run kills the whole process tree with taskkill", () => {
+  const calls: { binary: string; args: string[] }[] = [];
+  let killCalls = 0;
+  const mainChild = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    stdout: null,
+    stderr: null,
+    on: () => undefined,
+    kill: () => {
+      killCalls += 1;
+      return true;
+    },
+  } as unknown as import("node:child_process").ChildProcess;
+  const taskkillChild = {
+    pid: 4300,
+    exitCode: null,
+    signalCode: null,
+    stdout: null,
+    stderr: null,
+    on: () => undefined,
+    kill: () => true,
+  } as unknown as import("node:child_process").ChildProcess;
+  const handle = runCli({
+    binary: "C:\\tools\\repoise.cmd",
+    args: ["watch", "--events", "C:\\root"],
+    platform: "win32",
+    spawnImpl: ((binary: string, args: string[]) => {
+      calls.push({ binary, args });
+      return binary === "taskkill" ? taskkillChild : mainChild;
+    }) as unknown as typeof spawn,
+  });
+  handle.cancel();
+  // cmd.exe itself must not be TerminateProcess'd: killing only it would
+  // orphan the node launcher and repoise.exe (scope lock + inherited pipe
+  // ends), so the whole tree goes via taskkill.
+  assert.equal(killCalls, 0);
+  const taskkill = calls.find((call) => call.binary === "taskkill");
+  assert.ok(taskkill !== undefined);
+  assert.deepEqual(taskkill.args, ["/PID", "4242", "/T", "/F"]);
+});
+
+test("cancelling a Windows native binary uses plain TerminateProcess, no taskkill", () => {
+  const calls: { binary: string; args: string[] }[] = [];
+  let killCalls = 0;
+  const mainChild = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    stdout: null,
+    stderr: null,
+    on: () => undefined,
+    kill: () => {
+      killCalls += 1;
+      return true;
+    },
+  } as unknown as import("node:child_process").ChildProcess;
+  const handle = runCli({
+    binary: "C:\\tools\\repoise.exe",
+    args: ["watch", "--events", "C:\\root"],
+    platform: "win32",
+    spawnImpl: ((binary: string, args: string[]) => {
+      calls.push({ binary, args });
+      return mainChild;
+    }) as unknown as typeof spawn,
+  });
+  handle.cancel();
+  assert.equal(killCalls, 1);
+  assert.ok(!calls.some((call) => call.binary === "taskkill"));
+});
 
 test("synchronous spawn failure settles with a spawnError", async () => {
   const handle = runCli({
