@@ -183,6 +183,7 @@ export class WatchManager implements vscode.Disposable {
     info.status = "starting";
     info.attempts = attempt;
     info.nextRestartAtMs = null;
+    info.exhausted = false;
     this.callbacks.onStateChange(root);
 
     const stream = new EventStream();
@@ -254,6 +255,7 @@ export class WatchManager implements vscode.Disposable {
       } else if (decision.action === "stop") {
         const label =
           decision.reason === "external-owner" ? "external" : "stopped";
+        info.exhausted = decision.reason === "max-restarts";
         this.setOutcome(root, label, decision.detail);
         this.output.appendLine(`watch for ${root} stopped: ${decision.detail}`);
       }

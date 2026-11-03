@@ -26,7 +26,6 @@ interface PanelState {
   watch: WatchInfo;
   mcp: string | null;
   indexRunning: boolean;
-  watchRunning: boolean;
   log: string[];
 }
 
@@ -42,6 +41,19 @@ export class StatusPanel implements vscode.Disposable {
   private selected: string | null = null;
   private indexRunning = new Set<string>();
   private logLines: string[] = [];
+  /**
+   * Roots that already consumed this session's one-shot auto-start: the
+   * auto-start fires at most once per root per panel session, so switching
+   * the selection away and back does not spawn a new watch.
+   */
+  private autoStarted = new Set<string>();
+  /**
+   * Roots whose auto-start is suppressed for this session: an explicit user
+   * Stop, an exhausted bounded-restart budget, or an external scope owner
+   * must not be silently overridden by a re-selection, webview `ready` or
+   * folder change.
+   */
+  private autoStartSuppressed = new Set<string>();
 
   constructor(
     private readonly cli: CliManager,
@@ -76,8 +88,6 @@ export class StatusPanel implements vscode.Disposable {
       mcp: model?.mcpJson ?? null,
       indexRunning:
         this.selected !== null && this.indexRunning.has(this.selected),
-      watchRunning:
-        this.selected !== null && this.watch.isRunning(this.selected),
       log: [...this.logLines],
     };
   }
@@ -196,7 +206,9 @@ export class StatusPanel implements vscode.Disposable {
    * `repoise.watch.autoStart`: start an extension-owned watch for the
    * selected root when the panel opens or the selection changes. The watch
    * supervisor probes the authoritative scope lock first, so this never
-   * spawns a competing writer, and restarts stay bounded.
+   * spawns a competing writer, and restarts stay bounded. The auto-start
+   * fires at most once per root per panel session, and never after an
+   * explicit Stop, an exhausted restart budget or an external owner.
    */
   private async maybeAutoStartWatch(): Promise<void> {
     const path = this.selected;
@@ -207,13 +219,21 @@ export class StatusPanel implements vscode.Disposable {
       vscode.workspace
         .getConfiguration("repoise")
         .get<boolean>("watch.autoStart") ?? false;
-    if (
-      !autoStart ||
-      this.watch.isRunning(path) ||
-      this.watch.timerPending(path)
-    ) {
+    if (!autoStart) {
       return;
     }
+    if (this.autoStartSuppressed.has(path) || this.autoStarted.has(path)) {
+      return;
+    }
+    const watchInfo = this.watch.info(path);
+    if (watchInfo.status === "external" || watchInfo.exhausted) {
+      this.autoStartSuppressed.add(path);
+      return;
+    }
+    if (this.watch.isRunning(path) || this.watch.timerPending(path)) {
+      return;
+    }
+    this.autoStarted.add(path);
     this.pushLog(`auto-starting owned watch for ${path}`);
     await this.watch.start(path);
   }
@@ -303,6 +323,15 @@ export class StatusPanel implements vscode.Disposable {
     if (path === null) {
       return;
     }
+    if (this.watch.isRunning(path) || this.watch.timerPending(path)) {
+      // A run or a bounded restart is already in flight; report the no-op
+      // instead of silently dropping the request.
+      this.pushLog(
+        `watch for ${path} is already running or restarting; Start ignored`,
+      );
+      this.sendState();
+      return;
+    }
     this.pushLog(`watch start requested for ${path}`);
     await this.watch.start(path);
     await this.refreshRootModel(
@@ -317,6 +346,9 @@ export class StatusPanel implements vscode.Disposable {
       return;
     }
     this.pushLog(`watch stop requested for ${path}`);
+    // An explicit Stop suppresses the one-shot auto-start for this root for
+    // the rest of the session; the user can always press Start again.
+    this.autoStartSuppressed.add(path);
     this.watch.stop(path);
     this.sendState();
     // The stream's terminal `cancelled` event drives the final refresh.
@@ -354,7 +386,7 @@ export class StatusPanel implements vscode.Disposable {
     );
   }
 
-  async triggerMcpCopy(): Promise<void> {
+  private async triggerMcpCopy(): Promise<void> {
     const model = this.selectedModel();
     if (model === undefined || model.mcpJson === null) {
       await vscode.window.showInformationMessage(

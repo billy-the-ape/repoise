@@ -113,4 +113,5 @@ test("initial watch info is idle and unowned", () => {
   assert.equal(info.status, "idle");
   assert.equal(info.pid, null);
   assert.equal(info.attempts, 0);
+  assert.equal(info.exhausted, false);
 });

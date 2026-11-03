@@ -117,8 +117,16 @@ export function buildHtml(): string {
     $("log").textContent = p.log.join("\\n");
     const canAct = !!p.selected && !p.indexRunning;
     $("index").disabled = !canAct;
-    $("watch-start").disabled = !p.selected || p.watchRunning;
-    $("watch-stop").disabled = !p.selected || !p.watchRunning;
+    // Drive the watch buttons from the supervisor status, not just the
+    // live-process flag: Stop must stay enabled while a start is probing or
+    // a bounded restart is pending, and Start must be disabled then.
+    const watchStatus = p.watch ? p.watch.status : "idle";
+    const watchActive =
+      watchStatus === "starting" ||
+      watchStatus === "running" ||
+      watchStatus === "waiting-restart";
+    $("watch-start").disabled = !p.selected || watchActive;
+    $("watch-stop").disabled = !p.selected || !watchActive;
     $("mcp-copy").disabled = !p.mcp;
   }
   window.addEventListener("message", (e) => {

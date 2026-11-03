@@ -162,7 +162,7 @@ export function runCli(options: CliRunOptions): CliRunHandle {
           // stdout/stderr pipe ends (so 'close' may never fire). Kill the
           // whole tree; taskkill runs as a plain argument-array spawn.
           const pid = child.pid;
-          if (pid === null || pid === undefined) {
+          if (pid === undefined) {
             child.kill();
           } else {
             const target = child;

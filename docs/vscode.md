@@ -39,7 +39,10 @@ arrays and renders the AP-02 machine contracts
   for crashes, cooperative SIGTERM cancellation, and cancellation when a
   workspace folder is removed or the window closes. A Start issued while a
   Stop is still draining (the cancelled process has not settled) is
-  reported, not silently dropped.
+  reported, not silently dropped. The panel's Start/Stop buttons follow
+  the supervisor status, so Stop is also available during the startup
+  probe and a restart backoff, and an in-flight Start is reported
+  instead of silently ignored.
 - **MCP** (`repoise.mcpShow`): a read-only `mcp` definition per workspace
   folder (`refresh` only when `repoise.mcp.refresh` is true, matching the
   CLI's opt-in), plus VS Code's
@@ -68,7 +71,7 @@ arrays and renders the AP-02 machine contracts
 | Setting                  | Default | Meaning                                                        |
 | ------------------------ | ------- | -------------------------------------------------------------- |
 | `repoise.cliPath`        | `""`    | Explicit binary override; a missing path is an error, not a fallback |
-| `repoise.watch.autoStart`| `false` | Start an owned watch for the selected root when the panel opens or the root selection changes |
+| `repoise.watch.autoStart`| `false` | Start an owned watch for the selected root when the panel opens or the root selection changes; fires at most once per root per panel session and never after an explicit Stop, exhausted restarts or an external owner |
 | `repoise.mcp.refresh`    | `false` | Include `--allow-refresh` in MCP definitions                  |
 
 ## Development and tests

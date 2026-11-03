@@ -90,6 +90,8 @@ export interface WatchInfo {
   attempts: number;
   nextRestartAtMs: number | null;
   lastOutcome: string | null;
+  /** True once the bounded restart budget is exhausted (reset by a new run). */
+  exhausted: boolean;
 }
 
 export function initialWatchInfo(): WatchInfo {
@@ -99,5 +101,6 @@ export function initialWatchInfo(): WatchInfo {
     attempts: 0,
     nextRestartAtMs: null,
     lastOutcome: null,
+    exhausted: false,
   };
 }
