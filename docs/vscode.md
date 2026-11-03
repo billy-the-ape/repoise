@@ -37,7 +37,9 @@ arrays and renders the AP-02 machine contracts
   owners are detected from `failed … reason: scope-owned` (the extension
   hands off and never restarts into a restart loop), bounded restart/backoff
   for crashes, cooperative SIGTERM cancellation, and cancellation when a
-  workspace folder is removed or the window closes.
+  workspace folder is removed or the window closes. A Start issued while a
+  Stop is still draining (the cancelled process has not settled) is
+  reported, not silently dropped.
 - **MCP** (`repoise.mcpShow`): a read-only `mcp` definition per workspace
   folder (`refresh` only when `repoise.mcp.refresh` is true, matching the
   CLI's opt-in), plus VS Code's

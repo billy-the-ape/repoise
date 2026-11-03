@@ -165,12 +165,23 @@ export function runCli(options: CliRunOptions): CliRunHandle {
           if (pid === null || pid === undefined) {
             child.kill();
           } else {
-            (options.spawnImpl ?? spawn)("taskkill", [
+            const target = child;
+            const taskkillChild = (options.spawnImpl ?? spawn)("taskkill", [
               "/PID",
               String(pid),
               "/T",
               "/F",
             ]);
+            // A taskkill that never starts (e.g. missing on a stripped
+            // host) would emit an unhandled 'error' event; fall back to
+            // terminating cmd.exe itself rather than crashing the host.
+            taskkillChild.on("error", () => {
+              try {
+                target.kill();
+              } catch {
+                // The process is already gone; 'close' still settles.
+              }
+            });
           }
         } else if (platform === "win32") {
           // A native binary (e.g. repoise.exe) has no launcher

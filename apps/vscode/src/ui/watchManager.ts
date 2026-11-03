@@ -74,6 +74,13 @@ export class WatchManager implements vscode.Disposable {
     return this.epochs.get(root) ?? 0;
   }
 
+  /**
+   * Roots whose cancelled watch has not settled yet ("draining"): the run
+   * is still registered, and a start in that window must be reported
+   * instead of silently dropped.
+   */
+  private draining = new Set<string>();
+
   info(root: string): WatchInfo {
     let info = this.infos.get(root);
     if (info === undefined) {
@@ -93,6 +100,16 @@ export class WatchManager implements vscode.Disposable {
   }
 
   async start(root: string): Promise<void> {
+    if (this.draining.has(root)) {
+      // A stop for this root is still draining (the cancelled process has
+      // not settled); report it instead of silently dropping the start.
+      this.setOutcome(
+        root,
+        "stopped",
+        "a stop for this root is still finishing; press Start again",
+      );
+      return;
+    }
     if (
       this.runs.has(root) ||
       this.timers.has(root) ||
@@ -202,6 +219,7 @@ export class WatchManager implements vscode.Disposable {
         return;
       }
       this.runs.delete(root);
+      this.draining.delete(root);
       info.pid = null;
       const summary = stream.summary();
       const terminalPayload = summary.terminalEvent?.payload ?? {};
@@ -267,6 +285,9 @@ export class WatchManager implements vscode.Disposable {
     }
     const handle = this.runs.get(root);
     if (handle !== undefined) {
+      // The run stays registered until its promise settles; mark the root
+      // as draining so a start in that window is reported, not dropped.
+      this.draining.add(root);
       // The cooperative cancel yields a terminal `cancelled` event, which
       // drives the final status refresh through onCliEvent.
       handle.cancel();

@@ -98,6 +98,10 @@ export class StatusPanel implements vscode.Disposable {
 
   reveal(): Thenable<vscode.WebviewPanel> {
     if (this.panel !== undefined) {
+      // Bring a hidden existing panel to the front: it is created with
+      // retainContextWhenHidden, so commands that call reveal() must make
+      // it visible again after it is hidden behind another tab.
+      this.panel.reveal();
       return Promise.resolve(this.panel);
     }
     const panel = vscode.window.createWebviewPanel(

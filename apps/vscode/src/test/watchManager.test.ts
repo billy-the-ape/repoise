@@ -188,3 +188,38 @@ test("stop-during-probe followed by two starts still spawns a single watch", asy
   assert.equal(manager.isRunning("/root"), true);
   manager.dispose();
 });
+
+test("a start issued while a stop is draining is reported, not silently dropped", async () => {
+  let spawns = 0;
+  const manager = new WatchManager(
+    fakeCli(),
+    { appendLine: () => undefined },
+    { onEvent: () => undefined, onStateChange: () => undefined },
+    {
+      probeStatus: () => Promise.resolve(freeStatus()),
+      runProcess: () => {
+        spawns += 1;
+        return fakeHandle();
+      },
+    },
+  );
+  void manager.start("/root");
+  await wait(50);
+  assert.equal(spawns, 1);
+  // Stop: the fake handle's promise settles on a microtask, so a start
+  // issued synchronously right after stop() lands inside the drain window.
+  manager.stop("/root");
+  void manager.start("/root");
+  assert.equal(spawns, 1);
+  assert.equal(
+    manager.info("/root").lastOutcome,
+    "a stop for this root is still finishing; press Start again",
+  );
+  // After the drain settles, Start works again.
+  await wait(5);
+  void manager.start("/root");
+  await wait(50);
+  assert.equal(spawns, 2);
+  assert.equal(manager.isRunning("/root"), true);
+  manager.dispose();
+});
