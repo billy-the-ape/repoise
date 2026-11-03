@@ -220,7 +220,11 @@ export class WatchManager implements vscode.Disposable {
         return;
       }
       this.runs.delete(root);
-      this.draining.delete(root);
+      // A stop was requested while this run was still registered: honour
+      // it even though cancel() may have been a no-op (the child had
+      // already exited, so cancelledByUs was never set), and never let an
+      // abnormal exit schedule a restart that overrides the user's Stop.
+      const stoppedByUser = this.draining.delete(root);
       info.pid = null;
       const summary = stream.summary();
       const terminalPayload = summary.terminalEvent?.payload ?? {};
@@ -238,7 +242,15 @@ export class WatchManager implements vscode.Disposable {
         incomplete: summary.incomplete,
         attempts: attempt,
       });
-      if (decision.action === "restart" && !this.stopping) {
+      if (decision.action === "restart" && stoppedByUser) {
+        // The user stopped this root while its process was still
+        // registered but already exiting (cancel() was a no-op); the
+        // abnormal exit must not respawn the watch.
+        this.setOutcome(root, "stopped", "watch stopped by user");
+        this.output.appendLine(
+          `watch for ${root} stopped: user stop during drain suppressed the restart`,
+        );
+      } else if (decision.action === "restart" && !this.stopping) {
         info.status = "waiting-restart";
         info.nextRestartAtMs = Date.now() + decision.delayMs;
         this.callbacks.onStateChange(root);

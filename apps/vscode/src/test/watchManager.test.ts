@@ -223,3 +223,52 @@ test("a start issued while a stop is draining is reported, not silently dropped"
   assert.equal(manager.isRunning("/root"), true);
   manager.dispose();
 });
+
+test("a user Stop during drain suppresses the restart of a crashed watch", async () => {
+  let spawns = 0;
+  let resolveCrash: (result: CliRunResult) => void = () => undefined;
+  const manager = new WatchManager(
+    fakeCli(),
+    { appendLine: () => undefined },
+    { onEvent: () => undefined, onStateChange: () => undefined },
+    {
+      probeStatus: () => Promise.resolve(freeStatus()),
+      runProcess: () => {
+        spawns += 1;
+        return {
+          pid: 4242,
+          // The child has already crashed: like run.ts's early return once
+          // exitCode/signalCode are set, cancel() is a no-op and
+          // cancelledByUs is never set.
+          cancel: () => undefined,
+          promise: new Promise<CliRunResult>((r) => {
+            resolveCrash = r;
+          }),
+        };
+      },
+    },
+  );
+  void manager.start("/root");
+  await wait(50);
+  assert.equal(spawns, 1);
+  // Crash, then a user Stop before 'close' fires; 'close' then delivers
+  // the abnormal exit.
+  manager.stop("/root");
+  assert.equal(manager.timerPending("/root"), false);
+  resolveCrash({
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    cancelledByUs: false,
+    spawnError: null,
+    stderr: "",
+  });
+  await wait(5);
+  // The Stop must not be overridden by a restart backoff.
+  assert.equal(spawns, 1);
+  assert.equal(manager.timerPending("/root"), false);
+  assert.equal(manager.isRunning("/root"), false);
+  assert.equal(manager.info("/root").status, "stopped");
+  assert.equal(manager.info("/root").lastOutcome, "watch stopped by user");
+  manager.dispose();
+});

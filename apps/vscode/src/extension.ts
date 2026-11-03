@@ -89,7 +89,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
   registerMcpProvider(context, cli);
-  context.subscriptions.push(panel, watch);
+  context.subscriptions.push(panel, watch, cli);
 }
 
 export function deactivate(): void {
