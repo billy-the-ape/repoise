@@ -13,7 +13,7 @@ import { CliManager, isCliSession } from "./cliManager";
  * On older VS Code versions the provider is skipped silently (the copy flow
  * still works); this extension never writes to client settings files.
  */
-export const MCP_PROVIDER_ID = "repoise.stdio";
+const MCP_PROVIDER_ID = "repoise.stdio";
 
 export function registerMcpProvider(
   context: vscode.ExtensionContext,

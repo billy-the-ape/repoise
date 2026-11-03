@@ -5,7 +5,6 @@ import { runCli } from "../core/run";
 import { CliSession, CliFailure, isCliSession } from "../core/cliSession";
 import { log, truncate } from "./output";
 
-export type { CliSession, CliFailure };
 export { isCliSession };
 
 export class CliManager implements vscode.Disposable {
@@ -44,7 +43,7 @@ export class CliManager implements vscode.Disposable {
         )
       : [];
     const discovery = discoverCli({
-      override: override.trim(),
+      override,
       workspaceRoots,
     });
     if (!discovery.ok || discovery.path === undefined) {
