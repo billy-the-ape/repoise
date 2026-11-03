@@ -161,14 +161,16 @@ export function validateEventStream(events, { operation, root }) {
       problems.push(`event type is not a string ${where}`);
       return;
     }
+    // Every run opens with "started" even when the producer uses unknown
+    // additive types, so this is checked before the unknown-type skip.
+    if (position === 0 && type !== "started")
+      problems.push(`the first event must be "started", got "${type}"`);
     if (!KNOWN_EVENT_TYPES.includes(type)) {
       // Additive compatibility: unknown event types are ignored, but the
       // envelope fields above still apply.
       return;
     }
     if (position === 0) {
-      if (type !== "started")
-        problems.push(`the first event must be "started", got "${type}"`);
       if (event?.payload?.operation !== operation)
         problems.push(
           `the started event reports operation ${JSON.stringify(
@@ -355,6 +357,24 @@ export const eventStreamFixtures = {
         operation: "watch",
         scope: fixtureScope,
         reason: "signal",
+      }),
+    ],
+  },
+  // An unknown additive type in the first slot: the envelope is valid and
+  // the single terminal event is last, but the run must open with
+  // "started", so this stream must be rejected.
+  unknownFirstEvent: {
+    operation: "watch",
+    root: fixtureScope.root,
+    events: [
+      envelope("watch-47-9", 0, "experimental-metric", {
+        operation: "watch",
+        value: 7,
+      }),
+      envelope("watch-47-9", 1, "completed", {
+        operation: "watch",
+        scope: fixtureScope,
+        result: {},
       }),
     ],
   },

@@ -87,6 +87,21 @@ test("unknown additive event types are tolerated in a valid stream", () => {
   );
 });
 
+test("an unknown type at position 0 still violates the started-first rule", () => {
+  const fixture = eventStreamFixtures.unknownFirstEvent;
+  const verdict = validateEventStream(fixture.events, {
+    operation: fixture.operation,
+    root: fixture.root,
+  });
+  assert.equal(verdict.ok, false);
+  assert.ok(
+    verdict.problems.some((problem) =>
+      problem.includes('the first event must be "started"'),
+    ),
+    `expected the started-first problem: ${verdict.problems}`,
+  );
+});
+
 test("a stream without a terminal event is incomplete output", () => {
   const fixture = eventStreamFixtures.missingTerminal;
   const verdict = validateEventStream(fixture.events, {
