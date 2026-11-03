@@ -15,7 +15,10 @@ export class CliManager implements vscode.Disposable {
   constructor(private readonly output: vscode.OutputChannel) {}
 
   resolve(force = false): Promise<CliSession | CliFailure> {
-    if (!force && this.cached !== null) {
+    // A cached failure is always re-probed: after installing the CLI or
+    // fixing PATH, the next action (refresh, index, watch start, MCP)
+    // recovers without a window reload or a settings change.
+    if (!force && this.cached !== null && isCliSession(this.cached)) {
       return Promise.resolve(this.cached);
     }
     return this.refresh();

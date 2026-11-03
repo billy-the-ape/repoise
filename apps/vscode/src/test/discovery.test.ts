@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { binBasename, discoverCli } from "../core/discovery";
+import { binBasenames, discoverCli } from "../core/discovery";
 
 test("override wins and is reported; a missing override never falls through", () => {
   const files = new Set(["/opt/bin/repoise", "/usr/bin/repoise"]);
@@ -75,8 +75,74 @@ test("not-found lists every searched location", () => {
   assert.ok(result.searched.includes(join("/usr/bin", "repoise")));
 });
 
-test("binBasename follows the platform", () => {
-  assert.equal(binBasename("win32"), "repoise.cmd");
-  assert.equal(binBasename("linux"), "repoise");
-  assert.equal(binBasename("darwin"), "repoise");
+test("binBasenames follows the platform", () => {
+  assert.deepEqual(binBasenames("win32"), ["repoise.cmd", "repoise.exe"]);
+  assert.deepEqual(binBasenames("linux"), ["repoise"]);
+  assert.deepEqual(binBasenames("darwin"), ["repoise"]);
+});
+
+test("PATH fallback finds a native repoise.exe on win32", () => {
+  const dir = "C:\\native";
+  const candidate = join(dir, "repoise.exe");
+  const result = discoverCli(
+    { workspaceRoots: [] },
+    {
+      platform: "win32",
+      env: { PATH: `C:\\tools;${dir}` },
+      isFile: (p: string) => p === candidate,
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.source, "path");
+  assert.equal(result.path, candidate);
+});
+
+test("on win32 the npm shim wins in the same directory as repoise.exe", () => {
+  const dir = "C:\\both";
+  const shim = join(dir, "repoise.cmd");
+  const exe = join(dir, "repoise.exe");
+  const result = discoverCli(
+    { workspaceRoots: [] },
+    {
+      platform: "win32",
+      env: { PATH: dir },
+      isFile: (p: string) => p === shim || p === exe,
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.path, shim);
+});
+
+test("on win32 PATH directory order is preserved across bin names", () => {
+  const exeDir = "C:\\native";
+  const shimDir = "C:\\npm";
+  const shim = join(shimDir, "repoise.cmd");
+  const exe = join(exeDir, "repoise.exe");
+  const result = discoverCli(
+    { workspaceRoots: [] },
+    {
+      platform: "win32",
+      env: { PATH: `${exeDir};${shimDir}` },
+      isFile: (p: string) => p === shim || p === exe,
+    },
+  );
+  // The exe's directory comes first in PATH, so it wins over the shim in a
+  // later directory.
+  assert.equal(result.ok, true);
+  assert.equal(result.path, exe);
+});
+
+test("a repoise.exe in a workspace .bin resolves when no shim exists", () => {
+  const candidate = join("C:\\ws", "node_modules", ".bin", "repoise.exe");
+  const result = discoverCli(
+    { workspaceRoots: ["C:\\ws"] },
+    {
+      platform: "win32",
+      env: { PATH: "" },
+      isFile: (p: string) => p === candidate,
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.source, "workspace-package");
+  assert.equal(result.path, candidate);
 });

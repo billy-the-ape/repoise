@@ -9,9 +9,12 @@ import { join } from "node:path";
  *      set but missing, so a mistyped path is reported instead of silently
  *      running a different binary;
  *   2. a repository-local package install (`node_modules/.bin/repoise` under
- *      a workspace folder, preferred when unambiguous);
+ *      a workspace folder — `repoise.cmd` or `repoise.exe` on Windows,
+ *      preferred when unambiguous);
  *   3. PATH lookup in the extension host (remote-aware: the extension host
- *      runs where the workspace filesystem lives).
+ *      runs where the workspace filesystem lives), probing `repoise.cmd`
+ *      and `repoise.exe` on Windows so npm shims, native-archive installs
+ *      and `cargo install` all resolve.
  *
  * Resolution is pure filesystem stat over argument-free paths: no shell, no
  * package-manager download, no execution of repository content.
@@ -42,10 +45,12 @@ export interface DiscoveryResult {
   searched: string[];
 }
 
-export function binBasename(
+export function binBasenames(
   platform: NodeJS.Platform = process.platform,
-): string {
-  return platform === "win32" ? "repoise.cmd" : "repoise";
+): string[] {
+  // npm shim first, then the native archive / `cargo install` executable
+  // (scripts/release/common.mjs installs repoise.exe on Windows).
+  return platform === "win32" ? ["repoise.cmd", "repoise.exe"] : ["repoise"];
 }
 
 function defaultIsFile(path: string): boolean {
@@ -75,7 +80,6 @@ export function discoverCli(
 ): DiscoveryResult {
   const platform = deps.platform ?? process.platform;
   const isFile = deps.isFile ?? defaultIsFile;
-  const basename = binBasename(platform);
   const searched: string[] = [];
   const override = (input.override ?? "").trim();
 
@@ -95,24 +99,28 @@ export function discoverCli(
     if (root.length === 0) {
       continue;
     }
-    const candidate = join(root, "node_modules", ".bin", basename);
-    searched.push(candidate);
-    if (isFile(candidate)) {
-      return {
-        ok: true,
-        path: candidate,
-        source: "workspace-package",
-        searched,
-      };
+    for (const basename of binBasenames(platform)) {
+      const candidate = join(root, "node_modules", ".bin", basename);
+      searched.push(candidate);
+      if (isFile(candidate)) {
+        return {
+          ok: true,
+          path: candidate,
+          source: "workspace-package",
+          searched,
+        };
+      }
     }
   }
 
   const env = deps.env ?? process.env;
   for (const dir of pathEntries(env, platform)) {
-    const candidate = join(dir, basename);
-    searched.push(candidate);
-    if (isFile(candidate)) {
-      return { ok: true, path: candidate, source: "path", searched };
+    for (const basename of binBasenames(platform)) {
+      const candidate = join(dir, basename);
+      searched.push(candidate);
+      if (isFile(candidate)) {
+        return { ok: true, path: candidate, source: "path", searched };
+      }
     }
   }
 

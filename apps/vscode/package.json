@@ -34,7 +34,8 @@
   "contributes": {
     "mcpServerDefinitionProviders": [
       {
-        "id": "repoise.stdio"
+        "id": "repoise.stdio",
+        "label": "Repoise"
       }
     ],
     "commands": [

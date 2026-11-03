@@ -15,10 +15,14 @@ arrays and renders the AP-02 machine contracts
 ## What it does
 
 - **CLI discovery** (`repoise.cliPath` override → repository-local
-  `node_modules/.bin/repoise` per workspace folder → PATH), then a
-  `capabilities --json` handshake that reports version, compatibility
-  problems and the source that was selected. A missing or broken binary is a
-  panel error, never an implicit download.
+  `node_modules/.bin/repoise` per workspace folder → PATH; on Windows both
+  `repoise.cmd` and `repoise.exe` are probed, so npm installs, native-archive
+  installs and `cargo install` all resolve), then a `capabilities --json`
+  handshake that reports version, compatibility problems and the source that
+  was selected. A missing or broken binary is a panel error, never an implicit
+  download. A failed discovery is re-probed on the next action (refresh,
+  index, watch start, MCP), so installing the CLI or fixing PATH recovers
+  without a window reload.
 - **Status panel** (one webview; `repoise.showStatus`): one entry per
   workspace folder/root parsed from `status --json` (exit 0 or 3 are
   parseable; exit 3 = index missing/stale). Shows scope, snapshot, index
