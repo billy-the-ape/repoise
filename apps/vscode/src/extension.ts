@@ -20,6 +20,11 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const panel = new StatusPanel(cli, watch, output);
 
+  // VS Code caches the MCP provider's definitions; the emitter (returned
+  // when the host supports 1.103+ MCP discovery) tells it to re-query when
+  // trust, settings or workspace folders change.
+  const mcpNotify = registerMcpProvider(context, cli);
+
   // Repository-local binaries and repository content only run when the
   // workspace is trusted; opening an untrusted checkout never launches them.
   const guard =
@@ -81,14 +86,23 @@ export function activate(context: vscode.ExtensionContext): void {
         watch.stop(folder.uri.fsPath);
       }
       void panel.syncRoots();
+      // The per-folder MCP definitions changed with the folder list.
+      mcpNotify?.fire();
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("repoise")) {
         cli.invalidate();
+        // The cached CLI session is gone; the next provider query
+        // re-resolves it, so ask VS Code to re-query the definitions.
+        mcpNotify?.fire();
       }
     }),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      // The provider returned [] while untrusted; re-query now that
+      // repository-local CLI resolution is allowed again.
+      mcpNotify?.fire();
+    }),
   );
-  registerMcpProvider(context, cli);
   context.subscriptions.push(panel, watch, cli);
 }
 

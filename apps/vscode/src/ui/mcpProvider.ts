@@ -18,7 +18,7 @@ const MCP_PROVIDER_ID = "repoise.stdio";
 export function registerMcpProvider(
   context: vscode.ExtensionContext,
   cli: CliManager,
-): vscode.Disposable | null {
+): vscode.EventEmitter<void> | null {
   // The `lm` namespace only exists on VS Code 1.103+; older hosts activate
   // the extension (for the commands) but must not crash on it.
   const lmApi = (
@@ -30,6 +30,7 @@ export function registerMcpProvider(
             provideMcpServerDefinitions: () =>
               | Promise<McpStdioServerDefinitionLike[]>
               | McpStdioServerDefinitionLike[];
+            onDidChangeMcpServerDefinitions?: vscode.Event<void>;
           },
         ) => vscode.Disposable;
       };
@@ -46,6 +47,11 @@ export function registerMcpProvider(
     args: string[];
     env?: Record<string, string>;
   }
+
+  // VS Code caches the provider's result; this event tells it to re-query
+  // when trust, settings or workspace folders change (see extension.ts).
+  const changeEmitter = new vscode.EventEmitter<void>();
+  context.subscriptions.push(changeEmitter);
 
   const provider = {
     provideMcpServerDefinitions: async (): Promise<
@@ -82,6 +88,7 @@ export function registerMcpProvider(
       }
       return definitions;
     },
+    onDidChangeMcpServerDefinitions: changeEmitter.event,
   };
   // The provider id is declared under contributes.mcpServerDefinitionProviders
   // in package.json; registration is still guarded because hosts may expose
@@ -92,7 +99,7 @@ export function registerMcpProvider(
       provider,
     );
     context.subscriptions.push(disposable);
-    return disposable;
+    return changeEmitter;
   } catch {
     return null;
   }

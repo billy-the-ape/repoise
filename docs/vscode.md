@@ -50,7 +50,11 @@ arrays and renders the AP-02 machine contracts
   provide it (1.103+). Registering with VS Code does not configure every
   installed agent; the panel also offers a generic stdio `mcpServers` JSON
   snippet for Cline/Codex-style clients. The extension never writes to
-  client settings files.
+  client settings files. The provider fires
+  `onDidChangeMcpServerDefinitions` when the workspace is trusted, when a
+  `repoise` setting changes, or when workspace folders are added or
+  removed, so VS Code re-queries the definitions (binary,
+  `--allow-refresh`, folder list) without a window reload.
 - **Trust gating**: repository-local binaries only run in a trusted
   workspace. The extension activates in Restricted Mode with
   `untrustedWorkspaces.supported: limited` and `repoise.cliPath` as a
