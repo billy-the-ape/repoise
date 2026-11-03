@@ -1,6 +1,6 @@
 {
   "name": "@repoise/agent-adapter-protocol",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "description": "Repoise agent adapter protocol v1: the coordinator host that launches external agent adapters, performs the capability handshake, enforces bounded NDJSON streaming, cancels owned process trees and accounts usage. Schema: schemas/adapter-request.v1.schema.json and schemas/adapter-events.v1.schema.json. See docs/agent-adapters.md.",
   "type": "module",
