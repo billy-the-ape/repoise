@@ -11,6 +11,7 @@ not complete the v1 indexing acceptance criteria.
 | [Initial alpha status](alpha-0-status.md) | Completed operations, evidence and remaining bootstrap steps     |
 | [Alpha-1 status](alpha-1-status.md)       | Alpha.1 publication execution record and verified checks         |
 | [Alpha-1 readiness](alpha-1-readiness.md) | Preview readiness verification and registry-install status       |
+| [Alpha-2 candidate](alpha-2-candidate.md) | Prepared candidate readiness record (not published)              |
 
 The functional [0.1.0-alpha.1 preview](alpha-1-status.md) is published as native
 prerelease archives and under both npm `latest` and `next` (the `latest`
@@ -18,6 +19,11 @@ dist-tag was promoted on October 19, 2026). Read execution records before any
 recovery operation; do not replay completed publications. The alpha.0 record
 is historical.
 Update it after verified registry changes. For later versions, follow the repeatable runbooks.
+The [0.1.0-alpha.2 candidate](alpha-2-candidate.md) is prepared in-repo
+(version synchronization, AP-07 machine-contract fixtures and extended
+packaged-consumer smoke) but is **not published**: no tag, registry write or
+release dispatch exists for it yet, and fresh public-registry installation
+evidence remains unmeasured.
 
 ## Targets and readiness
 
@@ -107,11 +113,20 @@ finding the expected doc and code hits, exact `read` back of the expected text, 
 `check --fresh` reporting a fresh index, and a stdio MCP session (protocol initialization,
 initialized notification, tool discovery, search/read/status calls with CLI-identical
 results, clean shutdown on stdin EOF) that confirms the default server hides
-`refresh_project_knowledge` and refuses an attempt to invoke it. Native functional runs use
+`refresh_project_knowledge` and refuses an attempt to invoke it. The smoke also drives the
+AP-07 first-slice contract against the installed candidate: `capabilities --json`
+(capability negotiation, not the version string, is the compatibility authority), a real
+`index --events` stream (v1 envelope, scope on `started`, exactly one terminal event),
+`watch` scope ownership with a refused second writer (`scope-owned`, `retryable: true`,
+exit 1) and bounded cancellation (SIGINT on Unix; abrupt incomplete stream on Windows),
+and rejects old/incompatible handshake fixtures with upgrade guidance while additive
+unknown fields stay tolerated (see [automation contracts](../automation.md#ap-07-first-slice-contract)).
+Native functional runs use
 no Node/npm on PATH; the generated cache is isolated per install; every subprocess is bounded
 by timeouts and the temporary tree is removed on exit, so broken MCP behavior cannot hang the
-run. The versioned config schema (`schemas/repoise.config.v1.schema.json`) ships in both
-installed forms and must match the committed source; tree-sitter parser grammars are compiled
+run. The versioned config schema (`schemas/repoise.config.v1.schema.json`) and the
+machine-contract schemas (`capabilities.v1.schema.json`, `event-stream.v1.schema.json`) ship
+in both installed forms and must match the committed source; tree-sitter parser grammars are compiled
 into the native binary, so no parser asset resolves from the source checkout. Fresh public-registry installation and CLI/MCP checks passed on macOS ARM64
 for alpha.1. Linux/Windows public-registry installs remain unmeasured.
 

@@ -20,10 +20,12 @@ chmodSync(join(directory, "bin", spec.binary), 0o755);
 cpSync(join(root, "LICENSE"), join(directory, "LICENSE"));
 const schemas = join(directory, "schemas");
 mkdirSync(schemas, { recursive: true });
-cpSync(
-  join(root, "schemas/repoise.config.v1.schema.json"),
-  join(schemas, "repoise.config.v1.schema.json"),
-);
+for (const schema of [
+  "repoise.config.v1.schema.json",
+  "capabilities.v1.schema.json",
+  "event-stream.v1.schema.json",
+])
+  cpSync(join(root, `schemas/${schema}`), join(schemas, schema));
 writeFileSync(
   join(directory, "README.md"),
   `# Repoise native binary\n\n${spec.target}; version ${version}. Offline docs+code lexical index, exact reads and stdio MCP; no Node/npm required. MIT licensed.\n`,

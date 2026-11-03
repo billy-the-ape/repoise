@@ -121,19 +121,25 @@ export function verifyVersion(tag) {
     readFileSync(new URL("../../npm/repoise/LICENSE", import.meta.url), "utf8")
   )
     throw new Error("License copies differ");
-  if (
-    readFileSync(
-      new URL("../../schemas/repoise.config.v1.schema.json", import.meta.url),
-      "utf8",
-    ) !==
-    readFileSync(
-      new URL(
-        "../../npm/repoise/schemas/repoise.config.v1.schema.json",
-        import.meta.url,
-      ),
-      "utf8",
+  // The launcher ships the versioned config schema and the machine-contract
+  // schemas (capabilities and event stream); every copy must match the
+  // committed source exactly.
+  for (const schema of [
+    "repoise.config.v1.schema.json",
+    "capabilities.v1.schema.json",
+    "event-stream.v1.schema.json",
+  ]) {
+    if (
+      readFileSync(
+        new URL(`../../schemas/${schema}`, import.meta.url),
+        "utf8",
+      ) !==
+      readFileSync(
+        new URL(`../../npm/repoise/schemas/${schema}`, import.meta.url),
+        "utf8",
+      )
     )
-  )
-    throw new Error("Config schema copies differ");
+      throw new Error(`Schema copies differ for ${schema}`);
+  }
   return version;
 }
