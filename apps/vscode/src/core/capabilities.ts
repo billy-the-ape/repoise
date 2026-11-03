@@ -98,8 +98,8 @@ export function parseCapabilities(raw: string | unknown): CapabilitiesParse {
     ok: true,
     doc: {
       schemaVersion: doc.schemaVersion,
-      name: doc.name as string,
-      version: doc.version as string,
+      name: doc.name,
+      version: doc.version,
       eventStream: {
         schema:
           typeof eventStream.schema === "string" ? eventStream.schema : "",

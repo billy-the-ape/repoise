@@ -126,6 +126,16 @@ export class StatusPanel implements vscode.Disposable {
       case "ready":
         await this.syncRoots();
         break;
+      case "select-root":
+        if (
+          message.path !== undefined &&
+          this.roots.some((r) => r.path === message.path)
+        ) {
+          this.selected = message.path;
+          await this.refreshSelected();
+          void this.maybeAutoStartWatch();
+        }
+        break;
       case "refresh":
         await this.refreshAll();
         break;
@@ -175,6 +185,33 @@ export class StatusPanel implements vscode.Disposable {
       void this.refreshSelected();
     }
     this.sendState();
+    void this.maybeAutoStartWatch();
+  }
+
+  /**
+   * `repoise.watch.autoStart`: start an extension-owned watch for the
+   * selected root when the panel opens or the selection changes. The watch
+   * supervisor probes the authoritative scope lock first, so this never
+   * spawns a competing writer, and restarts stay bounded.
+   */
+  private async maybeAutoStartWatch(): Promise<void> {
+    const path = this.selected;
+    if (path === null) {
+      return;
+    }
+    const autoStart =
+      vscode.workspace
+        .getConfiguration("repoise")
+        .get<boolean>("watch.autoStart") ?? false;
+    if (
+      !autoStart ||
+      this.watch.isRunning(path) ||
+      this.watch.timerPending(path)
+    ) {
+      return;
+    }
+    this.pushLog(`auto-starting owned watch for ${path}`);
+    await this.watch.start(path);
   }
 
   async refreshAll(): Promise<void> {

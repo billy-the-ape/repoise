@@ -24,6 +24,11 @@
     "onStartupFinished"
   ],
   "contributes": {
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "repoise.stdio"
+      }
+    ],
     "commands": [
       {
         "command": "repoise.showStatus",

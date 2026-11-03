@@ -58,6 +58,11 @@ export class WatchManager implements vscode.Disposable {
     return this.runs.has(root);
   }
 
+  /** True while a bounded restart backoff is pending for the root. */
+  timerPending(root: string): boolean {
+    return this.timers.has(root);
+  }
+
   async start(root: string): Promise<void> {
     if (this.runs.has(root) || this.timers.has(root)) {
       return;
@@ -98,7 +103,7 @@ export class WatchManager implements vscode.Disposable {
 
   private spawn(root: string, binary: string, attempt: number): void {
     const info = this.info(root);
-    info.status = attempt === 1 ? "starting" : "waiting-restart";
+    info.status = "starting";
     info.attempts = attempt;
     info.nextRestartAtMs = null;
     this.callbacks.onStateChange(root);
@@ -196,8 +201,14 @@ export class WatchManager implements vscode.Disposable {
     }
     const handle = this.runs.get(root);
     if (handle !== undefined) {
+      // The cooperative cancel yields a terminal `cancelled` event, which
+      // drives the final status refresh through onCliEvent.
       handle.cancel();
+      return;
     }
+    // No live process (e.g. backoff in progress): clear the pending restart
+    // so the state does not claim a countdown that will never fire.
+    this.setOutcome(root, "stopped", "watch stopped by user");
   }
 
   /** Cancel every owned watch (window reload, deactivation, root disposal). */

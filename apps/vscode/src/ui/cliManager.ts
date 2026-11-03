@@ -68,7 +68,7 @@ export class CliManager implements vscode.Disposable {
       const searched = discovery.searched.slice(-5).join(", ");
       const message =
         discovery.problem === "override-not-found"
-          ? `repoise.cliPath points at ${discovery.path}, which is not a file. Fix the setting or clear it to fall back to local/PATH discovery.`
+          ? `repoise.cliPath points at ${override.trim()}, which is not a file. Fix the setting or clear it to fall back to local/PATH discovery.`
           : `No repoise binary found (looked at: ${searched}). Install it (npm package, native archive or cargo install) or set repoise.cliPath. The extension never downloads a binary itself.`;
       const failure: CliFailure = {
         problem: discovery.problem ?? "not-found",

@@ -60,7 +60,7 @@ function pathEntries(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
 ): string[] {
-  const raw = (env.PATH ?? env.Path ?? "") as string;
+  const raw = env.PATH ?? env.Path ?? "";
   if (raw.length === 0) {
     return [];
   }

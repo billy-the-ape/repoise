@@ -13,6 +13,8 @@ import { CliManager, isCliSession } from "./cliManager";
  * On older VS Code versions the provider is skipped silently (the copy flow
  * still works); this extension never writes to client settings files.
  */
+export const MCP_PROVIDER_ID = "repoise.stdio";
+
 export function registerMcpProvider(
   context: vscode.ExtensionContext,
   cli: CliManager,
@@ -22,10 +24,14 @@ export function registerMcpProvider(
   const lmApi = (
     vscode as unknown as {
       lm?: {
-        registerMcpServerDefinitionProvider?: (provider: {
-          provideMcpServerDefinitions: () =>
-            Promise<McpDefinitionLike[]> | McpDefinitionLike[];
-        }) => vscode.Disposable;
+        registerMcpServerDefinitionProvider?: (
+          id: string,
+          provider: {
+            provideMcpServerDefinitions: () =>
+              | Promise<McpStdioServerDefinitionLike[]>
+              | McpStdioServerDefinitionLike[];
+          },
+        ) => vscode.Disposable;
       };
     }
   ).lm;
@@ -33,7 +39,8 @@ export function registerMcpProvider(
     return null;
   }
 
-  interface McpDefinitionLike {
+  interface McpStdioServerDefinitionLike {
+    label: string;
     name: string;
     command: string;
     args: string[];
@@ -41,7 +48,9 @@ export function registerMcpProvider(
   }
 
   const provider = {
-    provideMcpServerDefinitions: async (): Promise<McpDefinitionLike[]> => {
+    provideMcpServerDefinitions: async (): Promise<
+      McpStdioServerDefinitionLike[]
+    > => {
       if (!vscode.workspace.isTrusted) {
         return [];
       }
@@ -53,19 +62,38 @@ export function registerMcpProvider(
         vscode.workspace
           .getConfiguration("repoise")
           .get<boolean>("mcp.refresh") ?? false;
-      const definitions: McpDefinitionLike[] = [];
+      const definitions: McpStdioServerDefinitionLike[] = [];
       for (const folder of vscode.workspace.workspaceFolders ?? []) {
-        definitions.push(
-          buildMcpDefinition(session.binary, folder.uri.fsPath, {
+        const definition = buildMcpDefinition(
+          session.binary,
+          folder.uri.fsPath,
+          {
             refresh,
             worktreeId: cli.worktreeIdFor(folder.uri.fsPath),
-          }),
+          },
         );
+        definitions.push({
+          label: `Repoise (${definition.name})`,
+          name: definition.name,
+          command: definition.command,
+          args: definition.args,
+          ...(definition.env !== undefined ? { env: definition.env } : {}),
+        });
       }
       return definitions;
     },
   };
-  const disposable = lmApi.registerMcpServerDefinitionProvider(provider);
-  context.subscriptions.push(disposable);
-  return disposable;
+  // The provider id is declared under contributes.mcpServerDefinitionProviders
+  // in package.json; registration is still guarded because hosts may expose
+  // the API without the contribution being recognized.
+  try {
+    const disposable = lmApi.registerMcpServerDefinitionProvider(
+      MCP_PROVIDER_ID,
+      provider,
+    );
+    context.subscriptions.push(disposable);
+    return disposable;
+  } catch {
+    return null;
+  }
 }

@@ -51,7 +51,7 @@ arrays and renders the AP-02 machine contracts
 | Setting                  | Default | Meaning                                                        |
 | ------------------------ | ------- | -------------------------------------------------------------- |
 | `repoise.cliPath`        | `""`    | Explicit binary override; a missing path is an error, not a fallback |
-| `repoise.autoWatch`      | `false` | Start an owned watch for the selected root when the panel opens |
+| `repoise.watch.autoStart`| `false` | Start an owned watch for the selected root when the panel opens or the root selection changes |
 | `repoise.mcp.refresh`    | `false` | Include `--allow-refresh` in MCP definitions                  |
 
 ## Development and tests

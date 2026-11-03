@@ -59,6 +59,33 @@ function splitLines(
   }
 }
 
+/**
+ * Windows .cmd/.bat shims cannot be spawned directly: since Node
+ * 18.20.2 / 20.12.2 (CVE-2024-27980) doing so throws EINVAL. Route them
+ * through `cmd.exe /d /s /c` with strictly escaped arguments — the npm
+ * shims still receive their argument array, and no shell parsing of our
+ * values happens (every argument is quoted and embedded quotes are
+ * backslash-escaped per the cmd quoting rules).
+ */
+export function buildWindowsShimInvocation(
+  binary: string,
+  args: string[],
+): { binary: string; args: string[] } {
+  const escaped = args.map((arg) => {
+    const quoted = `"${arg.replace(/"/g, '\\"')}"`;
+    return /[ \t"]/.test(arg) ? quoted : arg;
+  });
+  return { binary: "cmd.exe", args: ["/d", "/s", "/c", binary, ...escaped] };
+}
+
+function needsWindowsShim(platform: NodeJS.Platform, binary: string): boolean {
+  return (
+    platform === "win32" &&
+    (binary.toLowerCase().endsWith(".cmd") ||
+      binary.toLowerCase().endsWith(".bat"))
+  );
+}
+
 export function runCli(options: CliRunOptions): CliRunHandle {
   const platform = options.platform ?? process.platform;
   const state = {
@@ -130,11 +157,26 @@ export function runCli(options: CliRunOptions): CliRunHandle {
     resolve = r;
   });
 
-  child = (options.spawnImpl ?? spawn)(options.binary, options.args, {
-    cwd: options.cwd,
-    env: options.env ?? process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  let launchBinary = options.binary;
+  let launchArgs = options.args;
+  if (needsWindowsShim(platform, launchBinary)) {
+    const shim = buildWindowsShimInvocation(launchBinary, launchArgs);
+    launchBinary = shim.binary;
+    launchArgs = shim.args;
+  }
+  try {
+    child = (options.spawnImpl ?? spawn)(launchBinary, launchArgs, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (err) {
+    // Synchronous spawn failures (e.g. EINVAL when a Windows .cmd shim is
+    // spawned without a shell) never reach the 'error' event.
+    state.spawnError = err instanceof Error ? err.message : String(err);
+    finish(null, null);
+    return handle;
+  }
   handle.pid = child.pid ?? null;
 
   child.stdout?.setEncoding("utf8");

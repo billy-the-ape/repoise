@@ -126,6 +126,7 @@ export function buildHtml(): string {
     if (m && m.type === "state") { render(m.payload); }
   });
   $("refresh").onclick = () => vscode.postMessage({ type: "refresh" });
+  $("root").onchange = () => vscode.postMessage({ type: "select-root", path: $("root").value });
   $("index").onclick = () => vscode.postMessage({ type: "index" });
   $("watch-start").onclick = () => vscode.postMessage({ type: "watch-start" });
   $("watch-stop").onclick = () => vscode.postMessage({ type: "watch-stop" });

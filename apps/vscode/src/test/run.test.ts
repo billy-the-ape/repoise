@@ -1,7 +1,8 @@
+import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseCapabilities } from "../core/capabilities";
-import { runCli } from "../core/run";
+import { buildWindowsShimInvocation, runCli } from "../core/run";
 import { FAKE, runFake } from "./helpers";
 
 test("capabilities --json returns a parseable machine document", async () => {
@@ -135,4 +136,74 @@ test("spawn failure surfaces as a spawnError without throwing", async () => {
   const missingResult = await missing.promise;
   assert.equal(missingResult.exitCode, null);
   assert.notEqual(missingResult.spawnError, null);
+});
+
+test("Windows .cmd shims route through cmd.exe with escaped arguments", () => {
+  const invocation = buildWindowsShimInvocation("/tools/repoise.cmd", [
+    "index",
+    "/a b/c root",
+    'quote"arg',
+  ]);
+  assert.equal(invocation.binary, "cmd.exe");
+  assert.deepEqual(invocation.args.slice(0, 4), [
+    "/d",
+    "/s",
+    "/c",
+    "/tools/repoise.cmd",
+  ]);
+  assert.equal(invocation.args[4], "index");
+  assert.equal(invocation.args[5], '"/a b/c root"');
+  assert.equal(invocation.args[6], '"quote\\"arg"');
+});
+
+test("runCli rewrites .cmd binaries to the cmd.exe invocation on win32", () => {
+  let captured: { binary: string; args: string[] } | null = null;
+  const capture = (): { binary: string; args: string[] } | null => captured;
+  const dummyChild = {
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    stdout: null,
+    stderr: null,
+    on: () => undefined,
+    kill: () => true,
+  } as unknown as import("node:child_process").ChildProcess;
+  const handle = runCli({
+    binary: "/tools/repoise.cmd",
+    args: ["index", "/a b/c root"],
+    platform: "win32",
+    // A structurally valid dummy child; the promise is never awaited here.
+    spawnImpl: ((binary: string, args: string[]) => {
+      captured = { binary, args };
+      return dummyChild;
+    }) as unknown as typeof spawn,
+  });
+  void handle;
+  const call = capture();
+  if (call === null) {
+    throw new Error("spawnImpl was never invoked");
+  }
+  assert.equal(call.binary, "cmd.exe");
+  assert.deepEqual(call.args, [
+    "/d",
+    "/s",
+    "/c",
+    "/tools/repoise.cmd",
+    "index",
+    '"/a b/c root"',
+  ]);
+});
+
+test("synchronous spawn failure settles with a spawnError", async () => {
+  const handle = runCli({
+    binary: "/tools/repoise.cmd",
+    args: ["index"],
+    platform: "win32",
+    spawnImpl: () => {
+      throw new Error("spawn EINVAL");
+    },
+  });
+  const result = await handle.promise;
+  assert.equal(result.exitCode, null);
+  assert.equal(result.spawnError, "spawn EINVAL");
 });

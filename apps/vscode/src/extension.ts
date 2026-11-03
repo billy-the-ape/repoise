@@ -32,7 +32,8 @@ export function activate(context: vscode.ExtensionContext): void {
           "Dismiss",
         );
         if (trust === "Trust workspace") {
-          await vscode.commands.executeCommand("workbench.trust");
+          // Opens VS Code's trust management dialog.
+          await vscode.commands.executeCommand("workbench.trust.manage");
         }
         return;
       }
