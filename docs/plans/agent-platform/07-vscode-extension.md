@@ -8,6 +8,16 @@ current-state guide at [docs/vscode.md](../../vscode.md)). The benchmark UI
 Home: `apps/vscode/`. May split into operations UI and benchmark UI PRs while
 retaining this boundary. No marketplace identity or publication is authorized.
 
+Candidate preparation (2026-11-03): the 0.1.0-alpha.2 candidate is prepared in
+repo — distinguishable from the published alpha.1, with the first-slice
+machine contract documented in
+[docs/automation.md#ap-07-first-slice-contract](../../automation.md#ap-07-first-slice-contract),
+compatibility fixtures in `scripts/release/ap07-contract.mjs` and the
+packaged-consumer smoke extended to drive the installed candidate's
+capabilities/events/ownership contracts. The candidate is not published; see
+the [candidate readiness record](../../publish/alpha-2-candidate.md). The
+extension work itself remains proposed.
+
 ## Outcome and architectural boundary
 
 Provide a simple way to inspect setup/freshness/coverage, run indexing, manage

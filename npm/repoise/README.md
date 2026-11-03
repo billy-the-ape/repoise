@@ -1,9 +1,12 @@
 # Repoise
 
-Offline-first repository knowledge for coding agents. Version 0.1.0-alpha.1 is
-a functional preview: docs/code indexing, lexical search, exact source reads,
-freshness checks, watch, managed agent guidance and a stdio MCP server.
-The older 0.1.0-alpha.0 release contains only the initial CLI scaffold.
+Offline-first repository knowledge for coding agents. Version 0.1.0-alpha.2
+is the prepared prerelease candidate (not yet published; 0.1.0-alpha.1
+remains the published preview): docs/code indexing, lexical search, exact
+source reads, freshness checks, watch, managed agent guidance, a stdio MCP
+server and the AP-02 automation contracts (`capabilities`, `--events`
+streams, stable exit codes, scope ownership). The older 0.1.0-alpha.0
+release contains only the initial CLI scaffold.
 
 The launcher runs a native Rust CLI on Linux x64 GNU, macOS ARM64 and Windows
 x64 MSVC. Linux musl, macOS Intel and other targets are unsupported by the

@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### 0.1.0-alpha.2 candidate preparation (not published)
+
+Prepared the next distinguishable prerelease candidate so installed CLIs stop
+identifying as the published 0.1.0-alpha.1, which predates the AP-02
+automation contracts. This is preparation only: no publication, tag push,
+registry write or release dispatch occurs.
+
+- Synchronized every coupled version to `0.1.0-alpha.2` (the next unused
+  prerelease; tags and all four npm registry versions stop at
+  0.1.0-alpha.1): workspace `Cargo.toml`/`Cargo.lock`, root `package.json`,
+  `npm/repoise/package.json` with its exact optional native pins, and the
+  two private adapter packages. `verifyVersion` enforces the agreement.
+- Documented the minimum AP-07 first-slice machine contract in
+  [docs/automation.md](docs/automation.md): the capabilities handshake
+  (features `event-stream`/`mcp-stdio`/`exclusive-scope-lock`, event-stream
+  v1 with `index`/`watch`, stable exit codes, additive compatibility), the
+  v1 event envelope with its single terminal event, and writer ownership via
+  `status --json` (`writer` + descriptive `owner`, `scope-owned` refusal,
+  bounded cancellation). Version is identity; capability negotiation is the
+  authority — consumers must reject incompatible handshakes with actionable
+  upgrade guidance rather than infer support from a version string.
+- New machine-contract module and fixtures: `scripts/release/ap07-contract.mjs`
+  (handshake check, event-stream validation, old/incompatible and additive
+  fixtures) with unit tests in `scripts/release/ap07-contract.test.mjs`.
+- The machine-contract schemas (`capabilities.v1.schema.json`,
+  `event-stream.v1.schema.json`) now ship with the installed launcher and
+  every native archive alongside the config schema; tag validation verifies
+  all three copies match the committed source.
+- Extended the offline packaged-consumer smoke to drive the real installed
+  candidate: `capabilities --json` against the minimum contract, a real
+  `index --events` stream (envelope, scope, exactly one terminal event),
+  `watch` scope ownership with a refused second writer, and bounded
+  cancellation (SIGINT on Unix; abrupt incomplete stream on Windows), in both
+  installed forms, plus the old-CLI compatibility fixtures.
+- Added the candidate readiness record
+  ([docs/publish/alpha-2-candidate.md](docs/publish/alpha-2-candidate.md))
+  distinguishing source implementation, packed-artifact validation,
+  fresh public-registry installation (unmeasured), benchmark smoke
+  (mechanics only) and the open section 11 adoption gates, with the
+  proposed stable-core scope recorded as a pending owner decision.
+
+No new environment variables, settings, migrations or deployment actions.
+The candidate is untested against a public registry until an authorized
+publication runs.
+
 ### VS Code operations extension (AP-07 first slice, development build)
 
 New `apps/vscode/` workspace package: a thin VS Code extension that

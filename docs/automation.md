@@ -208,6 +208,44 @@ through supported MCP protocol mechanisms and negotiated capabilities (see
 - The checked-in schemas under `schemas/` are the normative definitions for
   each version.
 
+## AP-07 first-slice contract
+
+The first slice of the AP-07 operations UI (and any other unattended
+consumer) is a compatibility consumer of exactly these surfaces. Version
+is identity; capability negotiation is the authority — an alpha.1-looking
+version predates these surfaces, and a newer version string never grants
+support on its own. A consumer that misses any of the following must reject
+the handshake with actionable upgrade guidance instead of guessing:
+
+- `capabilities --json` (schemaVersion 1) advertises the always-present
+  features `event-stream`, `mcp-stdio` and `exclusive-scope-lock`, an
+  `eventStream` section with version 1 and operations `index`/`watch`, the
+  stable `exitCodes` table and `compatibility.supportedEventStreamVersions`
+  containing 1. The `benchmark.nodeCompanion` section additionally documents
+  the optional Node companion for AP-04 trials; native operation never needs
+  it.
+- The event stream follows the v1 envelope above: a `started` event
+  carrying the resolved `scope` (reject the run on a scope mismatch before
+  relying on the stream), phase-scoped `progress`, `heartbeat`, and exactly
+  one terminal event. A stream without its terminal event is incomplete
+  output (abrupt process death), never a success.
+- Writer ownership comes from `status --json`: the authoritative `writer`
+  field (`lock_held`, `state` `owned`/`busy`/`stale-metadata`/`free`) plus
+  the descriptive `owner` marker. A refused second writer for an owned scope
+  exits 1 and, in `--events` mode, ends with a `failed` terminal event
+  (`code: "operational"`, `reason: "scope-owned"`, `retryable: true`) before
+  any work starts. `watch` cancels on SIGINT/SIGTERM (Unix) with a
+  `cancelled` terminal event (`reason: "signal"`) and exit 0; Windows
+  termination is abrupt and leaves an incomplete stream.
+- The machine-contract schemas (`capabilities.v1.schema.json` and
+  `event-stream.v1.schema.json`) ship with the installed launcher and every
+  native archive alongside the config schema, so a compatibility consumer
+  validates against the normative definitions without a source checkout.
+- Compatibility fixtures live in `scripts/release/ap07-contract.mjs` and are
+  exercised by its unit tests and the offline packaged-consumer smoke:
+  legacy/incompatible handshakes are rejected with upgrade guidance, while
+  additive unknown fields and event types remain tolerated.
+
 ## Validation
 
 - Unit tests: `crates/repoise-cli/src/events.rs` (envelope fields, sequence
@@ -222,3 +260,11 @@ through supported MCP protocol mechanisms and negotiated capabilities (see
   `status_reports_the_active_watch_owner_and_clears_it_after_exit`).
 - Existing `--json` CLI and MCP behavior is unchanged and still covered by
   the existing suites.
+- Machine contract: `scripts/release/ap07-contract.test.mjs` covers the
+  handshake checks and event-stream validation against the compatibility
+  fixtures (legacy/incompatible documents rejected with upgrade guidance,
+  additive unknown fields/events tolerated). The offline packaged-consumer
+  smoke (`scripts/release/smoke.mjs`, all supported CI platforms) drives the
+  installed candidate's `capabilities --json`, a real `index --events` run,
+  scope ownership and a refused second writer under a running `watch`, and
+  bounded cancellation, against both installed forms.
