@@ -68,6 +68,22 @@
         "supported": { "type": "boolean" },
         "command": { "type": "string" },
         "docs": { "type": "string" },
+        "nodeCompanion": {
+          "type": "object",
+          "required": ["requiredToRunTrials", "nativeOperationIndependent", "companion"],
+          "properties": {
+            "requiredToRunTrials": { "type": "boolean" },
+            "nativeOperationIndependent": { "type": "boolean" },
+            "companion": { "const": "@repoise/agent-adapter-protocol" },
+            "adapter": { "type": "string" },
+            "resolution": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1
+            },
+            "note": { "type": "string" }
+          }
+        },
         "note": { "type": "string" }
       }
     },

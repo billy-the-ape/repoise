@@ -127,6 +127,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: node scripts/release/smoke.mjs $env:CHECK_TARGET
+      - name: Smoke the installed benchmark companion (offline fake-adapter benchmark)
+        if: runner.os != 'Windows'
+        run: node scripts/release/companion-smoke.mjs "$CHECK_TARGET"
+      - name: Smoke the installed benchmark companion (offline fake-adapter benchmark)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: node scripts/release/companion-smoke.mjs $env:CHECK_TARGET
   check-macos:
     name: Check (macos-15)
     if: "!cancelled() && (needs.select.result == 'skipped' || needs.select.outputs.run_check == 'true')"

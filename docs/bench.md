@@ -6,11 +6,12 @@ against declared retrieval conditions. The coordinator owns scheduling,
 isolation, budgets, interruption and artifacts. It never implements an agent
 loop: every trial's agent process is driven through the versioned agent
 adapter protocol (AP-03, see [agent adapters](agent-adapters.md)) via the
-checked-in Node host bridge
-(`packages/agent-adapter-protocol/bin/adapter-host-run.mjs`). Native
+Node host bridge (`@repoise/agent-adapter-protocol`'s
+`bin/adapter-host-run.mjs`, resolved by the documented precedence: an explicit
+override, the installed companion, or the source checkout). Native
 orchestration (suite parsing, preflight, worktrees, MCP wiring, artifacts,
-reports) runs without Node; Node is the optional companion that is required
-only for actually launching adapter processes.
+reports) runs without Node; Node and the host bridge are the optional
+companion that is required only for actually launching adapter processes.
 
 Independent post-trial grading, paired metric comparison and report
 publishing are part of the runner (AP-05): each completed trial is graded
@@ -54,19 +55,62 @@ repoise bench report --experiment <EXPERIMENT_ID> [--output <DIR>] [--json]
   on success and `1` when the experiment id is missing or the experiment
   directory / artifacts are incomplete.
 
-Environment: `REPOISE_BENCH_HOST_BRIDGE` pins the host bridge path (default:
-the checked-in `bin/adapter-host-run.mjs` resolved from the source checkout
-the running executable was built from — the current directory is never
-consulted, and a bridge inside the benchmarked repository is rejected, since
-repository content is untrusted data and must not be executed automatically;
-point the override at an explicit bridge file in that case). A
-source-checkout build needs no environment variables; installed npm/native
-packages do not ship the host bridge and need `REPOISE_BENCH_HOST_BRIDGE`
-(pointing at the bridge file in a source checkout), and
-`REPOISE_BENCH_RUNNER` optionally overrides the suite's adapter executable.
-The experiment cache is always `<output>/<experimentId>/cache` (relocate it
-with `--output`); the coordinator's own `REPOISE_CACHE_DIR` only identifies
-the root repository's cache for the snapshot dirtiness check.
+Environment: host-bridge resolution is deterministic and trusts only
+operator-explicit choices or the source checkout this executable was built
+from, in this precedence:
+
+1. `REPOISE_BENCH_HOST_BRIDGE` — an exact `adapter-host-run.mjs` file the
+   operator named (highest priority; always trusted as an operator choice,
+   even when it points inside the benchmarked repository).
+2. `REPOISE_BENCH_COMPANION` — an explicitly installed companion package
+   root (the `@repoise/agent-adapter-protocol` distribution). The coordinator
+   validates the package name, the version (it must match the running binary),
+   and the presence of `bin/adapter-host-run.mjs` before executing it; a
+   lookalike (wrong name or version) fails preflight and is never executed.
+3. The source checkout the running executable was built from (walked up from
+   `current_exe()`), so a development build needs no environment.
+
+In every case the current directory is never consulted, no package-manager
+command is run (nothing is downloaded), and a resolved bridge inside the
+benchmarked repository is rejected — repository content is untrusted data and
+must not be executed automatically. A missing companion in an installed build
+fails preflight with an actionable message naming `REPOISE_BENCH_COMPANION`;
+native index/search/read never needs the companion. The manifest and dry-run
+record which source resolved the bridge (`override` / `companion` /
+`checkout`). `REPOISE_BENCH_RUNNER` optionally overrides the suite's adapter
+executable. The experiment cache is always `<output>/<experimentId>/cache`
+(relocate it with `--output`); the coordinator's own `REPOISE_CACHE_DIR` only
+identifies the root repository's cache for the snapshot dirtiness check.
+
+### Installing the optional benchmark companion
+
+Running agent trials needs Node on PATH and the AP-03 host bridge. A
+development build finds the bridge in its own source checkout. An installed
+native archive or npm launcher does not, so it uses the optional benchmark
+companion: the `@repoise/agent-adapter-protocol` distribution (the host bridge)
+and, for Cline trials, the separately installed, version-pinned
+`@repoise/agent-adapter-cline` adapter. The companion is packaged by
+`scripts/release/companion.mjs` into local tarballs under
+`dist/bench-companion/` (an explicit files allowlist, the protocol schemas,
+and the license; tests, fixtures, caches and the monorepo are excluded).
+These tarballs are **not published**; the install below is a proposed command
+to run locally against the built tarballs (proposed/unpublished):
+
+```sh
+# From the repository root, pack the local tarballs (proposed/unpublished):
+node scripts/release/companion.mjs
+# Install into an isolated prefix (proposed):
+npm install --prefix "$HOME/repoise-companion" --no-audit --no-fund \
+  "./dist/bench-companion/"*agent-adapter-protocol*.tgz
+# Point the coordinator at the installed package root:
+export REPOISE_BENCH_COMPANION="$HOME/repoise-companion/node_modules/@repoise/agent-adapter-protocol"
+```
+
+The offline end-to-end smoke (`scripts/release/companion-smoke.mjs <target>`,
+run in CI for every platform) packs these tarballs, installs them into a
+temporary prefix outside the source repository with spaced paths, and runs a
+fake-adapter benchmark end to end from the installed native archive and the
+npm launcher, then rebuilds the report.
 
 Exit codes (stable; also in `repoise capabilities`): `0` completed, `1`
 operational failure, `2` usage, `3` preflight/suite failure, `4` interrupted
@@ -195,9 +239,10 @@ Preflight freezes the experiment and refuses to approximate:
   Repoise's own state and never count as dirt — running from the repository
   root with the default in-repo `output.dir` works across invocations — and
   an output directory equal to the repository root is rejected;
-- `node`, the host bridge (resolved from the executable's source checkout,
-  never from the current directory or the benchmarked repository) and the
-  adapter executable resolve;
+- `node`, the host bridge (resolved by the documented precedence — explicit
+  override, installed companion, then the executable's source checkout; never
+  from the current directory, and never from the benchmarked repository) and
+  the adapter executable resolve;
 - `env:`/`credentialRef` references resolve (names only are recorded); the
   provider's `credentialRef` variable is forwarded to the adapter's process
   environment (it need not be re-declared under `adapter.env`), and the
@@ -453,4 +498,9 @@ repoise bench /abs/path/to/suite.json --output /tmp/bench-out
 The host bridge itself is tested by
 `packages/agent-adapter-protocol/test/bridge.test.mjs` (successful run,
 stderr mirroring, cooperative cancel, cancel in the same chunk as the
-request, missing request line) alongside the AP-03 conformance suite.
+request, missing request line) alongside the AP-03 conformance suite. The
+installed companion is exercised offline by
+`scripts/release/companion-smoke.mjs <target>` (run in CI on every platform):
+it packs and installs the companion into a temporary prefix outside the source
+repository, runs a fake-adapter benchmark end to end from the installed native
+archive and the npm launcher, and rebuilds the report.

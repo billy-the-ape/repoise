@@ -35,6 +35,18 @@ pub fn document(heartbeat_ms: u64) -> Value {
             "supported": true,
             "command": "bench",
             "docs": "docs/bench.md",
+            "nodeCompanion": {
+                "requiredToRunTrials": true,
+                "nativeOperationIndependent": true,
+                "companion": "@repoise/agent-adapter-protocol",
+                "adapter": "@repoise/agent-adapter-cline",
+                "resolution": [
+                    "REPOISE_BENCH_HOST_BRIDGE (exact adapter-host-run.mjs file)",
+                    "REPOISE_BENCH_COMPANION (installed companion package root)",
+                    "source checkout the executable was built from"
+                ],
+                "note": "Running agent trials needs the optional Node companion (validated by package name and version) and Node on PATH; the Cline CLI is a separately selected, version-pinned prerequisite. Native index/search/read never needs the companion."
+            },
             "note": "Suite-driven benchmark coordinator (AP-04/AP-05): native orchestration; each trial's agent process runs through the optional AP-03 Node host bridge; completed trials are graded by the task's declared evaluator and the published report carries grading counts, predeclared paired comparisons and the predeclared quality gate; `bench report` rebuilds the report offline. Exit codes: 0 completed, 1 operational failure, 2 usage, 3 preflight/suite failure, 4 interrupted.",
         },
         "exitCodes": {

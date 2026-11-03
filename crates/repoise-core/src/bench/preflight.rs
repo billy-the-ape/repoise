@@ -44,6 +44,39 @@ pub fn hybrid_gate_met(index: &crate::status::StatusIndex) -> bool {
 pub const BRIDGE_ENV_VAR: &str = "REPOISE_BENCH_HOST_BRIDGE";
 /// Relative location of the checked-in bridge in a source checkout.
 pub const BRIDGE_RELATIVE_PATH: &str = "packages/agent-adapter-protocol/bin/adapter-host-run.mjs";
+/// Environment variable that names the explicitly installed companion package
+/// root (the `@repoise/agent-adapter-protocol` distribution).
+pub const COMPANION_ENV_VAR: &str = "REPOISE_BENCH_COMPANION";
+/// Package name the installed companion root must declare (a lookalike is
+/// rejected, never executed).
+pub const COMPANION_PACKAGE_NAME: &str = "@repoise/agent-adapter-protocol";
+/// The bridge entry point inside an installed companion package root.
+pub const COMPANION_BRIDGE_RELATIVE: &str = "bin/adapter-host-run.mjs";
+
+/// Where a resolved host bridge came from. Recorded in the manifest and
+/// dry-run so an operator can tell an installed companion, an explicit
+/// override from a source checkout at a glance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BridgeSource {
+    /// The exact `adapter-host-run.mjs` file named by `REPOISE_BENCH_HOST_BRIDGE`.
+    Override,
+    /// A bridge inside the explicitly installed companion package root.
+    Companion,
+    /// The checked-in bridge in the source checkout the binary was built from.
+    Checkout,
+}
+
+impl BridgeSource {
+    /// Stable lowercase label recorded in artifacts.
+    pub fn label(self) -> &'static str {
+        match self {
+            BridgeSource::Override => "override",
+            BridgeSource::Companion => "companion",
+            BridgeSource::Checkout => "checkout",
+        }
+    }
+}
 
 /// Guidance state of the root repository.
 #[derive(Clone, Debug, Serialize)]
@@ -68,6 +101,8 @@ pub struct Preflight {
     pub node: PathBuf,
     pub node_version: String,
     pub bridge: PathBuf,
+    /// Where the host bridge was resolved (override / companion / checkout).
+    pub bridge_source: BridgeSource,
     pub runner: PathBuf,
     /// Adapter environment variable names forwarded to the adapter (values
     /// never recorded; `env:` references are resolved here).
@@ -226,7 +261,8 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
         }
     };
 
-    // Execution prerequisites: Node, the checked-in host bridge, the runner.
+    // Execution prerequisites: Node, the host bridge (override, installed
+    // companion, or source checkout), and the adapter executable.
     let node = find_executable("node").ok_or_else(|| {
         Error::Config("node executable not found on PATH (required to drive agent adapters)".into())
     })?;
@@ -237,7 +273,7 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
         .stdout;
     let node_version = String::from_utf8_lossy(&node_version).trim().to_string();
 
-    let bridge = find_bridge(&root)?;
+    let (bridge, bridge_source) = find_bridge(&root)?;
     let runner = find_executable(&suite.adapter.executable).ok_or_else(|| {
         Error::Config(format!(
             "adapter executable '{}' not found (absolute path or bare name on PATH)",
@@ -393,6 +429,7 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
         node,
         node_version,
         bridge,
+        bridge_source,
         runner,
         adapter_env_names,
         credential_names,
@@ -432,14 +469,24 @@ pub fn find_executable(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Resolves the AP-03 host bridge: the explicit env override wins, then the
-/// source checkout the running executable was built from (walked up from
-/// `current_exe()`). The user's current directory is never consulted, and a
-/// resolved bridge inside the benchmarked repository is rejected:
-/// repository content is untrusted data, so a repo that ships its own
-/// `adapter-host-run.mjs` must never be executed automatically with adapter
-/// credentials.
-pub fn find_bridge(root: &Path) -> Result<PathBuf, Error> {
+/// Resolves the AP-03 host bridge and reports where it came from.
+///
+/// Resolution is deterministic and trusts only operator-explicit choices or a
+/// source checkout this executable was built from:
+///
+/// 1. `REPOISE_BENCH_HOST_BRIDGE` — an exact `adapter-host-run.mjs` file the
+///    operator named (highest priority; trusted as an operator choice).
+/// 2. `REPOISE_BENCH_COMPANION` — an explicitly installed companion package
+///    root, validated (package name, version, bridge entry point) before use.
+/// 3. The source checkout the running executable was built from (walked up
+///    from `current_exe()`), so a development build needs no environment.
+///
+/// The user's current directory is never consulted, no package-manager
+/// command is ever run (nothing is downloaded), and a resolved bridge inside
+/// the benchmarked repository is rejected: repository content is untrusted
+/// data, so a repo that ships its own `adapter-host-run.mjs` must never be
+/// executed automatically with adapter credentials.
+pub fn find_bridge(root: &Path) -> Result<(PathBuf, BridgeSource), Error> {
     find_bridge_with(root, &|name| std::env::var(name).ok())
 }
 
@@ -447,17 +494,23 @@ pub fn find_bridge(root: &Path) -> Result<PathBuf, Error> {
 fn find_bridge_with(
     root: &Path,
     lookup: &dyn Fn(&str) -> Option<String>,
-) -> Result<PathBuf, Error> {
+) -> Result<(PathBuf, BridgeSource), Error> {
     if let Some(raw) = lookup(BRIDGE_ENV_VAR).filter(|value| !value.is_empty()) {
         let path = PathBuf::from(raw.as_str());
         if path.is_file() {
             // An explicit override is an operator choice made outside the
             // benchmarked repository's control.
-            return Ok(path);
+            return Ok((path, BridgeSource::Override));
         }
         return Err(Error::Config(format!(
             "{BRIDGE_ENV_VAR} is set but {raw} is not a file"
         )));
+    }
+    if let Some(raw) = lookup(COMPANION_ENV_VAR).filter(|value| !value.is_empty()) {
+        return Ok((
+            resolve_companion(root, raw.as_str())?,
+            BridgeSource::Companion,
+        ));
     }
     let exe = std::env::current_exe().map_err(Error::Io)?;
     let start = exe
@@ -473,13 +526,88 @@ fn find_bridge_with(
             candidate.display(),
             root.display()
         ))),
-        Some(candidate) => Ok(candidate),
+        Some(candidate) => Ok((candidate, BridgeSource::Checkout)),
         None => Err(Error::Config(format!(
             "agent adapter protocol host bridge not found next to the running \
-             executable ({}); set {BRIDGE_ENV_VAR} to the adapter-host-run.mjs path",
-            BRIDGE_RELATIVE_PATH
+             executable ({BRIDGE_RELATIVE_PATH}). Install the optional benchmark \
+             companion and set {COMPANION_ENV_VAR} to the installed \
+             `@repoise/agent-adapter-protocol` package root, or set {BRIDGE_ENV_VAR} \
+             to an explicit adapter-host-run.mjs file. Native index/search/read \
+             does not need the companion.",
         ))),
     }
+}
+
+/// Validates an explicitly installed companion package root and returns the
+/// host bridge inside it. The root must be a real directory whose
+/// `package.json` declares the exact companion package name and the version of
+/// the running binary (the companion and the binary ship as one release), and
+/// must contain the bridge entry point. A lookalike (wrong name or version) is
+/// a clear preflight failure, never executed. The resolved bridge must not
+/// live inside the benchmarked repository.
+fn resolve_companion(root: &Path, raw_root: &str) -> Result<PathBuf, Error> {
+    let companion = PathBuf::from(raw_root);
+    let companion = std::fs::canonicalize(&companion).map_err(|err| {
+        Error::Config(format!(
+            "{COMPANION_ENV_VAR} points at {raw_root}, which is not a directory: {err}"
+        ))
+    })?;
+    if !companion.is_dir() {
+        return Err(Error::Config(format!(
+            "{COMPANION_ENV_VAR} points at {raw_root}, which is not a directory"
+        )));
+    }
+    let manifest_path = companion.join("package.json");
+    let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
+        Error::Config(format!(
+            "companion root {raw_root} has no readable package.json: {err}"
+        ))
+    })?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|err| Error::Config(format!("companion package.json is not valid JSON: {err}")))?;
+    let name = manifest.get("name").and_then(serde_json::Value::as_str);
+    if name != Some(COMPANION_PACKAGE_NAME) {
+        return Err(Error::Config(format!(
+            "{COMPANION_ENV_VAR} points at {raw_root}, which declares package name '{}' \
+             (expected `{COMPANION_PACKAGE_NAME}`); this looks like an unrelated or \
+             untrusted package and will not be executed",
+            name.unwrap_or("<missing>")
+        )));
+    }
+    let version = manifest.get("version").and_then(serde_json::Value::as_str);
+    let expected = env!("CARGO_PKG_VERSION");
+    if version != Some(expected) {
+        return Err(Error::Config(format!(
+            "installed companion {raw_root} is version '{}' but this Repoise build is \
+             {expected}; the companion and the binary must match — install the \
+             matching `@repoise/agent-adapter-protocol` release",
+            version.unwrap_or("<missing>")
+        )));
+    }
+    let bridge = companion.join(COMPANION_BRIDGE_RELATIVE);
+    if !bridge.is_file() {
+        return Err(Error::Config(format!(
+            "installed companion {raw_root} is missing its bridge entry point \
+             `{COMPANION_BRIDGE_RELATIVE}`"
+        )));
+    }
+    let bridge = std::fs::canonicalize(&bridge).map_err(Error::Io)?;
+    // Canonicalize the benchmarked root for the containment test so symlinked
+    // prefixes (e.g. macOS /tmp -> /private/tmp) still compare correctly.
+    let root = match root.canonicalize() {
+        Ok(path) => path,
+        Err(_) => root.to_path_buf(),
+    };
+    if is_within(&root, &bridge) {
+        return Err(Error::Config(format!(
+            "the installed companion bridge {} resolves inside the benchmarked \
+             repository {}; repository content is untrusted data and will not be \
+             executed automatically — set {BRIDGE_ENV_VAR} to the bridge file explicitly",
+            bridge.display(),
+            root.display()
+        )));
+    }
+    Ok(bridge)
 }
 
 /// Walks up from `start` returning the first checked-in host bridge.
@@ -595,7 +723,10 @@ pub fn dry_run(
         "prerequisites": {
             "runner": { "executable": preflight.runner.to_string_lossy().into_owned() },
             "node": { "executable": preflight.node.to_string_lossy().into_owned(), "version": preflight.node_version },
-            "bridge": preflight.bridge.to_string_lossy().into_owned(),
+            "bridge": {
+                "path": preflight.bridge.to_string_lossy().into_owned(),
+                "source": preflight.bridge_source.label()
+            },
             "gitRepository": true,
             "index": {
                 "present": preflight.status.index.is_some(),
@@ -730,6 +861,7 @@ pub fn write_manifest(
             "envNames": &input.preflight.adapter_env_names,
             "credentialEnvNames": &input.preflight.credential_names,
             "bridge": input.preflight.bridge.to_string_lossy().into_owned(),
+            "bridgeSource": input.preflight.bridge_source.label(),
             "node": input.preflight.node_version
         },
         "profile": {
@@ -891,6 +1023,7 @@ mod tests {
     /// from `current_exe()` locates the checked-in host bridge.
     #[test]
     fn find_bridge_never_auto_executes_a_repository_bridge() {
+        let no_env: &dyn Fn(&str) -> Option<String> = &|_| None;
         let exe = std::env::current_exe().expect("test binary path");
         let Some(start) = exe.parent() else {
             return;
@@ -898,12 +1031,10 @@ mod tests {
         let Some(candidate) = bridge_candidates_from(start) else {
             // The test binary was not built inside a checkout (e.g. a
             // packed archive); the override branches still verify.
-            let no_env: &dyn Fn(&str) -> Option<String> = &|_| None;
             let err = find_bridge_with(Path::new("/tmp"), no_env).unwrap_err();
             assert!(err.to_string().contains("not found"), "{err}");
             return;
         };
-        let no_env: &dyn Fn(&str) -> Option<String> = &|_| None;
         // A root that contains the candidate (the benchmarked repository
         // ships the bridge) must refuse to auto-execute it.
         let root = candidate
@@ -913,22 +1044,117 @@ mod tests {
         let err = find_bridge_with(root, no_env).unwrap_err();
         assert!(err.to_string().contains("untrusted"), "{err}");
         // The same bridge next to the executable is accepted for an
-        // unrelated root.
-        let ok = find_bridge_with(Path::new("/definitely-not-a-checkout"), no_env).expect("bridge");
+        // unrelated root, and recorded as a checkout resolution.
+        let (ok, source) =
+            find_bridge_with(Path::new("/definitely-not-a-checkout"), no_env).expect("bridge");
         assert_eq!(ok, candidate);
+        assert_eq!(source, BridgeSource::Checkout);
         // An explicit override is an operator choice and always wins, even
         // when it points inside the repository root.
         let with_env: &dyn Fn(&str) -> Option<String> =
             &|name| (name == BRIDGE_ENV_VAR).then(|| candidate.to_string_lossy().into_owned());
-        assert_eq!(
-            find_bridge_with(root, with_env).expect("explicit override"),
-            candidate
-        );
+        let (bridge, source) = find_bridge_with(root, with_env).expect("explicit override");
+        assert_eq!(bridge, candidate);
+        assert_eq!(source, BridgeSource::Override);
         // An override pointing at a missing file is a clear preflight error.
         let bad_env: &dyn Fn(&str) -> Option<String> =
             &|name| (name == BRIDGE_ENV_VAR).then(|| "/nonexistent-bridge-7f3a.mjs".into());
         let err = find_bridge_with(root, bad_env).unwrap_err();
         assert!(err.to_string().contains("not a file"), "{err}");
+    }
+
+    /// Builds a temporary installed-companion package root (with the given
+    /// package name, version, and a bridge file) and returns its path so
+    /// tests can point `REPOISE_BENCH_COMPANION` at it.
+    fn temp_companion_root(dir: &Path, name: &str, version: &str) -> PathBuf {
+        let root = dir.join(name);
+        let bridge = root.join(COMPANION_BRIDGE_RELATIVE);
+        std::fs::create_dir_all(bridge.parent().unwrap()).unwrap();
+        std::fs::write(&bridge, "// fake installed bridge\n").unwrap();
+        let manifest = serde_json::to_string(&serde_json::json!({
+            "name": name,
+            "version": version
+        }))
+        .unwrap();
+        std::fs::write(root.join("package.json"), manifest).unwrap();
+        root
+    }
+
+    #[test]
+    fn find_bridge_resolves_a_valid_installed_companion() {
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-companion-valid-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let companion = temp_companion_root(
+            &dir,
+            "@repoise/agent-adapter-protocol",
+            env!("CARGO_PKG_VERSION"),
+        );
+        let env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == COMPANION_ENV_VAR).then(|| companion.to_string_lossy().into_owned());
+        let (bridge, source) =
+            find_bridge_with(Path::new("/not-a-repo"), env).expect("installed companion");
+        assert_eq!(source, BridgeSource::Companion);
+        let companion = companion.canonicalize().unwrap();
+        assert!(bridge.starts_with(&companion), "{bridge:?}");
+        assert!(bridge.ends_with("bin/adapter-host-run.mjs"), "{bridge:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_bridge_rejects_an_untrusted_companion_lookalike() {
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-companion-lookalike-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Wrong package name: an unrelated package that happens to ship a
+        // bridge-shaped file is never executed.
+        let lookalike =
+            temp_companion_root(&dir, "untrusted-fake-adapter", env!("CARGO_PKG_VERSION"));
+        let env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == COMPANION_ENV_VAR).then(|| lookalike.to_string_lossy().into_owned());
+        let err = find_bridge_with(Path::new("/not-a-repo"), env).unwrap_err();
+        assert!(err.to_string().contains("package name"), "{err}");
+
+        // A correct name but a different version is a clear mismatch.
+        let mismatched = temp_companion_root(&dir, "@repoise/agent-adapter-protocol", "9.9.9");
+        let env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == COMPANION_ENV_VAR).then(|| mismatched.to_string_lossy().into_owned());
+        let err = find_bridge_with(Path::new("/not-a-repo"), env).unwrap_err();
+        assert!(err.to_string().contains("version"), "{err}");
+
+        // A non-existent root is a clear error, not a silent fallback.
+        let env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == COMPANION_ENV_VAR).then(|| "/definitely/missing".into());
+        let err = find_bridge_with(Path::new("/not-a-repo"), env).unwrap_err();
+        assert!(err.to_string().contains(COMPANION_ENV_VAR), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_bridge_never_executes_a_companion_inside_the_benchmarked_repo() {
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-companion-inrepo-{}",
+            std::process::id()
+        ));
+        let companion = temp_companion_root(
+            &dir,
+            "@repoise/agent-adapter-protocol",
+            env!("CARGO_PKG_VERSION"),
+        );
+        // Pointing the companion at a path inside the benchmarked repository is
+        // rejected even though the package is otherwise valid.
+        let env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == COMPANION_ENV_VAR).then(|| companion.to_string_lossy().into_owned());
+        let err = find_bridge_with(&companion, env).unwrap_err();
+        assert!(
+            err.to_string().contains("untrusted") || err.to_string().contains("benchmark"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `-z` porcelain is NUL-separated with raw (unquoted) paths, so output
