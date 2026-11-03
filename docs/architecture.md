@@ -45,6 +45,7 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `schemas/` | Published versioned schemas: configuration, event stream, capabilities, agent adapter request, bench suite and bench trial grading |
 | `npm/repoise/` | Thin launcher and allowlisted npm package metadata |
 | `packages/agent-adapter-protocol/` and `packages/agent-adapter-cline/` | AP-03 agent adapter protocol: the checked-in Node host bridge (`adapter-host-run.mjs`, driven by the bench coordinator), fake conformance adapters and the first real adapter (Cline); no-Node operation is unaffected |
+| `apps/vscode/` | AP-07 first slice: thin VS Code operations UI (development build, unpublished) that shells out to the installed native CLI — status panel, index progress, extension-owned watch supervisor, MCP definitions; see the [VS Code guide](vscode.md) |
 | `scripts/release/` | Claim preparation, packaging, smoke tests and release staging |
 | `scripts/` | Local checks, release build and installation helpers |
 | `.github/workflows/` | Cross-platform checks and manually requested build artifacts |

@@ -237,7 +237,8 @@ Turborepo dev dependencies; install using `pnpm install --frozen-lockfile
 --ignore-scripts`. The Prettier globs and `pnpm test` (`node --test`) cover
 scripts/release, scripts/eval and scripts/ci, plus the npm wrapper sources,
 the workspace packages under `packages/` (agent adapter protocol and Cline
-adapter), the root and launcher manifests, `turbo.json`, `pnpm-workspace.yaml`
+adapter), the `apps/vscode` extension (AP-07 first slice), the root and
+launcher manifests, `turbo.json`, `pnpm-workspace.yaml`
 and workflow YAML. Run `pnpm run format` before committing those changes, then
 `pnpm run format:check` and `pnpm test`. Turbo tasks (`pnpm exec turbo run
 format:check|test|check:native|build:native`, plus the `:windows` variants)

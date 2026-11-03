@@ -51,9 +51,11 @@ arrays and renders the AP-02 machine contracts
   is launched.
 - **Windows launch safety**: when the selected binary is an npm `.cmd`/`.bat`
   shim, it is invoked through `cmd.exe /d /s /c` with a single payload in
-  which every token (shim included) is double-quoted, so metacharacters in
-  paths are literal; arguments containing `"`, `%` or line breaks are
-  rejected with a panel error instead of being spliced into a command line.
+  which every token (shim included) is double-quoted and the whole payload
+  carries one outer quote pair that `/s` strips, so metacharacters in paths
+  are literal; the spawn uses `windowsVerbatimArguments`. Arguments
+  containing `"`, `%` or line breaks are rejected with a panel error
+  instead of being spliced into a command line.
 
 ## Settings
 

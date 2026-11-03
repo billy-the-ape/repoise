@@ -54,8 +54,11 @@ export class WatchManager implements vscode.Disposable {
   private infos = new Map<string, WatchInfo>();
   private runs = new Map<string, CliRunHandle>();
   private timers = new Map<string, NodeJS.Timeout>();
-  /** Roots with an in-flight `start()` probe; claimed synchronously. */
-  private inflight = new Set<string>();
+  /**
+   * Roots with an in-flight `start()` probe; the symbol identifies the
+   * owning start, so a stale continuation can never delete a newer claim.
+   */
+  private inflight = new Map<string, symbol>();
   /** Per-root invalidation counter; bumping it voids probes in flight. */
   private epochs = new Map<string, number>();
   private stopping = false;
@@ -97,10 +100,11 @@ export class WatchManager implements vscode.Disposable {
     ) {
       return;
     }
-    // Claim the root synchronously: concurrent starts (auto-start plus the
-    // webview ready message, double-clicks) must not all probe the scope
-    // lock and all spawn.
-    this.inflight.add(root);
+    // Claim the root synchronously with a unique token: concurrent starts
+    // (auto-start plus the webview ready message, double-clicks) must not
+    // all probe the scope lock and all spawn.
+    const claim = Symbol("watch-start");
+    this.inflight.set(root, claim);
     const epoch = this.epochOf(root);
     try {
       const session = await this.cli.resolve();
@@ -144,11 +148,20 @@ export class WatchManager implements vscode.Disposable {
       }
       this.spawn(root, session.binary, 1);
     } finally {
-      this.inflight.delete(root);
+      // Release only our own claim: a stop() may have let a newer start
+      // take over this root while our probe was in flight.
+      if (this.inflight.get(root) === claim) {
+        this.inflight.delete(root);
+      }
     }
   }
 
   private spawn(root: string, binary: string, attempt: number): void {
+    // A concurrent start may have won the root while we were settling the
+    // probe; never run two watches for one root.
+    if (this.runs.has(root) || this.stopping) {
+      return;
+    }
     const info = this.info(root);
     info.status = "starting";
     info.attempts = attempt;

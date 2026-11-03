@@ -138,7 +138,7 @@ test("spawn failure surfaces as a spawnError without throwing", async () => {
   assert.notEqual(missingResult.spawnError, null);
 });
 
-test("Windows .cmd shims build a single fully-quoted cmd.exe payload", () => {
+test("Windows .cmd shims build a quoted cmd.exe payload with the /s outer wrap", () => {
   const invocation = buildWindowsShimInvocation("C:\\tools\\repoise.cmd", [
     "index",
     "C:\\a b&c root",
@@ -148,12 +148,14 @@ test("Windows .cmd shims build a single fully-quoted cmd.exe payload", () => {
   assert.ok(invocation !== null);
   assert.equal(invocation.binary, "cmd.exe");
   // One /c payload: every token (shim included) quoted, metacharacters
-  // inside quotes are literal to cmd.exe.
+  // inside quotes are literal to cmd.exe; the outer pair of quotes is
+  // stripped by /s, restoring the per-token quoting (same wrap as Node's
+  // own shell:true path).
   assert.deepEqual(invocation.args, [
     "/d",
     "/s",
     "/c",
-    '"C:\\tools\\repoise.cmd" "index" "C:\\a b&c root" "x&calc" "a^b"',
+    '"\"C:\\tools\\repoise.cmd\" \"index\" \"C:\\a b&c root\" \"x&calc\" \"a^b\""',
   ]);
 });
 
@@ -222,7 +224,7 @@ test("runCli rewrites .cmd binaries to a verbatim cmd.exe payload on win32", () 
     "/d",
     "/s",
     "/c",
-    '"C:\\tools\\repoise.cmd" "index" "C:\\a b&c"',
+    '"\"C:\\tools\\repoise.cmd\" \"index\" \"C:\\a b&c\""',
   ]);
   assert.equal(call.verbatim, true);
 });

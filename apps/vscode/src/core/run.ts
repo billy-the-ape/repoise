@@ -63,10 +63,14 @@ function splitLines(
  * Windows .cmd/.bat shims cannot be spawned directly: since Node
  * 18.20.2 / 20.12.2 (CVE-2024-27980) doing so throws EINVAL. Route them
  * through `cmd.exe /d /s /c` with a single payload in which every token —
- * including the shim itself — is wrapped in double quotes; inside quotes
- * cmd.exe treats every metacharacter (`&`, `|`, `<`, `>`, `^`, `(`, `)`,
- * `!`) as literal. The spawn then uses `windowsVerbatimArguments` so Node
- * does not re-quote the tokens.
+ * including the shim itself — is wrapped in double quotes, and the whole
+ * payload is wrapped in one further pair of quotes; inside quotes cmd.exe
+ * treats every metacharacter (`&`, `|`, `<`, `>`, `^`, `(`, `)`, `!`) as
+ * literal. The outer pair is required: with `/s`, cmd strips exactly one
+ * leading and one trailing quote from the `/c` string (the same wrap
+ * Node's own `shell: true` path uses), restoring our per-token quoting.
+ * The spawn then uses `windowsVerbatimArguments` so Node does not
+ * re-quote the payload.
  *
  * Arguments that can never be made literal inside a quoted cmd.exe token —
  * `"` (breaks the quoted region), `%` (variable expansion happens even
@@ -84,7 +88,7 @@ export function buildWindowsShimInvocation(
   if (tokens.some((token) => /["%\r\n]/.test(token))) {
     return null;
   }
-  const payload = tokens.map((token) => `"${token}"`).join(" ");
+  const payload = `"${tokens.map((token) => `"${token}"`).join(" ")}"`;
   return { binary: "cmd.exe", args: ["/d", "/s", "/c", payload] };
 }
 

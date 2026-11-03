@@ -135,3 +135,56 @@ test("a stop before an in-flight start settles prevents the spawn", async () => 
   assert.equal(manager.info("/root").status, "stopped");
   manager.dispose();
 });
+
+test("stop-during-probe followed by two starts still spawns a single watch", async () => {
+  let spawns = 0;
+  // Each start gets its own probe (like the real status processes): the
+  // first start's probe settles while the second start's probe is still
+  // in flight. Without a per-start claim token, the first start's
+  // `finally` would delete the second start's claim, letting the third
+  // start pass the guard and overwrite the second start's handle.
+  let resolveFirst: (result: StatusOutcome) => void = () => undefined;
+  const firstProbe = new Promise<StatusOutcome>((resolve) => {
+    resolveFirst = resolve;
+  });
+  let resolveSlow: (result: StatusOutcome) => void = () => undefined;
+  const slowProbe = new Promise<StatusOutcome>((resolve) => {
+    resolveSlow = resolve;
+  });
+  let probeCount = 0;
+  const manager = new WatchManager(
+    fakeCli(),
+    { appendLine: () => undefined },
+    { onEvent: () => undefined, onStateChange: () => undefined },
+    {
+      probeStatus: () => {
+        probeCount += 1;
+        if (probeCount === 1) {
+          return firstProbe;
+        }
+        if (probeCount === 2) {
+          return slowProbe;
+        }
+        return Promise.resolve(freeStatus());
+      },
+      runProcess: () => {
+        spawns += 1;
+        return fakeHandle();
+      },
+    },
+  );
+  void manager.start("/root");
+  manager.stop("/root");
+  void manager.start("/root");
+  // The first start's probe now settles: stale epoch, and its claim
+  // release must not touch the second start's claim.
+  resolveFirst(freeStatus());
+  await wait(5);
+  // A late third start (e.g. the webview ready message).
+  void manager.start("/root");
+  resolveSlow(freeStatus());
+  await wait(50);
+  assert.equal(spawns, 1);
+  assert.equal(manager.isRunning("/root"), true);
+  manager.dispose();
+});
