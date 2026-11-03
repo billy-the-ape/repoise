@@ -33,7 +33,7 @@ optional companion, and the coordinator discovers it deterministically.
   index/search/read never needs the companion). A missing companion in an
   installed build yields actionable setup guidance. See docs/bench.md.
 
-
+### Server-side retrieval audit for benchmark trials
 
 Trials proved only that a pinned MCP server was configured, never that the
 agent called it or that a hybrid search actually ran hybrid. The Repoise

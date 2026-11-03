@@ -146,7 +146,9 @@ for (const tarball of tarballs) {
   );
   if (!spec) throw new Error(`no companion spec for ${tarball}`);
   const listed = execFileSync("tar", ["-tzf", tarball]).toString();
-  const entries = listed.split("\n").filter((line) => line.length > 0);
+  // bsdtar on Windows emits CRLF line endings, so split on /\r?\n/ (a plain
+  // "\n" would leave a trailing "\r" on top-level entries such as LICENSE).
+  const entries = listed.split(/\r?\n/).filter((line) => line.length > 0);
   const allowed = new Set([
     ...spec.files,
     "package.json",

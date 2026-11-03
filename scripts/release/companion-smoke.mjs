@@ -92,10 +92,20 @@ function samePath(left, right) {
   const normalize = (value) => {
     let text = String(value);
     try {
-      text = realpathSync(text);
+      // Prefer the native realpath (Windows): it resolves to the long form
+      // without the extended-length prefix that Rust's canonicalize adds, so
+      // the manifest's canonical bridge and the installed Node path compare
+      // equal even when tmpdir() uses an 8.3 short name.
+      text =
+        typeof realpathSync.native === "function"
+          ? realpathSync.native(text)
+          : realpathSync(text);
     } catch {
       /* compare the literal value */
     }
+    // Strip any remaining Windows extended-length prefix (\\?\) so canonical
+    // and installed forms still compare equal.
+    text = text.replace(/^\\\\\?\\/, "");
     text = text.replace(/\\/g, "/");
     return isWindows ? text.toLowerCase() : text;
   };
