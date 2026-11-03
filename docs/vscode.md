@@ -1,0 +1,88 @@
+# VS Code extension (AP-07 first slice)
+
+Current state: the `apps/vscode/` package is a thin VS Code operations UI over
+the installed Repoise CLI. It is a development build inside this repository;
+there is no marketplace identity, no publication, and no bundled native
+binary. The second slice (benchmark configuration/execution/report display)
+is proposed work — see the
+[AP-07 plan](plans/agent-platform/07-vscode-extension.md).
+
+The extension never implements indexing, search, watch logic, retrieval or
+agent behavior. Every operation shells out to the native CLI with argument
+arrays and renders the AP-02 machine contracts
+([automation contracts](automation.md), [MCP server](mcp.md)).
+
+## What it does
+
+- **CLI discovery** (`repoise.cliPath` override → repository-local
+  `node_modules/.bin/repoise` per workspace folder → PATH), then a
+  `capabilities --json` handshake that reports version, compatibility
+  problems and the source that was selected. A missing or broken binary is a
+  panel error, never an implicit download.
+- **Status panel** (one webview; `repoise.showStatus`): one entry per
+  workspace folder/root parsed from `status --json` (exit 0 or 3 are
+  parseable; exit 3 = index missing/stale). Shows scope, snapshot, index
+  generation/coverage, freshness, writer/owner state and last error. A single
+  status refresh happens when the panel opens; it does not poll.
+- **Index** (`repoise.index`): runs `index --events` for the selected root and
+  renders `progress` events (phase, done/total, elapsed, ETA when the CLI
+  supplies one), `warning` events and the terminal outcome. It does not guess
+  percentages from log lines.
+- **Watch supervisor** (`repoise.watchStart` / `repoise.watchStop`): one
+  extension-owned `watch --events` process per selected root. External
+  owners are detected from `failed … reason: scope-owned` (the extension
+  hands off and never restarts into a restart loop), bounded restart/backoff
+  for crashes, cooperative SIGTERM cancellation, and cancellation when a
+  workspace folder is removed or the window closes.
+- **MCP** (`repoise.mcpShow`): a read-only `mcp` definition per workspace
+  folder (`refresh` only when `repoise.mcp.refresh` is true, matching the
+  CLI's opt-in), plus VS Code's
+  `vscode.lm.registerMcpServerDefinitionProvider` registration on hosts that
+  provide it (1.103+). Registering with VS Code does not configure every
+  installed agent; the panel also offers a generic stdio `mcpServers` JSON
+  snippet for Cline/Codex-style clients. The extension never writes to
+  client settings files.
+- **Trust gating**: repository-local binaries only run in a trusted
+  workspace; commands on an untrusted checkout prompt for trust and never
+  launch code.
+
+## Settings
+
+| Setting                  | Default | Meaning                                                        |
+| ------------------------ | ------- | -------------------------------------------------------------- |
+| `repoise.cliPath`        | `""`    | Explicit binary override; a missing path is an error, not a fallback |
+| `repoise.autoWatch`      | `false` | Start an owned watch for the selected root when the panel opens |
+| `repoise.mcp.refresh`    | `false` | Include `--allow-refresh` in MCP definitions                  |
+
+## Development and tests
+
+```sh
+pnpm install
+pnpm --filter @repoise/vscode run test
+```
+
+The suite compiles TypeScript, then runs `node --test` against a
+deterministic fake CLI fixture (`src/test/fixtures/fake-repoise.mjs`) that
+emits the AP-02 event envelope: happy streams, malformed lines, unknown event
+types, unsupported schema versions, scope-owned failures, crashes, CRLF
+line endings, cooperative SIGTERM cancellation and timeouts. No inference
+credentials or installed CLI are required; the fake's signal handlers are
+armed before first output because a parent that kills the child in the same
+instant it observes the first line must never race handler setup. CI runs the
+suite in all three Check jobs (Linux/macOS/Windows) via `turbo run test`;
+Windows cancellation asserts the abrupt `TerminateProcess` semantics
+documented in [automation.md](automation.md) rather than a terminal event.
+
+Verified against the installed CLI: `capabilities --json`, `status --json`
+(snake_case view, top-level owner marker), `index --events` and
+`watch --events` with SIGTERM cancellation all parse through the extension's
+stream/status parsers (checked November 3, 2026).
+
+## Deferred / not claimed
+
+- Benchmark configuration, execution, cancellation and report display
+  (AP-07 second slice; depends on the AP-04/AP-05 contracts).
+- VSIX packaging, extension publisher/identity, remote-host matrix
+  (Remote SSH/WSL) and a live client/version MCP compatibility matrix.
+- Cross-window ownership transport beyond the OS scope lock and the status
+  owner marker; a service/daemon remains a separate decision.

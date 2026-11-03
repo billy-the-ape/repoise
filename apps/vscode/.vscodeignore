@@ -1,0 +1,12 @@
+# Never bundle source, tests, fixtures or the monorepo.
+.vscode/**
+.gitignore
+src/**
+node_modules/**
+out/test/**
+scripts/**
+tsconfig.json
+*.ts
+*.map
+*.ts.map
+.vscode-test/**

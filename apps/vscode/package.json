@@ -1,0 +1,79 @@
+{
+  "name": "@repoise/vscode",
+  "displayName": "Repoise",
+  "description": "Inspect Repoise setup, freshness and coverage, run indexing, supervise an extension-owned watch and set up the Repoise stdio MCP server. A thin operations UI over the installed Repoise CLI (docs/vscode.md).",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "repoise",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "repoise",
+    "repository knowledge",
+    "mcp",
+    "index",
+    "watch"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "repoise.showStatus",
+        "title": "Repoise: Show Status and Operations"
+      },
+      {
+        "command": "repoise.index",
+        "title": "Repoise: Index Selected Root"
+      },
+      {
+        "command": "repoise.watchStart",
+        "title": "Repoise: Start Watch (extension-owned)"
+      },
+      {
+        "command": "repoise.watchStop",
+        "title": "Repoise: Stop Watch"
+      },
+      {
+        "command": "repoise.mcpShow",
+        "title": "Repoise: Show MCP Server Definition"
+      }
+    ],
+    "configuration": {
+      "title": "Repoise",
+      "properties": {
+        "repoise.cliPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Explicit path to the `repoise` binary (highest discovery precedence). Leave empty to prefer a repository-local package install, then PATH."
+        },
+        "repoise.mcp.refresh": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Expose the opt-in `refresh_project_knowledge` tool in the extension-provided MCP server definition. Read-only stays the default."
+        },
+        "repoise.watch.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Start an extension-owned watch for the selected root when the status panel opens. Restarts are bounded with backoff."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p tsconfig.json && node scripts/copy-fixtures.cjs && node --test \"out/test/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "20.19.0",
+    "@types/vscode": "1.103.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,6 +1,9 @@
 # AP-07: thin VS Code operations and benchmark UI
 
-Status: proposed. Depends on [AP-01](../complete/agent-platform/01-workspace-and-ci.md) and
+Status: first slice implemented 2026-11-03 (development build in
+`apps/vscode/`; no marketplace identity, packaging or publication — see the
+current-state guide at [docs/vscode.md](../../vscode.md)). The benchmark UI
+(second slice) remains proposed. Depends on [AP-01](../complete/agent-platform/01-workspace-and-ci.md) and
 [AP-02](../complete/agent-platform/02-cli-contracts.md); benchmark UI also depends on AP-04/AP-05.
 Home: `apps/vscode/`. May split into operations UI and benchmark UI PRs while
 retaining this boundary. No marketplace identity or publication is authorized.

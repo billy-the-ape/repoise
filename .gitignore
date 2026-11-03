@@ -27,6 +27,7 @@ rustc-ice-*.txt
 node_modules/
 dist/
 .turbo/
+apps/vscode/out/
 
 # Repoise generated data and operator-only local overrides (never commit)
 .repoise/

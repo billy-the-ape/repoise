@@ -51,7 +51,7 @@
     "extension": {
       "patterns": ["apps/vscode/"],
       "jobs": ["check"],
-      "note": "Reserved home; no package exists yet, so until it ships this maps to the broad checks"
+      "note": "VS Code extension package (AP-07 first slice); its node --test suite runs in the Check jobs via the package test task"
     },
     "docs": {
       "patterns": [

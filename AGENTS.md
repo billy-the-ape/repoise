@@ -30,7 +30,7 @@ Commands in the plan are proposals, not installed tools or proof of shipped beha
 The repository is a Cargo + pnpm workspace (pnpm pinned via the root `packageManager` field, lockfile `pnpm-lock.yaml`; Prettier and Turborepo are pinned dev dependencies); Turbo declares development and single per-platform native bridge tasks with output caching disabled, and CI selects affected check sets per PR with an aggregate `CI gate` job — see the [development guide](docs/development.md).
 
 Follow-on planning for external agent adapters, real-agent benchmarks and the VS Code UI lives in the [agent platform roadmap](docs/plans/agent-platform/README.md). AP-01 (workspace/CI), AP-02 (CLI automation contracts), AP-03 (the versioned agent adapter protocol, its host and conformance fixtures, and the first Cline adapter — see [agent adapters](docs/agent-adapters.md)), AP-04 (the benchmark runner, `repoise bench`) and AP-05 (independent post-trial grading, paired comparisons, the quality gate and published reports) are implemented; AP-04/AP-05 behavior is documented in the [benchmark guide](docs/bench.md).
-AP-06's first smoke experiment (the ai-gateway pilot) executed 2026-10-30: all 12 smoke trials completed and passed deterministic grading, and the SIGINT cancellation check passed (cooperative cancel, exit 4) — see the [pilot status guide](docs/pilot.md); the smoke run verifies mechanics only (one repetition, no statistics). Its expansion and AP-07 (VS Code UI) remain proposed work; no editor extension ships from that plan yet. Start there for implementation order, open questions and per-PR acceptance criteria.
+AP-06's first smoke experiment (the ai-gateway pilot) executed 2026-10-30: all 12 smoke trials completed and passed deterministic grading, and the SIGINT cancellation check passed (cooperative cancel, exit 4) — see the [pilot status guide](docs/pilot.md); the smoke run verifies mechanics only (one repetition, no statistics). Its expansion remains proposed work. AP-07's first slice — a thin VS Code operations UI (status, index progress, supervised watch and MCP definitions) under `apps/vscode/` — is implemented but unpublished, and its benchmark UI remains proposed (see the [VS Code guide](docs/vscode.md)). Start there for implementation order, open questions and per-PR acceptance criteria.
 
 ## Read only the context relevant to the task
 
@@ -45,6 +45,7 @@ AP-06's first smoke experiment (the ai-gateway pilot) executed 2026-10-30: all 1
 | Intake, parsing and freshness planning | Master plan sections 4–7 |
 | Persistent index, cache layout and purge | [Storage guide](docs/storage.md) |
 | MCP server (stdio), tools and client registration | [MCP guide](docs/mcp.md) |
+| VS Code extension (operations UI, watch supervision, MCP setup) | [VS Code guide](docs/vscode.md) |
 | CLI automation (capabilities, `--events`, exit codes, signals, ownership) | [Automation contracts](docs/automation.md) |
 | Agent adapter protocol, conformance and the Cline adapter | [Agent adapters](docs/agent-adapters.md) |
 | Benchmark runner (`repoise bench`), suites, grading and reports | [Benchmark guide](docs/bench.md) |
