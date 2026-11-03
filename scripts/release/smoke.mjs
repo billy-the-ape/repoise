@@ -581,16 +581,27 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
       assert.equal(events.at(-1).payload.reason, "signal");
     }
 
-    // 6. The OS released the lock on exit: the scope is free and the
-    // descriptive marker is gone.
+    // 6. The OS released the lock on exit. A graceful Unix exit also removes
+    // the descriptive marker (state "free", no owner); the abrupt Windows
+    // kill leaves it, so there the scope reports "stale-metadata" and the
+    // lock release is the only observable guarantee (docs/automation.md).
     const deadline2 = Date.now() + WATCH_TIMEOUT_MS;
     let cleared;
     for (;;) {
       cleared = cli(["status", "--json"]);
-      if (cleared.writer.state === "free" && cleared.owner == null) break;
+      if (
+        process.platform === "win32"
+          ? cleared.writer.lock_held === false
+          : cleared.writer.state === "free" && cleared.owner == null
+      )
+        break;
       assert.ok(
         Date.now() < deadline2,
-        `${label} the scope never returned to free: ${JSON.stringify(cleared)}`,
+        `${label} ${
+          process.platform === "win32"
+            ? "the lock was never released"
+            : "the scope never returned to free"
+        }: ${JSON.stringify(cleared)}`,
       );
       await new Promise((resolveSleep) => setTimeout(resolveSleep, 100));
     }

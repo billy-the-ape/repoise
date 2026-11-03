@@ -49,9 +49,7 @@ test("a future event-stream version is rejected by stream version", () => {
 test("a new version string alone never establishes support", () => {
   const verdict = checkAp07Handshake(handshakeFixtures.versionOnly);
   assert.equal(verdict.ok, false);
-  assert.ok(
-    verdict.reasons.every((reason) => !reason.includes("0.2.0 feature")),
-  );
+  assert.ok(verdict.reasons.every((reason) => !reason.includes("0.2.0")));
   // Every problem names a missing capability, not the version string.
   assert.ok(
     verdict.reasons.length >= 3,
