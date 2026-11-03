@@ -106,7 +106,13 @@ in-repo output/cache root, so every run after the first (including
 `--dry-run`) failed as dirty; sibling untracked files still count; the
 environment wording now states that installed npm/native packages need
 `REPOISE_BENCH_HOST_BRIDGE` (they do not ship the host bridge); and the
-stale `request.json` layout comment was corrected. Eighth round: the
+stale `request.json` layout comment was corrected. _(Superseded for installed
+builds: the explicitly installed benchmark companion — the
+`@repoise/agent-adapter-protocol` distribution named by
+`REPOISE_BENCH_COMPANION`, validated by package name and version — now
+resolves the bridge for installed native/npm runs without a source checkout;
+`REPOISE_BENCH_HOST_BRIDGE` remains the explicit override. See `docs/bench.md`,
+"Installing the optional benchmark companion".)_ Eighth round: the
 coordinator now reads the host-measured `elapsedMs` as a fractional
 millisecond value (rounded) instead of always falling back to its own
 span around the host run (`as_u64` rejected the bridge's fractional value),

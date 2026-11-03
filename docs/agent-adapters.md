@@ -251,9 +251,12 @@ schemas (validated with ajv).
 - Not implemented: `tool_telemetry` and `read_only_restriction` in the Cline
   CLI (declared false), and live Cline verification.
 - The benchmark runner (AP-04) is implemented and consumes the protocol via
-  the checked-in host bridge; independent post-trial grading, paired
-  metrics and reports (AP-05) are implemented as well; see
-  [bench](bench.md).
+  the Node host bridge (resolved by the documented precedence: an explicit
+  `REPOISE_BENCH_HOST_BRIDGE` override, an installed companion package named
+  by `REPOISE_BENCH_COMPANION`, then the source checkout — see
+  [bench](bench.md#installing-the-optional-benchmark-companion)).
+  Independent post-trial grading, paired metrics and reports (AP-05) are
+  implemented as well; see [bench](bench.md).
 - Private evaluation corpora belong in locally configured directories
   (e.g. `~/repoise-eval/`), never in this repository; the repo holds
   synthetic fixtures only.

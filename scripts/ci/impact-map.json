@@ -28,7 +28,7 @@
     "release": {
       "patterns": ["scripts/release/"],
       "jobs": ["check"],
-      "note": "Release tooling tests run in the Check jobs via the root test task"
+      "note": "Release tooling tests run in the Check jobs via the root test task; the optional benchmark companion (companion.mjs, companion-smoke.mjs) adds the installed-companion e2e smoke"
     },
     "eval": {
       "patterns": ["scripts/eval/"],

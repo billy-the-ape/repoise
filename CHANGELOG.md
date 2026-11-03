@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Optional benchmark companion distribution
+
+Installed native/npm users can now run benchmarks without a Repoise source
+checkout. The AP-03 Node host bridge is available as an explicitly installed
+optional companion, and the coordinator discovers it deterministically.
+
+- New `REPOISE_BENCH_COMPANION` environment variable: an explicitly
+  installed `@repoise/agent-adapter-protocol` package root. The coordinator
+  validates the package name and version (it must match the running binary)
+  and the presence of `bin/adapter-host-run.mjs` before executing it; a
+  lookalike (wrong name or version) fails preflight and is never executed.
+  Resolution precedence: `REPOISE_BENCH_HOST_BRIDGE` (explicit override) >
+  `REPOISE_BENCH_COMPANION` (installed companion) > the source checkout the
+  executable was built from. The current directory is never consulted, no
+  package-manager command is run, and a resolved bridge inside the
+  benchmarked repository is rejected (untrusted data is never executed).
+- `scripts/release/companion.mjs` packages the companion into local tarballs
+  (`dist/bench-companion/`) with an explicit files allowlist, the protocol
+  schemas and the license — no tests, fixtures, caches or the monorepo. The
+  two adapter packages declare their `files` allowlist in their manifests.
+  The tarballs are **not published**.
+- `scripts/release/companion-smoke.mjs <target>` (CI, all platforms) packs
+  and installs the companion into a temporary prefix outside the source
+  repository, runs a fake-adapter benchmark end to end from the installed
+  native archive and the npm launcher, and rebuilds the report.
+- `repoise capabilities` (and its v1 schema) now expose the benchmark runtime
+  prerequisites under `benchmark.nodeCompanion` (the companion/adapter
+  packages, the resolution precedence, and the note that native
+  index/search/read never needs the companion). A missing companion in an
+  installed build yields actionable setup guidance. See docs/bench.md.
+
 ### Server-side retrieval audit for benchmark trials
 
 Trials proved only that a pinned MCP server was configured, never that the
