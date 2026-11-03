@@ -1,9 +1,11 @@
 import { ChildProcess, spawn } from "node:child_process";
 
 /**
- * CLI process runner. Always spawns with an argument array (never a shell),
- * keeps protocol records on stdout and diagnostics on stderr, and supports
- * cooperative cancellation: SIGTERM on Unix; on Windows a plain
+ * CLI process runner. Always spawns with an argument array (no shell
+ * string; Windows .cmd/.bat shims use a fixed `cmd.exe /d /s /c`
+ * invocation), keeps protocol records on stdout and diagnostics on
+ * stderr, and supports cooperative cancellation: SIGTERM on Unix; on
+ * Windows a plain
  * termination (the TerminateProcess path) for native binaries, and a
  * whole-process-tree kill (`taskkill /PID <pid> /T /F`) for cmd-shim
  * launches, whose node-launcher descendants would otherwise survive.
@@ -228,8 +230,8 @@ export function runCli(options: CliRunOptions): CliRunHandle {
       windowsVerbatimArguments: verbatimArguments,
     });
   } catch (err) {
-    // Synchronous spawn failures (e.g. EINVAL when a Windows .cmd shim is
-    // spawned without a shell) never reach the 'error' event.
+    // Synchronous spawn failures (e.g. invalid arguments or options) are
+    // thrown rather than emitted on the 'error' event.
     state.spawnError = err instanceof Error ? err.message : String(err);
     finish(null, null);
     return handle;
