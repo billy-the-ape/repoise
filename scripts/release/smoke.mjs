@@ -323,8 +323,15 @@ function watchLineFeed(reader, child, overallMs, label) {
 
 /// Normalize a path for cross-platform comparison (the smoke runs on
 /// Linux/macOS/Windows and compares Node-side paths against the CLI's).
+/// On Windows: 8.3 short names are expanded at the source via
+/// `realpathSync.native`, the CLI's verbatim `\\?\` prefix is stripped, and
+/// the comparison is case-insensitive.
 function normalizePath(path) {
-  return path.replace(/\\/g, "/").replace(/\/+/g, "/");
+  let normalized = path.replace(/\\/g, "/");
+  if (normalized.startsWith("//?/")) normalized = normalized.slice(4);
+  normalized = normalized.replace(/\/+/g, "/");
+  if (process.platform === "win32") normalized = normalized.toLowerCase();
+  return normalized;
 }
 
 function streamEvents(stdout) {
@@ -345,7 +352,9 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
   const fixture = join(temporary, `fixture ${label}`);
   const cache = join(temporary, `cache ${label}`);
   const environment = { ...process.env, ...extraEnv, REPOISE_CACHE_DIR: cache };
-  const rootCanonical = realpathSync(fixture);
+  // `native` expands 8.3 short names (e.g. RUNNER~1) to their long form, so
+  // the scope root comparison holds on Windows too.
+  const rootCanonical = realpathSync.native(fixture);
   const streamOptions = { operation: "index" };
   const cli = (args) => {
     const result = spawnSync(executable, [...prefix, ...args, fixture], {
