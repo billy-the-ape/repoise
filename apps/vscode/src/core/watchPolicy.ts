@@ -35,8 +35,7 @@ export type WatchDecision =
         | "completed"
         | "external-owner"
         | "spawn-failure"
-        | "max-restarts"
-        | "unexpected-exit";
+        | "max-restarts";
       detail: string;
     };
 
