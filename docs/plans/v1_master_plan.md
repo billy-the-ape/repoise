@@ -1,9 +1,12 @@
 # Repoise v1 — master implementation plan
 
 Status: v1 engine implemented; 0.1.0-alpha.1 is the first functional preview, now published.
-Progress snapshot: October 20, 2026 (America/Denver); offline docs+code indexing,
-search, reads, the opt-in history lane, MCP and watch are implemented and tested;
-hybrid evaluation and the owner-approved live agent pilot remain pending.
+Progress snapshot: November 3, 2026 (America/Denver); offline docs+code indexing,
+search, reads, the opt-in history lane, MCP and watch, the AP-03 agent adapter
+protocol with the first Cline adapter, the AP-04/AP-05 benchmark runner and the
+AP-07 operations-UI first slice are implemented and tested; the 0.1.0-alpha.2
+candidate is prepared in-repo (unpublished); hybrid evaluation and the
+owner-approved live agent pilot remain pending.
 Project: [billy-the-ape/repoise](https://github.com/billy-the-ape/repoise).
 Target: a standalone Rust engine/native CLI, initially distributed through npm.
 Canonical planning location: `docs/plans/v1_master_plan.md` in this repository.
