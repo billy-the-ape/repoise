@@ -47,6 +47,21 @@ No new environment variables, settings, migrations or deployment actions.
 The candidate is untested against a public registry until an authorized
 publication runs.
 
+### VS Code operations extension (AP-07 first slice, development build)
+
+New `apps/vscode/` workspace package: a thin VS Code extension that
+discovers an installed Repoise CLI (explicit override → repository-local
+package → PATH), shows per-worktree status/freshness/coverage, runs
+`index --events` with rendered progress, supervises an extension-owned
+`watch` process (external-owner handoff, bounded restart/backoff,
+cooperative cancellation), and provides read-only MCP definitions
+(`repoise.mcp.refresh` opt-in) plus VS Code `vscode.lm` MCP registration
+where the host supports it. Untrusted workspaces never execute
+repository-local binaries. No marketplace identity, packaging, publication
+or bundled binary; benchmark UI remains proposed. See
+[docs/vscode.md](docs/vscode.md); the suite (fake-CLI event streams) runs
+in all three CI Check jobs.
+
 ### Optional benchmark companion distribution
 
 Installed native/npm users can now run benchmarks without a Repoise source

@@ -34,10 +34,14 @@ budgets, interruption and artifacts — [bench guide](../bench.md)) and the
 independent post-trial grading, paired comparisons and published reports of
 AP-05. AP-06's first smoke experiment executed 2026-10-30 (all 12 trials
 passed deterministic grading; SIGINT cancellation verified — see
-[pilot status](../pilot.md)); its expansion and the AP-07 VS Code UI remain
-proposed work.
-These plans extend this document without changing section 11 adoption gates or
-claiming shipped commands, completed benchmarks, or an implemented extension.
+[pilot status](../pilot.md)); its expansion remains proposed work. AP-07's
+first slice — a thin VS Code operations UI (status, index progress,
+supervised watch and MCP definitions) under `apps/vscode/` — is implemented
+as an unpublished development build (see the
+[VS Code guide](../vscode.md)); the benchmark UI remains proposed work.
+These plans extend this document without changing section 11 adoption gates
+or claiming shipped commands or completed benchmarks; the extension is a
+development build, not a published marketplace package.
 
 ## 1. Outcome and boundaries
 

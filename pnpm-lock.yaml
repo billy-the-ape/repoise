@@ -116,6 +116,18 @@ importers:
         specifier: 2.11.9
         version: 2.11.9
 
+  apps/vscode:
+    devDependencies:
+      '@types/node':
+        specifier: 20.19.0
+        version: 20.19.0
+      '@types/vscode':
+        specifier: 1.103.0
+        version: 1.103.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
   packages/agent-adapter-cline:
     devDependencies:
       ajv:
@@ -160,6 +172,12 @@ packages:
     cpu: [arm64]
     os: [win32]
 
+  '@types/node@20.19.0':
+    resolution: {integrity: sha512-hfrc+1tud1xcdVTABC2JiomZJEklMcXYNTVtZLAeqTVWD+qL5jkHKT+1lOtqDdGxt+mB53DTtiz673vfjU8D1Q==}
+
+  '@types/vscode@1.103.0':
+    resolution: {integrity: sha512-o4hanZAQdNfsKecexq9L3eHICd0AAvdbLk6hA60UzGXbGH/q8b/9xv2RgR7vV3ZcHuyKVq7b37IGd/+gM4Tu+Q==}
+
   ajv@8.20.0:
     resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
 
@@ -185,6 +203,14 @@ packages:
     resolution: {integrity: sha512-k2ev5dv9OgP2pJwaPuydkZdid+haX2U5TDGcPtpAz0gb0nbRR3eXY/cpfrlvHih52YRTxWIcRVKc0ri3C2Scrg==}
     hasBin: true
 
+  typescript@5.9.3:
+    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
 snapshots:
 
   '@turbo/darwin-64@2.11.9':
@@ -204,6 +230,12 @@ snapshots:
 
   '@turbo/windows-arm64@2.11.9':
     optional: true
+
+  '@types/node@20.19.0':
+    dependencies:
+      undici-types: 6.21.0
+
+  '@types/vscode@1.103.0': {}
 
   ajv@8.20.0:
     dependencies:
@@ -230,3 +262,7 @@ snapshots:
       '@turbo/linux-arm64': 2.11.9
       '@turbo/windows-64': 2.11.9
       '@turbo/windows-arm64': 2.11.9
+
+  typescript@5.9.3: {}
+
+  undici-types@6.21.0: {}

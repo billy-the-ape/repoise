@@ -6,7 +6,9 @@ first Cline adapter) are implemented; AP-04 and AP-05 are implemented; AP-06's
 first smoke experiment executed 2026-10-30 — all 12 trials completed and
 passed deterministic grading, and the SIGINT cancellation check passed
 (the ai-gateway pilot on the AP-04/AP-05 harness — see the
-[pilot status guide](../../pilot.md)); its expansion and AP-07 remain
+[pilot status guide](../../pilot.md)); its expansion remains proposed.
+AP-07's first slice (the operations UI in `apps/vscode/`) was implemented
+November 3, 2026 — unpublished development build; its benchmark UI remains
 proposed. Recorded October 19, 2026 (America/Denver); AP-01
 implementation recorded October 20, 2026; AP-02 implementation recorded
 October 26, 2026; AP-03 implementation recorded October 26, 2026; AP-06 smoke
@@ -58,7 +60,7 @@ reviewable scope, retaining the same interfaces and acceptance requirements.
 | AP-04 | [Benchmark execution](../complete/agent-platform/04-benchmark-runner.md)               | AP-02, AP-03                            | Isolated trials and verified retrieval conditions with budgets/artifacts          | Implemented (2026-10-27)                 |
 | AP-05 | [Suites, metrics and reports](../complete/agent-platform/05-suites-metrics-reports.md) | AP-04; define schema with AP-03         | Independent grading, per-trial records and comparable reports                     | Implemented (2026-10-27)                 |
 | AP-06 | [Pilot and expansion](06-pilot-and-expansion.md)            | AP-04, AP-05                            | ai-gateway pilot, then broader repository/model/harness experiments               | Smoke executed 2026-10-30 (all 12 trials passed, [status](../../pilot.md)); expansion pending |
-| AP-07 | [VS Code extension](07-vscode-extension.md)                 | AP-01, AP-02; bench UI also AP-04/AP-05 | Thin workspace UI and supervised watch/MCP setup                                  | Proposed (2026-11-03: 0.1.0-alpha.2 candidate prepared with the first-slice machine contract; [candidate record](../../publish/alpha-2-candidate.md)) |
+| AP-07 | [VS Code extension](07-vscode-extension.md)                 | AP-01, AP-02; bench UI also AP-04/AP-05 | Thin workspace UI and supervised watch/MCP setup                                  | First slice implemented (2026-11-03, unpublished; 0.1.0-alpha.2 candidate prepared with the first-slice machine contract, [candidate record](../../publish/alpha-2-candidate.md)); benchmark UI proposed |
 
 AP-07 watch/status UI can land before the benchmark UI, but no editor-specific
 benchmark engine should be introduced. AP-06 consumer integration belongs in a
