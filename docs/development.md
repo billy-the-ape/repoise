@@ -74,7 +74,8 @@ Init options: `--preset docs-only|docs-code-lexical|hybrid`, `--provider <NAME>`
 (required for hybrid), `--agents-snippet`, `--adopt-managed-block <FILE>`,
 `--dry-run`, `--yes`.
 Unsupported arguments exit 2 with the usage on stderr; I/O and service failures
-exit 1; a missing or stale index exits 3 for `status`, `search` and `read`.
+exit 1; a missing index exits 3 for `status`, `search`, `read` and `related`,
+and a stale index exits 3 for `status` and `check --fresh`.
 
 Easy fixture path (no credentials, no network):
 

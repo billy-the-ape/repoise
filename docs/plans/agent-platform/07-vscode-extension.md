@@ -16,7 +16,8 @@ compatibility fixtures in `scripts/release/ap07-contract.mjs` and the
 packaged-consumer smoke extended to drive the installed candidate's
 capabilities/events/ownership contracts. The candidate is not published; see
 the [candidate readiness record](../../publish/alpha-2-candidate.md). The
-extension work itself remains proposed.
+extension's benchmark UI (second slice) and any marketplace publication remain
+proposed.
 
 ## Outcome and architectural boundary
 

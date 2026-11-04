@@ -106,7 +106,7 @@ embedding coverage are reported separately (`total: null` means indeterminate).
 | 0    | ok (success, clean cancellation)                                  |
 | 1    | operational failure (index, watch step, enrichment, I/O, …)      |
 | 2    | usage error (unknown flags/arguments)                            |
-| 3    | index missing or stale (`status`, `search`, `check --fresh`), or `bench` preflight/suite failure |
+| 3    | index missing (`status`, `search`, `read`, `related`) or stale (`status`, `check --fresh`), or `bench` preflight/suite failure |
 | 4    | coverage not met (`check`), or `bench` interruption (SIGINT/SIGTERM) |
 
 The table is advertised by `capabilities --json` and covered by tests;

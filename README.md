@@ -93,8 +93,9 @@ for local installation and checks.
 ## CLI commands
 
 Exit codes: 0 success, 1 operational failure, 2 usage error, 3 the index is
-stale or missing for search/read/status (and `bench` preflight/suite
-failure), 4 coverage not met for `check` (and `bench` interruption).
+missing (`status`, `search`, `read`, `related`) or stale (`status`,
+`check --fresh`) (and `bench` preflight/suite failure), 4 coverage not met
+for `check` (and `bench` interruption).
 
 Global options accepted by most commands: `--json` (machine-readable output),
 `--config <PATH>`, `--local-config <PATH>`, `--max-file-bytes <N>`, and
