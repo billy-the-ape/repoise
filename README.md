@@ -93,7 +93,7 @@ for local installation and checks.
 ## CLI commands
 
 Exit codes: 0 success, 1 operational failure, 2 usage error, 3 the index is
-missing (`status`, `search`, `read`, `related`) or stale (`status`,
+missing (`status`, `search`, `read`, `related`, `check`) or stale (`status`,
 `check --fresh`) (and `bench` preflight/suite failure), 4 coverage not met
 for `check` (and `bench` interruption).
 
