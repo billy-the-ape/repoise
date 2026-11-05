@@ -1,6 +1,14 @@
 import { cpSync, mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { root, targets, manifest, verifyVersion, npm, run } from "./common.mjs";
+import {
+  root,
+  targets,
+  manifest,
+  verifyVersion,
+  npm,
+  run,
+  SHIPPED_SCHEMA_FILES,
+} from "./common.mjs";
 const spec = targets.find((item) => item.target === process.argv[2]);
 if (!spec) throw new Error("Pass a supported Rust target");
 const version = verifyVersion();
@@ -20,11 +28,7 @@ chmodSync(join(directory, "bin", spec.binary), 0o755);
 cpSync(join(root, "LICENSE"), join(directory, "LICENSE"));
 const schemas = join(directory, "schemas");
 mkdirSync(schemas, { recursive: true });
-for (const schema of [
-  "repoise.config.v1.schema.json",
-  "capabilities.v1.schema.json",
-  "event-stream.v1.schema.json",
-])
+for (const schema of SHIPPED_SCHEMA_FILES)
   cpSync(join(root, `schemas/${schema}`), join(schemas, schema));
 writeFileSync(
   join(directory, "README.md"),

@@ -35,6 +35,20 @@ export function manifest() {
     readFileSync(new URL("../../npm/repoise/package.json", import.meta.url)),
   );
 }
+
+/// Versioned schemas shipped with the installed launcher and the native
+/// archives: the config schema plus the machine-contract schemas.
+export const SHIPPED_SCHEMA_FILES = [
+  "repoise.config.v1.schema.json",
+  "capabilities.v1.schema.json",
+  "event-stream.v1.schema.json",
+];
+
+/// The machine-contract subset (capabilities and event stream) that the
+/// AP-07 first-slice negotiation checks.
+export const MACHINE_SCHEMA_FILES = SHIPPED_SCHEMA_FILES.filter(
+  (schema) => schema !== "repoise.config.v1.schema.json",
+);
 export function run(command, args, options = {}) {
   return execFileSync(command, args, {
     cwd: root,
@@ -124,11 +138,7 @@ export function verifyVersion(tag) {
   // The launcher ships the versioned config schema and the machine-contract
   // schemas (capabilities and event stream); every copy must match the
   // committed source exactly.
-  for (const schema of [
-    "repoise.config.v1.schema.json",
-    "capabilities.v1.schema.json",
-    "event-stream.v1.schema.json",
-  ]) {
+  for (const schema of SHIPPED_SCHEMA_FILES) {
     if (
       readFileSync(
         new URL(`../../schemas/${schema}`, import.meta.url),

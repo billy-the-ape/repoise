@@ -19,7 +19,7 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/overlay.rs` | Non-destructive overlay lifecycle: uninstall of unchanged managed files/blocks, three-way template update with installed-byte baselines, conflict reporting |
 | `crates/repoise-core/src/hash.rs` | Lowercase SHA-256 helpers used across manifests and fingerprints |
 | `crates/repoise-core/src/store.rs` | SQLite (WAL) + FTS5 persistent store: transactional generation publication, retention, current/previous generation access |
-| `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references, plus the pinned tree-sitter TypeScript/TSX and JavaScript/JSX code grammars with one size-aware emission/splitting path for every declaration form (the 1,000-estimated-token ceiling holds on every splittable chunk; only an irreducible single line larger than the budget is emitted whole and labeled) and a line-window fallback for other code languages |
+| `crates/repoise-core/src/chunk/` | Structural chunkers (Markdown, plain text, config) with exact line ranges, labeled oversized splits and parent references, plus the pinned tree-sitter TypeScript/TSX and JavaScript/JSX code grammars with one size-aware emission/splitting path for every declaration form (the 1,000-estimated-token ceiling holds on every splittable chunk; only an irreducible single line larger than the budget is emitted whole, flagged `oversized` in memory, never truncated or dropped) and a line-window fallback for other code languages |
 | `crates/repoise-core/src/indexing.rs` | Incremental index build: same-worktree and cross-worktree family reuse, reparse/tombstone reconciliation, destination-scoped rematerialization of shared artifacts, secret redaction, code symbol and reference-edge resolution, optional cache-first embedding with atomic vector publication, embedding-cache GC, optional phase/progress reporting, `state.json` publication |
 | `crates/repoise-core/src/progress.rs` | Structured index progress contract: phase enum, reporter trait (phase start, completed-unit counters, phase end) and the no-op reporter |
 | `crates/repoise-core/src/shared.rs` | Cross-worktree reuse family: Git common-directory family identity (adapter seam), versioned shared-store resolution (default common-directory or explicit cache root), atomic content-addressed parse-artifact cache, member registration, family embedding-cache reference collection and bounded GC, sharing opt-out and fallback diagnostics |
@@ -30,13 +30,14 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `crates/repoise-core/src/status.rs` | Scope/snapshot/index/freshness view with config and cache diagnostics |
 | `crates/repoise-core/src/check.rs` | Offline freshness/coverage check over the status view with stable categories for automation (no provider calls) |
 | `crates/repoise-core/src/related.rs` | Bounded related-knowledge service: syntactic reference edges, reverse references and parent/child links over labeled chunk splits from a source chunk |
-| `crates/repoise-core/src/watch.rs` | Incremental watch loop: debounced scanning, coalesced per-path content, bounded pending-path publication through the shared index operation (including the configured embedding session, built once per watch process), branch-switch rescan and cooperative cancellation (the CLI installs the SIGINT/SIGTERM handlers; in `--events` mode a `cancelled` terminal event ends the stream) |
+| `crates/repoise-core/src/watch.rs` | Incremental watch loop: debounced scanning, coalesced per-path content, bounded pending-path publication through the shared index operation (including the configured embedding session, rebuilt through the client factory when the effective embedding settings change), branch-switch rescan and cooperative cancellation (the CLI installs the SIGINT/SIGTERM handlers; in `--events` mode a `cancelled` terminal event ends the stream) |
 | `crates/repoise-core/src/bench/` | Benchmark coordinator (AP-04/AP-05): suite manifest validation (including AP-05 evaluator, gates and report fields), preflight (reproducible snapshot, output-root dirtiness exclusion, prerequisites, vector-coverage gates), seeded trial plan, disposable-worktree trials with trial-local index builds and the pinned read-only MCP argv, budgets, interruption, data-only post-trial grading (deterministic checks, manual records, censored-trial handling), report assembly (counts, grading summaries, task-cluster bootstrap paired analysis, predeclared quality gate) and offline report rebuild; the agent loop itself is delegated to the AP-03 host bridge |
 | `crates/repoise-core/src/cache.rs` | Cache root resolution (config/env override) and scope layout paths |
 | `crates/repoise-core/src/purge.rs` | Removal of generated cache data only, with scope-id validation |
 | `crates/repoise-core/src/ownership.rs` | One writer per mutable index scope: the authoritative OS-backed `ScopeLock` (flock/LockFileEx) with atomic cross-process acquisition, stale/corrupt `owner.json` marker handling and the read-only `inspect` view surfaced by `status`; the marker remains as descriptive heartbeat metadata (AP-02 history); removed with the scope when purged |
 | `crates/repoise-cli/src/main.rs` | Native executable, argument handling and terminal I/O (doctor/explain/index/init/status/search/read/purge/related/check/watch/overlay/mcp/bench/capabilities adapters; optional `--events` NDJSON stream for index and watch; SIGINT/SIGTERM cancellation installed for watch) |
-| `crates/repoise-cli/src/mcp.rs` | stdio MCP server (JSON-RPC 2.0 over stdin/stdout): `search_project_knowledge`, `read_project_knowledge`, `related_project_knowledge`, `project_knowledge_status` and the opt-in `refresh_project_knowledge`; scope-bound, read-only by default, stdout carries protocol traffic only; optional `--search-mode` pin refusing requests that name a different mode (used by `bench` trials) |
+| `crates/repoise-cli/src/mcp.rs` | stdio MCP server (JSON-RPC 2.0 over stdin/stdout): `search_project_knowledge`, `read_project_knowledge`, `related_project_knowledge`, `project_knowledge_status` and the opt-in `refresh_project_knowledge`; scope-bound, read-only by default, stdout carries protocol traffic only; optional `--search-mode` pin refusing requests that name a different mode (used by `bench` trials); opt-in `--audit-file` sink recording the server's own tool activity (see `audit.rs`) |
+| `crates/repoise-cli/src/audit.rs` | Opt-in operator audit sink for the MCP server (`--audit-file`): size-bounded NDJSON (`schemaVersion: 1`) records of the server's own tool activity (fixed tool vocabulary, retrieval modes, served generation, success, duration); a dropped oversized record becomes an `audit_error` marker, and write failures are stderr-only (never change the protocol response) |
 | `crates/repoise-cli/src/github_enrichment.rs` | Optional (`github-enrichment` CLI feature) read-only GitHub transport for history enrichment: commit-to-PR verification, ETag-cached change-request fetch, request budgets, rate-limit/permission classification |
 | `crates/repoise-cli/src/progress.rs` | Terminal rendering of index progress: throttled in-place line on a TTY, appended lines otherwise, stderr under `--json`, honest ETAs (the ETA helpers are shared with the event reporter), and one printed final line per phase |
 | `crates/repoise-cli/src/capabilities.rs` | AP-02 `capabilities` handshake document: version, event-stream protocol and schema, build features, command/machine-output matrix, stable exit codes and compatibility policy |
@@ -53,6 +54,20 @@ Git adapter shells out to `git` with argument arrays when operating on a Git rep
 | `docs/storage.md` | Current-state guide for the persistent index and cache layout |
 | `docs/mcp.md` | Current-state guide for the stdio MCP server: launch, tools, client registration |
 | `docs/bench.md` | Current-state guide for the benchmark runner: suites, preflight, trial lifecycle, grading, reports, `bench report` and artifacts |
+
+Intake is policy-aware and bounded before content I/O: adapters expose a
+metadata-only intake (candidate path/size pairs plus native ignore policy
+files), so excluded or oversized files contribute zero content reads and
+zero hashes; traversal conservatively continues below excluded directories
+so nested `.gitignore` policy files remain visible to the shared policy
+(no corpus content below them is ever read). Accepted files are read exactly
+once, bounded at `maxFileBytes + 1`, and hashed once, reusing the hash for
+the manifest, so ingested content and its hash are mutually consistent by
+construction. The observable scan-drift signal is the size at read time
+(`file_too_large` or `changed_during_scan`); same-size content drift between
+the metadata walk and the read is not flagged. An idle watch is not
+O(changed files): each cycle is a full metadata traversal plus content
+re-reads of the accepted files.
 
 The CLI depends on the core; the core must not depend on a CLI or agent client.
 The MCP stdio adapter (`crates/repoise-cli/src/mcp.rs`) calls the same core services

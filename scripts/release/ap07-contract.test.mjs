@@ -115,6 +115,21 @@ test("a stream without a terminal event is incomplete output", () => {
   );
 });
 
+test("a terminal event that is not the last event is incomplete output", () => {
+  const fixture = eventStreamFixtures.terminalMidStream;
+  const verdict = validateEventStream(fixture.events, {
+    operation: fixture.operation,
+    root: fixture.root,
+  });
+  assert.equal(verdict.ok, false);
+  assert.ok(
+    verdict.problems.some((problem) =>
+      problem.includes("is not the last event"),
+    ),
+    `expected the mid-stream terminal problem: ${verdict.problems}`,
+  );
+});
+
 test("a sequence gap is rejected", () => {
   const fixture = eventStreamFixtures.sequenceGap;
   const verdict = validateEventStream(fixture.events, {

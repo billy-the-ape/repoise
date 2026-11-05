@@ -25,10 +25,7 @@ export const MINIMUM_STREAM_OPERATIONS = ["index", "watch"];
 
 /// Machine-contract schemas shipped with the installed launcher and the
 /// native archives alongside the config schema.
-export const MACHINE_SCHEMA_FILES = [
-  "capabilities.v1.schema.json",
-  "event-stream.v1.schema.json",
-];
+export { MACHINE_SCHEMA_FILES } from "./common.mjs";
 
 const RUN_ID_PATTERN = /^[a-z0-9-]+-[0-9]+-[0-9a-f]+$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -187,7 +184,7 @@ export function validateEventStream(events, { operation, root }) {
         )
       )
         problems.push(
-          `the started event carries no valid scope (root/repoId/worktreeId/snapshotMode)`,
+          "the started event carries no valid scope (repoId/worktreeId/snapshotMode)",
         );
       else if (root !== undefined && scope.root !== root)
         problems.push(
@@ -197,20 +194,28 @@ export function validateEventStream(events, { operation, root }) {
         );
       return;
     }
-    if (TERMINAL_TYPES.includes(type) && position !== events.length - 1)
-      problems.push(
-        `a terminal event ("${type}") appears before the last event`,
-      );
   });
   const terminals = events.filter((event) =>
     TERMINAL_TYPES.includes(event?.type),
   );
-  if (terminals.length !== 1)
+  const lastEvent = events[events.length - 1];
+  if (terminals.length === 0) {
     problems.push(
-      `expected exactly one terminal event (completed/cancelled/failed), got ${terminals.length}; a stream without its terminal event is incomplete output`,
+      "no terminal event (completed/cancelled/failed): a stream without its terminal event is incomplete output",
     );
-  else if (terminals[0] !== events[events.length - 1])
-    problems.push("the terminal event must be the last event");
+  } else if (terminals[terminals.length - 1] !== lastEvent) {
+    // A terminal event was flushed but the stream kept going afterwards: the
+    // CLI emits its single terminal as the last event, so a tail after it
+    // means the process likely died mid-stream (incomplete output), not a
+    // valid additive extension.
+    problems.push(
+      `the terminal event "${terminals[terminals.length - 1].type}" is not the last event: the stream ended mid-way (incomplete output)`,
+    );
+  } else if (terminals.length > 1) {
+    problems.push(
+      `expected exactly one terminal event, got ${terminals.length}`,
+    );
+  }
   return problems.length > 0 ? { ok: false, problems } : { ok: true };
 }
 
@@ -394,6 +399,33 @@ export const eventStreamFixtures = {
         done: 0,
         total: null,
         elapsedMs: 3,
+      }),
+    ],
+  },
+  // A terminal event was flushed but the stream kept going afterwards: the
+  // CLI emits its single terminal as the last event, so a tail after it is
+  // incomplete output (the process likely died mid-stream).
+  terminalMidStream: {
+    operation: "index",
+    root: fixtureScope.root,
+    events: [
+      envelope("index-48-5", 0, "started", {
+        operation: "index",
+        pid: 48,
+        scope: fixtureScope,
+      }),
+      envelope("index-48-5", 1, "completed", {
+        operation: "index",
+        scope: fixtureScope,
+        result: { files_indexed: 1 },
+      }),
+      envelope("index-48-5", 2, "progress", {
+        operation: "index",
+        phase: "publication",
+        unit: "file",
+        done: 1,
+        total: 1,
+        elapsedMs: 9,
       }),
     ],
   },

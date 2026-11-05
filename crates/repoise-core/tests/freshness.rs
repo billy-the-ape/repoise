@@ -718,3 +718,34 @@ fn lex_hits_empty(h: &Harness, query: &str) -> bool {
     .unwrap();
     response.results.is_empty()
 }
+
+#[test]
+fn generation_stored_under_a_different_snapshot_mode_is_stale() {
+    let h = Harness::new(git_repo("mode-mismatch-stale"));
+    h.build(SnapshotMode::Committed);
+    let before = h.status(SnapshotMode::Committed);
+    assert_eq!(before.freshness.status, "fresh");
+    // Simulate a store whose current generation records a snapshot mode
+    // different from the requested one (the scope key normally prevents
+    // this): a stored manifest built under different snapshot semantics
+    // must be judged stale, never compared as fresh.
+    let conn = h.store(SnapshotMode::Committed).open().unwrap();
+    conn.execute(
+        "UPDATE generation SET snapshot_mode = 'working-tree' \
+         WHERE id = (SELECT value FROM meta WHERE key = 'current_generation')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let after = h.status(SnapshotMode::Committed);
+    assert_eq!(after.freshness.status, "stale");
+    assert!(
+        after
+            .freshness
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("snapshot mode")),
+        "expected the mode-mismatch reason: {:?}",
+        after.freshness.reasons
+    );
+}

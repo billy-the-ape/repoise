@@ -272,3 +272,81 @@ test("a user Stop during drain suppresses the restart of a crashed watch", async
   assert.equal(manager.info("/root").lastOutcome, "watch stopped by user");
   manager.dispose();
 });
+
+test("an in-flight start surfaces the starting status before the probe settles", async () => {
+  let resolveProbe: (result: StatusOutcome) => void = () => undefined;
+  const probe = new Promise<StatusOutcome>((resolve) => {
+    resolveProbe = resolve;
+  });
+  const manager = new WatchManager(
+    fakeCli(),
+    { appendLine: () => undefined },
+    { onEvent: () => undefined, onStateChange: () => undefined },
+    { probeStatus: () => probe, runProcess: () => fakeHandle() },
+  );
+  void manager.start("/root");
+  // The claim surfaces the in-flight start to the UI synchronously, so the
+  // panel disables Start and enables Stop while the probe runs.
+  assert.equal(manager.info("/root").status, "starting");
+  resolveProbe(freeStatus());
+  await wait(50);
+  assert.equal(manager.isRunning("/root"), true);
+  manager.dispose();
+});
+
+test("a stop landing while the probe is in flight wins over the external-owner outcome", async () => {
+  let resolveProbe: (result: StatusOutcome) => void = () => undefined;
+  const probe = new Promise<StatusOutcome>((resolve) => {
+    resolveProbe = resolve;
+  });
+  const manager = new WatchManager(
+    fakeCli(),
+    { appendLine: () => undefined },
+    { onEvent: () => undefined, onStateChange: () => undefined },
+    { probeStatus: () => probe },
+  );
+  void manager.start("/root");
+  manager.stop("/root");
+  // The probe settles with an owned scope after the stop: the stale
+  // continuation must not override the stop's state with an external owner.
+  const owned = freeStatus();
+  if (!owned.ok) throw new Error("test fixture must be an ok outcome");
+  owned.status.writer = {
+    lockHeld: true,
+    state: "owned",
+    owner: {
+      pid: 42,
+      operation: "index",
+      startedAtMs: 0,
+      refreshedAtMs: 0,
+      state: "active",
+    },
+  };
+  resolveProbe(owned);
+  await wait(50);
+  const info = manager.info("/root");
+  assert.equal(info.status, "stopped");
+  assert.equal(info.lastOutcome, "watch stopped by user");
+  manager.dispose();
+});
+
+test("a stop landing while the probe is in flight wins over a probe failure", async () => {
+  let resolveProbe: (result: StatusOutcome) => void = () => undefined;
+  const probe = new Promise<StatusOutcome>((resolve) => {
+    resolveProbe = resolve;
+  });
+  const manager = new WatchManager(
+    fakeCli(),
+    { appendLine: () => undefined },
+    { onEvent: () => undefined, onStateChange: () => undefined },
+    { probeStatus: () => probe },
+  );
+  void manager.start("/root");
+  manager.stop("/root");
+  resolveProbe({ ok: false, problem: "probe-failed", detail: "spawn failed" });
+  await wait(50);
+  const info = manager.info("/root");
+  assert.equal(info.status, "stopped");
+  assert.equal(info.lastOutcome, "watch stopped by user");
+  manager.dispose();
+});

@@ -45,6 +45,10 @@ pub const AUDIT_SINK_FILENAME: &str = "mcp-audit.ndjson";
 /// Bound on how much of one trial's audit sink the coordinator reads
 /// (per-record bytes are already bounded at the server).
 const MAX_AUDIT_READ_BYTES: u64 = 16 * 1024 * 1024;
+/// The `schemaVersion` value of summarized audit documents and mode records.
+const AUDIT_SCHEMA_VERSION: u64 = 1;
+/// The `source` label of summarized audit documents and mode records.
+const AUDIT_SOURCE: &str = "server-side observation";
 
 /// Everything the runner needs, shared by every trial of one experiment.
 pub struct RunContext {
@@ -879,8 +883,9 @@ fn observed_harness_version(host_result: &Value) -> Value {
 ///   truncated write, or a broken stdio transport);
 /// - `not_observed`: a clean, complete audit stream with no
 ///   `search_project_knowledge` tool calls and no malformed records (a
-///   lost/truncated line could have been a search, so any malformed record
-///   keeps the stream `incomplete`);
+///   lost/truncated line could have been a search, so any malformed record —
+///   including an `audit_error` marker replacing a dropped record — keeps
+///   the stream `incomplete`);
 ///
 /// A stream is complete only when every recorded server is matched: the
 /// final `server_end` has reason `stdin_closed` and no `server_start` is
@@ -924,8 +929,8 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
     };
     let Some(text) = text else {
         return serde_json::json!({
-            "schemaVersion": 1,
-            "source": "server-side observation",
+            "schemaVersion": AUDIT_SCHEMA_VERSION,
+            "source": AUDIT_SOURCE,
             "status": "unavailable",
             "notes": notes,
             "searches": null_value()
@@ -933,7 +938,7 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
     };
 
     let mut tool_calls = serde_json::Map::new();
-    let mut searches: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut searches_succeeded = 0u64;
     let mut searches_failed = 0u64;
     let mut searches_degraded = 0u64;
     let mut effective_modes: serde_json::Map<String, Value> = serde_json::Map::new();
@@ -968,7 +973,7 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
                 bump(&mut tool_calls, &tool);
                 if tool == "search_project_knowledge" {
                     if record.get("success").and_then(Value::as_bool) == Some(true) {
-                        bump(&mut searches, "succeeded");
+                        searches_succeeded += 1;
                         if record.get("degraded").and_then(Value::as_bool) == Some(true) {
                             searches_degraded += 1;
                         }
@@ -984,22 +989,17 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
                     }
                 }
             }
-            Some("audit_error") => {}
+            // A dropped record (the `audit_error` marker) could have been a
+            // search, so it counts as malformed exactly like an unreadable
+            // line.
+            Some("audit_error") => malformed += 1,
             Some(_) | None => malformed += 1,
         }
     }
-    // A stream is complete only when every recorded server is matched: the
-    // final `server_end` has reason `stdin_closed` and no `server_start` is
-    // left open (the sink is append-only across re-spawns, so a later
-    // cancelled/killed server without a final end leaves its tail unknown).
-    // A `stdin_error`/`stdout_error` end means the stdio transport broke,
-    // and more ends than starts means the sink was tampered with.
+    // Completeness follows the function doc: a clean, fully matched stream.
     let clean =
         server_end.as_ref().and_then(Value::as_str) == Some("stdin_closed") && open_servers == 0;
-    let succeeded = searches
-        .get("succeeded")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let succeeded = searches_succeeded;
     if malformed > 0 {
         notes.push(format!("{malformed} malformed audit record(s) skipped"));
     }
@@ -1047,13 +1047,14 @@ pub fn summarize_mcp_audit(path: &Path) -> Value {
     } else {
         "incomplete"
     };
+    let mut searches = serde_json::Map::new();
     searches.insert("succeeded".to_string(), Value::from(succeeded));
     searches.insert("failed".to_string(), Value::from(searches_failed));
     searches.insert("degraded".to_string(), Value::from(searches_degraded));
     searches.insert("effective".to_string(), Value::Object(effective_modes));
     serde_json::json!({
-        "schemaVersion": 1,
-        "source": "server-side observation",
+        "schemaVersion": AUDIT_SCHEMA_VERSION,
+        "source": AUDIT_SOURCE,
         "status": status,
         "cleanShutdown": clean,
         "toolCalls": Value::Object(tool_calls),
@@ -1138,31 +1139,31 @@ fn mode_record(condition: &Condition, host_result: &Value, server_audit: Option<
         None
     };
     let note = match audit_status {
-        "observed" => Some(format!(
+        "observed" => format!(
             "server-side observation: the trial's MCP server recorded tool calls; observed retrieval modes: {:?}",
             effective_modes_debug(audit)
-        )),
-        "not_observed" => Some(
+        ),
+        "not_observed" => {
             "server-side observation: the audit stream is complete (clean server end) but recorded no \
              search_project_knowledge calls; the configured mode was not exercised"
-                .to_string(),
-        ),
-        "incomplete" => Some(
+                .to_string()
+        }
+        "incomplete" => {
             "server-side observation incomplete: the audit stream never reached a clean server end \
              (cancellation, kill or truncation); observed calls so far are reported, but absence of \
              evidence is not evidence of no use"
-                .to_string(),
-        ),
-        _ => Some(
+                .to_string()
+        }
+        _ => {
             "server-side observation unavailable: the trial's audit sink is absent or unreadable; \
              the absence of audit records is not evidence of no tool use"
-                .to_string(),
-        ),
+                .to_string()
+        }
     };
     serde_json::json!({
         "requested": requested,
         "effective": effective,
-        "source": "server-side observation",
+        "source": AUDIT_SOURCE,
         "observationStatus": audit_status,
         "note": note
     })
@@ -1813,6 +1814,35 @@ mod tests {
         assert_eq!(summary["status"], "not_observed");
         assert_eq!(summary["cleanShutdown"], true);
         assert_eq!(summary["searches"]["succeeded"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_mcp_audit_error_marker_keeps_stream_incomplete() {
+        // An `audit_error` marker replaces a dropped record that could have
+        // been a search: it counts as malformed, so even a complete, clean
+        // stream is never `not_observed`.
+        let dir = audit_dir("audit_error");
+        let path = dir.join(AUDIT_SINK_FILENAME);
+        write_audit(
+            &path,
+            &[
+                r#"{"schemaVersion":1,"kind":"server_start"}"#,
+                r#"{"schemaVersion":1,"kind":"audit_error"}"#,
+                r#"{"schemaVersion":1,"kind":"server_end","reason":"stdin_closed"}"#,
+            ],
+        );
+        let summary = summarize_mcp_audit(&path);
+        assert_eq!(summary["status"], "incomplete");
+        assert_eq!(summary["cleanShutdown"], true);
+        assert_eq!(summary["malformedRecords"], 1);
+        assert_eq!(summary["searches"]["succeeded"], 0);
+        let notes = summary["notes"].as_array().unwrap();
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.as_str().is_some_and(|s| s.contains("malformed")))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

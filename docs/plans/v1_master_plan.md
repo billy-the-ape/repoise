@@ -194,7 +194,9 @@ Separate vector collections by model/profile/dimension; never compare incompatib
 
 Local agent commands default to working-tree scope; CI uses an explicitly resolved committed
 snapshot. Committed mode reads blobs from one resolved Git commit, not mutable files while hashing.
-For a non-Git folder, build a filesystem snapshot manifest and validate hashes before publication.
+For a non-Git folder, build the filesystem snapshot manifest from the single
+bounded read per accepted file, reporting the read-time size drift as
+changed-during-scan.
 Report a changed-during-scan snapshot instead of claiming commit consistency.
 Use Git argument arrays and NUL-delimited paths; never construct shell strings from repo paths.
 Handle spaces, Unicode, case collisions, renames, deleted files, and detached HEAD explicitly.

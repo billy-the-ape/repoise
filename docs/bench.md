@@ -33,7 +33,10 @@ repoise bench --suite <PATH> [--json] [--dry-run]
 
 - `SUITE` — the suite manifest (JSON, schema v1; positional or `--suite`).
 - `--dry-run` — run preflight and print the frozen plan only; no worktrees,
-  no agent processes, exit 0.
+  no agent processes, exit 0. The plan's `prerequisites.index` summary also
+  reports the trial index's vector state (`vectors`, `eligibleChunks`,
+  `vectorsPending`, `vectorProfile`, `embeddingCoverage`), so the hybrid
+  gate's inputs are visible without running any trials.
 - `--json` — machine output: the final document (dry-run document or
   experiment report) is the only stdout content; progress lines go to stderr.
 - `--runner <PATH>` — override the suite's adapter executable; the
@@ -65,7 +68,9 @@ from, in this precedence:
 2. `REPOISE_BENCH_COMPANION` — an explicitly installed companion package
    root (the `@repoise/agent-adapter-protocol` distribution). The coordinator
    validates the package name, the version (it must match the running binary),
-   and the presence of `bin/adapter-host-run.mjs` before executing it; a
+   the presence of `bin/adapter-host-run.mjs`, and that the bridge entry
+   resolves inside the companion root (a symlinked entry leaving the root is
+   rejected) before executing it; a
    lookalike (wrong name or version) fails preflight and is never executed.
 3. The source checkout the running executable was built from (walked up from
    `current_exe()`), so a development build needs no environment.
@@ -322,7 +327,7 @@ timestamp, and a `kind` of `server_start`, `tool_call`, `server_end` or
 `audit_error`). A `tool_call` record carries only measurements the server
 itself made: the tool name, the requested and effective retrieval mode for
 searches, the degradation reason (closed-vocabulary enum) when the search
-degraded, the served generation (null for failed calls), success, and
+degraded, the served generation (null unless the search completed), success, and
 duration. Query text, source ids, excerpts, source bodies, credentials,
 env values and unrestricted RPC payloads are never recorded; records are
 size-bounded; the server tolerates a full sink (later writes are

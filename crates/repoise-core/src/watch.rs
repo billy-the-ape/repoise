@@ -227,14 +227,15 @@ pub struct Watcher {
 impl Watcher {
     /// Creates a watcher for one declared scope.
     ///
-    /// `embed_client` is the operator-configured embedding session, built
-    /// once for the watch process and passed into every debounced
-    /// publication through the shared index path (cache-first; unchanged
-    /// chunk inputs never reach the provider). `None` keeps publications
-    /// lexical-only. Without [`Watcher::with_config_sources`], the watcher watches
-    /// the repository's default committed/local config paths with no CLI
-    /// overrides and no client factory (embedding settings cannot be
-    /// rebuilt in-process on that path).
+    /// `embed_client` is the operator-configured embedding session for the
+    /// watch start, passed into every debounced publication through the
+    /// shared index path (cache-first; unchanged chunk inputs never reach
+    /// the provider) and rebuilt through the client factory before any
+    /// publication when the effective embedding settings change. `None`
+    /// keeps publications lexical-only. Without [`Watcher::with_config_sources`], the
+    /// watcher watches the repository's default committed/local config
+    /// paths with no CLI overrides and no client factory (embedding
+    /// settings cannot be rebuilt in-process on that path).
     pub fn new(
         adapter: Box<dyn SourceAdapter>,
         mode: SnapshotMode,

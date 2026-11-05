@@ -1556,10 +1556,11 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
             as usize,
         config_warning_interval: repoise_core::watch::DEFAULT_CONFIG_WARNING_INTERVAL,
     };
-    // Build the configured embedding session once for the watch process;
-    // every debounced publication runs it through the shared index path.
-    // Missing configuration (or this build lacking the transport) keeps
-    // watch publications lexical-only.
+    // Build the configured embedding session for the watch start; every
+    // debounced publication runs it through the shared index path, and the
+    // watcher rebuilds it through the factory when the effective embedding
+    // settings change. Missing configuration (or this build lacking the
+    // transport) keeps watch publications lexical-only.
     let client = embedding_client(&ctx.effective, embed_cancel.clone())?;
     let embed_configured = client.is_some();
     // The resolved committed/local config sources for live reload: the

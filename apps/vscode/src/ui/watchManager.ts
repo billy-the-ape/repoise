@@ -123,8 +123,16 @@ export class WatchManager implements vscode.Disposable {
     const claim = Symbol("watch-start");
     this.inflight.set(root, claim);
     const epoch = this.epochOf(root);
+    // Surface the in-flight start immediately (the resolve/probe can take
+    // a while): the panel disables Start and enables Stop while it runs.
+    this.info(root).status = "starting";
+    this.callbacks.onStateChange(root);
     try {
       const session = await this.cli.resolve();
+      if (this.epochOf(root) !== epoch) {
+        // A stop() landed while the resolve was in flight.
+        return;
+      }
       if (!isCliSession(session)) {
         this.setOutcome(
           root,
@@ -137,6 +145,11 @@ export class WatchManager implements vscode.Disposable {
         session.binary,
         root,
       );
+      if (this.epochOf(root) !== epoch) {
+        // A stop() landed while the probe was in flight; the outcome
+        // branches below must not override the stop's state.
+        return;
+      }
       if (status.ok) {
         const state = status.status.writer?.state;
         if (state === "owned" || state === "busy") {
@@ -156,11 +169,6 @@ export class WatchManager implements vscode.Disposable {
           "stopped",
           `cannot verify scope ownership: ${status.detail}`,
         );
-        return;
-      }
-      if (this.epochOf(root) !== epoch) {
-        // A stop() landed while the probe was in flight; the spawn for this
-        // root was invalidated.
         return;
       }
       this.spawn(root, session.binary, 1);

@@ -10,8 +10,9 @@
 //! configured). Oversized units split into labeled child chunks that repeat
 //! the heading/context, keep exact ranges and reference their parent. The
 //! only exception is an irreducible unit (a single source line already
-//! larger than the budget): it is emitted whole, exactly, and labeled
-//! `oversized` (code corpus) rather than truncated or dropped. The ceiling
+//! larger than the budget): it is emitted whole, exactly, with an
+//! in-memory `oversized` flag (code corpus) rather than truncated or
+//! dropped. The ceiling
 //! bounds estimated chunk size — it is not a promise about any provider's
 //! tokenization or context window.
 
