@@ -282,7 +282,7 @@ test("an in-flight start surfaces the starting status before the probe settles",
     fakeCli(),
     { appendLine: () => undefined },
     { onEvent: () => undefined, onStateChange: () => undefined },
-    { probeStatus: () => probe },
+    { probeStatus: () => probe, runProcess: () => fakeHandle() },
   );
   void manager.start("/root");
   // The claim surfaces the in-flight start to the UI synchronously, so the
