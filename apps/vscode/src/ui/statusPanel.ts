@@ -42,9 +42,10 @@ export class StatusPanel implements vscode.Disposable {
   private indexRunning = new Set<string>();
   private logLines: string[] = [];
   /**
-   * Roots that already consumed this session's one-shot auto-start: the
-   * auto-start fires at most once per root per panel session, so switching
-   * the selection away and back does not spawn a new watch.
+   * Roots that have a successful (or in-flight) auto-start this session:
+   * the auto-start fires at most once per root per panel session, so
+   * switching the selection away and back does not spawn a new watch. A
+   * failed attempt does not consume it — a later refresh may retry.
    */
   private autoStarted = new Set<string>();
   /**
@@ -207,8 +208,10 @@ export class StatusPanel implements vscode.Disposable {
    * selected root when the panel opens or the selection changes. The watch
    * supervisor probes the authoritative scope lock first, so this never
    * spawns a competing writer, and restarts stay bounded. The auto-start
-   * fires at most once per root per panel session, and never after an
-   * explicit Stop, an exhausted restart budget or an external owner.
+   * fires at most once per root per panel session — a failed attempt (probe
+   * failure, CLI unavailable) does not consume it, so a later refresh may
+   * retry — and never after an explicit Stop, an exhausted restart budget
+   * or an external owner.
    */
   private async maybeAutoStartWatch(): Promise<void> {
     const path = this.selected;
@@ -236,6 +239,18 @@ export class StatusPanel implements vscode.Disposable {
     this.autoStarted.add(path);
     this.pushLog(`auto-starting owned watch for ${path}`);
     await this.watch.start(path);
+    // A failed attempt must not consume the one-shot auto-start: a later
+    // refresh may retry (an external owner, a user Stop or an exhausted
+    // budget are already handled by the suppressed set and the checks
+    // above, so this only retries transient failures).
+    const after = this.watch.info(path);
+    if (
+      !this.watch.isRunning(path) &&
+      !this.watch.timerPending(path) &&
+      after.status !== "starting"
+    ) {
+      this.autoStarted.delete(path);
+    }
   }
 
   async refreshAll(): Promise<void> {
@@ -292,13 +307,16 @@ export class StatusPanel implements vscode.Disposable {
     if (path === null || this.indexRunning.has(path)) {
       return;
     }
+    // Claim synchronously before the first await: a double-click lands in
+    // the resolve window and must not start a second index run.
+    this.indexRunning.add(path);
     const session = await this.cli.resolve();
     if (!isCliSession(session)) {
+      this.indexRunning.delete(path);
       this.pushLog(`index unavailable: ${session.message}`);
       this.sendState();
       return;
     }
-    this.indexRunning.add(path);
     this.pushLog(`index started for ${path}`);
     this.sendState();
     const summary = await runIndex(session.binary, path, (event) =>

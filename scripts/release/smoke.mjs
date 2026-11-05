@@ -34,6 +34,20 @@ const CODE_JS_PATH = "src/legacy.js";
 const SCHEMA_FILE = "schemas/repoise.config.v1.schema.json";
 const PROTOCOL_VERSION = "2025-06-18";
 const WATCH_TIMEOUT_MS = 30_000;
+/// Overall wall-clock budget for one installed-form smoke phase. Individual
+/// steps already carry per-call timeouts, but a slow CI host can stretch the
+/// cumulative time; exceeding this budget fails the smoke immediately with a
+/// log line instead of waiting for CI to kill the process with no output.
+const PHASE_DEADLINE_MS = 10 * 60 * 1000;
+
+/// Fails fast when a phase's cumulative budget is exhausted, so slow
+/// accumulation produces a logged failure, never an unlogged CI kill.
+function assertPhaseWithinDeadline(deadlineAt, label) {
+  assert.ok(
+    Date.now() < deadlineAt,
+    `${label}: exceeded the ${PHASE_DEADLINE_MS / 1000}s smoke deadline; failing fast so CI keeps a failure log`,
+  );
+}
 
 /// The synthetic fixture both installed forms must index: one Markdown doc and
 /// one TypeScript/JavaScript source each, sharing one unique lexical token.
@@ -76,7 +90,15 @@ function writeFixture(fixture) {
 /// One bounded stdio MCP exchange: the whole request batch goes in, stdin
 /// closes, and the server must answer every request and exit cleanly before
 /// the timeout kills it (a broken server can never hang the run).
-function mcpSession(executable, prefix, fixture, environment, requests) {
+function mcpSession(
+  executable,
+  prefix,
+  fixture,
+  environment,
+  requests,
+  deadlineAt = null,
+) {
+  if (deadlineAt !== null) assertPhaseWithinDeadline(deadlineAt, "mcp session");
   const result = spawnSync(executable, [...prefix, "mcp", fixture], {
     cwd: temporary,
     env: environment,
@@ -123,7 +145,9 @@ function functionalSmoke(label, executable, prefix, extraEnv) {
   mkdirSync(fixture, { recursive: true });
   writeFixture(fixture);
   const environment = { ...process.env, ...extraEnv, REPOISE_CACHE_DIR: cache };
+  const deadlineAt = Date.now() + PHASE_DEADLINE_MS;
   const cli = (args) => {
+    assertPhaseWithinDeadline(deadlineAt, `${label} ${args.join(" ")}`);
     const result = spawnSync(executable, [...prefix, ...args, fixture], {
       cwd: temporary,
       env: environment,
@@ -141,6 +165,30 @@ function functionalSmoke(label, executable, prefix, extraEnv) {
   assert.match(
     readFileSync(join(fixture, "repoise.config.json"), "utf8"),
     /docs-code-lexical/,
+  );
+  // The fresh gate must fail before any index exists: with no published
+  // generation for the scope, `check --fresh` reports `missing` on the
+  // same stable exit code 3 as `stale`.
+  assertPhaseWithinDeadline(deadlineAt, `${label} pre-index check`);
+  const preCheck = spawnSync(
+    executable,
+    [...prefix, "check", "--json", "--fresh", fixture],
+    {
+      cwd: temporary,
+      env: environment,
+      encoding: "utf8",
+      timeout: CLI_TIMEOUT_MS,
+    },
+  );
+  assert.equal(
+    preCheck.status,
+    3,
+    `${label} check --fresh before indexing must exit 3 (got ${preCheck.status}): ${preCheck.stderr}`,
+  );
+  assert.equal(
+    JSON.parse(preCheck.stdout).category,
+    "missing",
+    `${label} check --fresh before indexing must report a missing index`,
   );
   cli(["index"]);
   const search = JSON.parse(cli(["search", "--json", "--query", QUERY]));
@@ -171,23 +219,33 @@ function functionalSmoke(label, executable, prefix, extraEnv) {
   assert.equal(check.category, "ok");
   // stdio MCP: initialization, initialized notification, tool discovery,
   // search and status over the same shared services as the CLI.
-  const found = mcpSession(executable, prefix, fixture, environment, [
-    initializeRequest(1),
-    { jsonrpc: "2.0", method: "notifications/initialized" },
-    { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
-    {
-      jsonrpc: "2.0",
-      id: 3,
-      method: "tools/call",
-      params: { name: "search_project_knowledge", arguments: { query: QUERY } },
-    },
-    {
-      jsonrpc: "2.0",
-      id: 4,
-      method: "tools/call",
-      params: { name: "project_knowledge_status", arguments: {} },
-    },
-  ]);
+  const found = mcpSession(
+    executable,
+    prefix,
+    fixture,
+    environment,
+    [
+      initializeRequest(1),
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "search_project_knowledge",
+          arguments: { query: QUERY },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: { name: "project_knowledge_status", arguments: {} },
+      },
+    ],
+    deadlineAt,
+  );
   assert.equal(found[1].result.protocolVersion, PROTOCOL_VERSION);
   assert.equal(found[1].result.serverInfo.name, "repoise");
   assert.deepEqual(
@@ -209,25 +267,32 @@ function functionalSmoke(label, executable, prefix, extraEnv) {
   assert.equal(mcpStatus.freshness.status, "fresh");
   // Exact read through MCP, then a refresh attempt the read-only server must
   // refuse (the tool is not advertised and the call is denied).
-  const denied = mcpSession(executable, prefix, fixture, environment, [
-    initializeRequest(1),
-    { jsonrpc: "2.0", method: "notifications/initialized" },
-    {
-      jsonrpc: "2.0",
-      id: 2,
-      method: "tools/call",
-      params: {
-        name: "read_project_knowledge",
-        arguments: { sourceId: docsHit.source_id },
+  const denied = mcpSession(
+    executable,
+    prefix,
+    fixture,
+    environment,
+    [
+      initializeRequest(1),
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "read_project_knowledge",
+          arguments: { sourceId: docsHit.source_id },
+        },
       },
-    },
-    {
-      jsonrpc: "2.0",
-      id: 3,
-      method: "tools/call",
-      params: { name: "refresh_project_knowledge", arguments: {} },
-    },
-  ]);
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "refresh_project_knowledge", arguments: {} },
+      },
+    ],
+    deadlineAt,
+  );
   const mcpRead = JSON.parse(denied[2].result.content[0].text);
   assert.deepEqual(
     mcpRead,
@@ -356,7 +421,9 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
   // the scope root comparison holds on Windows too.
   const rootCanonical = realpathSync.native(fixture);
   const streamOptions = { operation: "index" };
+  const deadlineAt = Date.now() + PHASE_DEADLINE_MS;
   const cli = (args) => {
+    assertPhaseWithinDeadline(deadlineAt, `${label} ${args.join(" ")}`);
     const result = spawnSync(executable, [...prefix, ...args, fixture], {
       cwd: temporary,
       env: environment,
@@ -373,6 +440,7 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
 
   // 1. The installed CLI reports the candidate version and passes the
   // minimum AP-07 capability contract.
+  assertPhaseWithinDeadline(deadlineAt, `${label} capabilities`);
   const cap = spawnSync(executable, [...prefix, "capabilities", "--json"], {
     cwd: temporary,
     env: environment,
@@ -399,6 +467,7 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
 
   // 2. A real `index --events` run streams a valid v1 envelope for this
   // scope and ends with exactly one terminal event.
+  assertPhaseWithinDeadline(deadlineAt, `${label} index --events`);
   const index = spawnSync(
     executable,
     [...prefix, "index", "--events", fixture],
@@ -438,6 +507,7 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
   );
 
   // 3. `watch` owns the scope; `status` reports the authoritative writer.
+  assertPhaseWithinDeadline(deadlineAt, `${label} watch`);
   const child = spawn(
     executable,
     [...prefix, "watch", "--events", "--interval", "200", fixture],
@@ -452,7 +522,7 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
   child.ref();
   const reader = readline.createInterface({ input: child.stdout });
   const feed = watchLineFeed(reader, child, WATCH_TIMEOUT_MS, `${label} watch`);
-  const exitCode = new Promise((resolveExit) =>
+  const exitPromise = new Promise((resolveExit) =>
     child.on("exit", (code) => resolveExit(code)),
   );
   const drainFeed = async (timeoutMs, what) => {
@@ -503,6 +573,7 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
 
     // 4. A second writer for the owned scope is refused with a stable
     // machine failure before any work starts.
+    assertPhaseWithinDeadline(deadlineAt, `${label} second writer refused`);
     const busy = spawnSync(
       executable,
       [...prefix, "index", "--events", fixture],
@@ -536,26 +607,28 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
     // terminal event), never with a fake completion.
     if (process.platform === "win32") {
       child.kill("SIGTERM");
-      await withTimeout(exitCode, WATCH_TIMEOUT_MS, `${label} watch exit`);
+      await withTimeout(exitPromise, WATCH_TIMEOUT_MS, `${label} watch exit`);
       const rest = await drainFeed(
         WATCH_TIMEOUT_MS,
         `${label} watch stream close`,
       );
       const events = [watchStarted, ...rest.map((line) => JSON.parse(line))];
-      const verdict2 = validateEventStream(events, { operation: "watch" });
+      const watchVerdict = validateEventStream(events, { operation: "watch" });
       assert.equal(
-        verdict2.ok,
+        watchVerdict.ok,
         false,
         `${label} an abrupt Windows kill must leave an incomplete stream`,
       );
       assert.ok(
-        verdict2.problems.some((problem) => problem.includes("terminal event")),
-        `${label} expected the incomplete-stream problem: ${verdict2.problems}`,
+        watchVerdict.problems.some((problem) =>
+          problem.includes("terminal event"),
+        ),
+        `${label} expected the incomplete-stream problem: ${watchVerdict.problems}`,
       );
     } else {
       process.kill(child.pid, "SIGINT");
       const code = await withTimeout(
-        exitCode,
+        exitPromise,
         WATCH_TIMEOUT_MS,
         `${label} watch exit`,
       );
@@ -569,12 +642,12 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
         `${label} watch stream close`,
       );
       const events = [watchStarted, ...rest.map((line) => JSON.parse(line))];
-      const verdict2 = validateEventStream(events, { operation: "watch" });
+      const watchVerdict = validateEventStream(events, { operation: "watch" });
       assert.deepEqual(
-        verdict2,
+        watchVerdict,
         { ok: true },
         `${label} cancellation stream invalid: ${JSON.stringify(
-          verdict2.problems,
+          watchVerdict.problems,
         )}`,
       );
       assert.equal(events.at(-1).type, "cancelled");
@@ -585,7 +658,7 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
     // the descriptive marker (state "free", no owner); the abrupt Windows
     // kill leaves it, so there the scope reports "stale-metadata" and the
     // lock release is the only observable guarantee (docs/automation.md).
-    const deadline2 = Date.now() + WATCH_TIMEOUT_MS;
+    const releaseDeadline = Date.now() + WATCH_TIMEOUT_MS;
     let cleared;
     for (;;) {
       cleared = cli(["status", "--json"]);
@@ -596,7 +669,7 @@ async function ap07ContractSmoke(label, executable, prefix, extraEnv) {
       )
         break;
       assert.ok(
-        Date.now() < deadline2,
+        Date.now() < releaseDeadline,
         `${label} ${
           process.platform === "win32"
             ? "the lock was never released"

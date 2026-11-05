@@ -390,7 +390,9 @@ hashing the accepted bytes once and reusing them for the manifest. Excluded
 or oversized files (dependencies, build output, `.git`, generated caches)
 contribute zero content reads or hashes; a file that grows after the
 metadata check is bounded and reported (`file_too_large`), and a size drift
-within the bound is still reported as `changed_during_scan`. Traversal
+within the bound is still reported as `changed_during_scan` (same-size
+content drift is not flagged: the hash comes from that same single read, so
+the ingested content and its hash are mutually consistent). Traversal
 conservatively continues below excluded directories so nested `.gitignore`
 policy files remain visible to the policy (no corpus content below them is
 ever read), and the merged scan race behavior is preserved: a missing root

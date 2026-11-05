@@ -294,6 +294,19 @@ pub fn status(
         ),
         Some(meta) => {
             let mut reasons = Vec::new();
+            // Defensively treat a mode mismatch as stale. The scope key
+            // (worktree_id) already encodes the snapshot mode, so a
+            // committed-mode request can never see a working-tree-mode
+            // generation (or vice versa); if it ever did, the stored
+            // manifest was built under different snapshot semantics and the
+            // freshness comparison would be meaningless.
+            if meta.snapshot_mode != mode_name {
+                reasons.push(format!(
+                    "the stored generation was built in {} snapshot mode, but the status \
+                     was requested in {} mode",
+                    meta.snapshot_mode, mode_name
+                ));
+            }
             if meta.manifest_hash != inventory.manifest.manifest_hash {
                 reasons.push(
                     "inventory manifest differs from the live snapshot (files changed)".into(),

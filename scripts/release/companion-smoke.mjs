@@ -31,6 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { root, targets, manifest, npm } from "./common.mjs";
 
@@ -210,6 +211,67 @@ try {
     existsSync(companionBridge),
     `installed companion bridge missing at ${companionBridge}`,
   );
+
+  // --- 3b. The Cline adapter tarball's runtime files load ------------------
+  // companion.mjs only verifies the tarball's top-level entries, so a missing
+  // or broken runtime file would otherwise first surface at trial time.
+  // Installing the real Cline CLI is not part of this smoke (it needs
+  // credentials), so the proof here is that every shipped bin/src module
+  // parses and every src module loads (catching broken cross-module
+  // imports).
+  const adapterTarball = tarballs.find((name) =>
+    name.includes("agent-adapter-cline"),
+  );
+  assert(
+    adapterTarball,
+    `no Cline adapter companion tarball in ${companionTarballsDir}`,
+  );
+  npm(
+    [
+      "install",
+      "--offline",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      join(companionTarballsDir, adapterTarball),
+    ],
+    {
+      cwd: consumerDir,
+    },
+  );
+  const adapterRoot = join(
+    consumerDir,
+    "node_modules",
+    "@repoise",
+    "agent-adapter-cline",
+  );
+  for (const dir of ["bin", "src"]) {
+    const dirPath = join(adapterRoot, dir);
+    assert(
+      existsSync(dirPath),
+      `installed adapter is missing its ${dir}/ directory`,
+    );
+    for (const file of readdirSync(dirPath)) {
+      if (!file.endsWith(".js")) continue;
+      const filePath = join(dirPath, file);
+      run("node", ["--check", filePath], { cwd: consumerDir });
+      if (dir === "src") {
+        // Load (never run) each src module: the bin entry would start a
+        // trial, but the src modules are side-effect-free definitions.
+        run(
+          "node",
+          [
+            "--input-type=module",
+            "-e",
+            `import(${JSON.stringify(pathToFileURL(filePath).href)})`,
+          ],
+          {
+            cwd: consumerDir,
+          },
+        );
+      }
+    }
+  }
 
   // --- 4. A minimal benchmarked git repository (clean commit) ------------
   mkdirSync(join(repoDir, "docs"), { recursive: true });

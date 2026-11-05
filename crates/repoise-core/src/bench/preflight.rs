@@ -592,6 +592,17 @@ fn resolve_companion(root: &Path, raw_root: &str) -> Result<PathBuf, Error> {
         )));
     }
     let bridge = std::fs::canonicalize(&bridge).map_err(Error::Io)?;
+    // A symlinked bridge entry must stay inside the validated companion
+    // root: the name/version checks bind the package directory, not a
+    // bridge that escapes it through a link.
+    if !is_within(&companion, &bridge) {
+        return Err(Error::Config(format!(
+            "installed companion {raw_root} bridge entry resolves outside the \
+             companion root ({}); it may be a symlink and will not be executed \
+             — set {BRIDGE_ENV_VAR} to the bridge file explicitly",
+            companion.display()
+        )));
+    }
     // Canonicalize the benchmarked root for the containment test so symlinked
     // prefixes (e.g. macOS /tmp -> /private/tmp) still compare correctly.
     let root = match root.canonicalize() {
@@ -1131,6 +1142,34 @@ mod tests {
             &|name| (name == COMPANION_ENV_VAR).then(|| "/definitely/missing".into());
         let err = find_bridge_with(Path::new("/not-a-repo"), env).unwrap_err();
         assert!(err.to_string().contains(COMPANION_ENV_VAR), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bridge entry that resolves outside the validated companion root
+    /// (for example through a symlink) is rejected even when the package
+    /// itself matches exactly.
+    #[cfg(unix)]
+    #[test]
+    fn find_bridge_rejects_a_companion_bridge_symlink_escaping_the_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-bench-companion-symlink-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let companion = temp_companion_root(
+            &dir,
+            "@repoise/agent-adapter-protocol",
+            env!("CARGO_PKG_VERSION"),
+        );
+        // The bridge entry is a symlink that leaves the companion root.
+        let outside = dir.join("outside-bridge.mjs");
+        std::fs::write(&outside, "// outside bridge\n").unwrap();
+        std::fs::remove_file(companion.join(COMPANION_BRIDGE_RELATIVE)).unwrap();
+        std::os::unix::fs::symlink(&outside, companion.join(COMPANION_BRIDGE_RELATIVE)).unwrap();
+        let env: &dyn Fn(&str) -> Option<String> =
+            &|name| (name == COMPANION_ENV_VAR).then(|| companion.to_string_lossy().into_owned());
+        let err = find_bridge_with(Path::new("/not-a-repo"), env).unwrap_err();
+        assert!(err.to_string().contains("resolves outside"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

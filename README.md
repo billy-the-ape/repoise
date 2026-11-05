@@ -260,7 +260,10 @@ it as `npx --no-install repoise`.
   output. Exit codes: 0 completed, 1 operational failure, 2 usage, 3
   preflight/suite failure, 4 interrupted. A source-checkout build needs no
   environment variables; installed npm/native packages do not ship the
-  host bridge and need `REPOISE_BENCH_HOST_BRIDGE`. See [bench](docs/bench.md).
+  host bridge — set `REPOISE_BENCH_HOST_BRIDGE` to an explicit bridge file,
+  or install the optional benchmark companion and set
+  `REPOISE_BENCH_COMPANION` to the installed protocol package. See
+  [bench](docs/bench.md).
 
   ```sh
   repoise bench --dry-run /abs/path/to/suite.json

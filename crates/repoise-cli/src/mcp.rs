@@ -201,14 +201,11 @@ fn handle_message(server: &Server, line: &str) -> Option<Value> {
         "tools/list" => Some(success_response(id, json!({ "tools": server.tools() }))),
         "tools/call" => {
             let started = Instant::now();
-            let tool = params
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let tool = params.get("name").and_then(Value::as_str);
             let invocation = server.tool_call(&params);
             if let Some(audit) = &server.audit {
                 audit.record(tool_call_record(
-                    &tool,
+                    tool,
                     &invocation,
                     started.elapsed().as_millis(),
                 ));
@@ -330,8 +327,8 @@ impl Server {
     /// Dispatches one `tools/call` request. Argument-validation failures are
     /// JSON-RPC `-32602` invalid-params errors (no service is invoked); service
     /// failures are MCP tool results with `isError: true`. The `Option` in the
-    /// success/error tuples carries the search audit facts (search calls only)
-    /// for the opt-in operator audit.
+    /// success tuple carries the search audit facts (search calls only) for
+    /// the opt-in operator audit; error tuples are plain `(code, message)`.
     fn tool_call(&self, params: &Value) -> Result<(Value, Option<SearchAudit>), (i64, String)> {
         let object = match params.as_object() {
             Some(object) if object.get("name").and_then(Value::as_str).is_some() => object,
@@ -802,8 +799,8 @@ fn search_mode_description(pinned: Option<repoise_core::search::SearchMode>) -> 
 /// The fixed audit label for a tool name: only the known tool vocabulary
 /// is ever recorded. The raw client-supplied `params.name` (untrusted,
 /// unbounded and attacker-controllable) never reaches the sink.
-fn audit_tool_label(name: &Option<String>) -> &'static str {
-    match name.as_deref() {
+fn audit_tool_label(name: Option<&str>) -> &'static str {
+    match name {
         Some("search_project_knowledge") => "search_project_knowledge",
         Some("read_project_knowledge") => "read_project_knowledge",
         Some("related_project_knowledge") => "related_project_knowledge",
@@ -817,7 +814,7 @@ fn audit_tool_label(name: &Option<String>) -> &'static str {
 /// name, requested/effective retrieval mode, degradation, success and
 /// duration). Never the request arguments or result content.
 fn tool_call_record(
-    tool: &Option<String>,
+    tool: Option<&str>,
     invocation: &Result<(Value, Option<SearchAudit>), (i64, String)>,
     duration_ms: u128,
 ) -> Value {

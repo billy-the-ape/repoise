@@ -30,8 +30,11 @@ The JSON document (`schemaVersion: 1`) carries:
 - `commands` — every command with its machine output modes
   (`json`, `events`, or `mcp-stdio`);
 - `benchmark` — `supported: true`; the `bench` coordinator (AP-04) with its
-  command, docs path and exit-code note, including the offline `bench report`
-  rebuild (AP-05; see [bench](bench.md));
+  command, docs path and exit-code note, the optional `nodeCompanion` section
+  (the installed Node companion/adapter package names, the env-var resolution
+  order for `REPOISE_BENCH_HOST_BRIDGE`/`REPOISE_BENCH_COMPANION`, and the
+  note that native index/search/read never needs the companion), and the
+  offline `bench report` rebuild (AP-05; see [bench](bench.md));
 - `exitCodes` — the stable exit-code table (below);
 - `compatibility` — the compatibility policy (below).
 
@@ -90,8 +93,9 @@ Event types:
   `lock-unavailable`: the lock file itself could not be used). Stack traces
   and secret configuration values are never part of the protocol.
 
-Exactly one terminal event is expected on controlled exit. A stream without
-a terminal event is **incomplete output** (abrupt process death, OS kill);
+Exactly one terminal event is expected on controlled exit, and it must be the
+last event. A stream without a terminal event — or with events after its
+terminal event — is **incomplete output** (abrupt process death, OS kill);
 consumers must treat it as such. Progress amplification is bounded:
 in-phase progress events are throttled to at least 100 ms apart, while
 phase starts, phase completions and the final update of a phase always

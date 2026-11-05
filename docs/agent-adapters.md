@@ -199,7 +199,8 @@ trailing positional argument.
   adapter-specific passthrough namespace to the spawned CLI (used by the
   test stub); the rest of the environment is a minimal allowlist
   (`PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `TMPDIR`, the Cline
-  state variables and the credential variable).
+  state variables, the verified `CLINE_NO_AUTO_UPDATE` value when it is set,
+  and the credential variable).
 
 ## Testing
 

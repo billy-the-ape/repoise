@@ -168,7 +168,7 @@ the server's own tool activity to `<PATH>` (one line per event,
   `unknown`, never verbatim), for searches the
   requested and effective retrieval mode, the degradation reason (a
   closed-vocabulary enum, e.g. `degraded_to_lexical`) when the search
-  degraded, the served generation (null for failed calls), success, and
+  degraded, the served generation (null unless the search completed), success, and
   duration;
 - `server_end` — the shutdown reason (`stdin_closed`, `stdin_error`,
   `stdout_error`); only `stdin_closed` is a clean end — a broken stdio
