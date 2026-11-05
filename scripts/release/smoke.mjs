@@ -96,9 +96,9 @@ function mcpSession(
   fixture,
   environment,
   requests,
-  deadlineAt = null,
+  deadlineAt,
 ) {
-  if (deadlineAt !== null) assertPhaseWithinDeadline(deadlineAt, "mcp session");
+  assertPhaseWithinDeadline(deadlineAt, "mcp session");
   const result = spawnSync(executable, [...prefix, "mcp", fixture], {
     cwd: temporary,
     env: environment,
