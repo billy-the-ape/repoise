@@ -290,7 +290,8 @@ fn enum_name<T: Serialize>(value: T) -> String {
         .to_string()
 }
 
-/// Milliseconds since the Unix epoch.
+/// Milliseconds since the Unix epoch. The single shared definition (the
+/// `shared` module re-exports it for diagnostics and GC).
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

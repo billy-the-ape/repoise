@@ -86,15 +86,6 @@ pub struct Scope {
     pub snapshot_mode: String,
 }
 
-/// Stable kebab-case snapshot-mode name for scope records.
-pub fn scope_mode_name(mode: repoise_core::adapter::SnapshotMode) -> &'static str {
-    match mode {
-        repoise_core::adapter::SnapshotMode::WorkingTree => "working-tree",
-        repoise_core::adapter::SnapshotMode::Committed => "committed",
-        repoise_core::adapter::SnapshotMode::PlainDirectory => "plain-directory",
-    }
-}
-
 /// Resolves the heartbeat interval: the environment override (floored at
 /// [`MIN_HEARTBEAT_MS`]) or the default.
 pub fn heartbeat_interval() -> Duration {
@@ -338,17 +329,6 @@ impl EventStream<Stdout> {
     }
 }
 
-/// Unit name for one phase's progress counts (mirrors the human reporter).
-fn unit_for(phase: IndexPhase) -> &'static str {
-    match phase {
-        IndexPhase::Discovery => "candidates",
-        IndexPhase::Reconcile => "files",
-        IndexPhase::Embedding => "chunks",
-        IndexPhase::History => "items",
-        IndexPhase::Publication => "steps",
-    }
-}
-
 struct PhaseState {
     done: u64,
     total: Option<u64>,
@@ -396,7 +376,7 @@ impl<W: Write + Send + 'static> EventProgressReporter<W> {
         json!({
             "operation": self.stream.operation,
             "phase": phase.name(),
-            "unit": unit_for(phase),
+            "unit": phase.unit(),
             "done": done,
             "total": total,
             "elapsedMs": self.stream.elapsed_ms(),

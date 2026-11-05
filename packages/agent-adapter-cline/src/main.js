@@ -21,6 +21,9 @@ import {
   resolveClineExecutable,
 } from "./cline.js";
 
+// Mirrors USAGE_FIELDS in @repoise/agent-adapter-protocol (src/protocol.js).
+// The adapter is standalone by design (no runtime dependency on the host
+// package), so this list is kept in sync by hand.
 const USAGE_FIELDS = [
   "inputTokens",
   "outputTokens",

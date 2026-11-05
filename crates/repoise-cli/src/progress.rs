@@ -224,7 +224,7 @@ impl Inner {
                     phase.name(),
                     self.done,
                     total,
-                    unit_for(phase),
+                    phase.unit(),
                     percent,
                     elapsed
                 );
@@ -270,17 +270,6 @@ pub(crate) fn eta_seconds_from(
         return None;
     }
     Some(remaining_secs.round().max(1.0) as u64)
-}
-
-/// The work unit name for a phase's counts.
-fn unit_for(phase: IndexPhase) -> &'static str {
-    match phase {
-        IndexPhase::Discovery => "candidates",
-        IndexPhase::Reconcile => "files",
-        IndexPhase::Embedding => "chunks",
-        IndexPhase::History => "items",
-        IndexPhase::Publication => "steps",
-    }
 }
 
 /// Human duration: seconds with one decimal under a minute, minutes beyond.

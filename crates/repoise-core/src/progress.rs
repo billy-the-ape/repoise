@@ -40,6 +40,18 @@ impl IndexPhase {
             Self::Publication => "publication",
         }
     }
+
+    /// The work unit a phase's `done`/`total` counts measure, shared by every
+    /// progress renderer (human lines and machine `progress` events).
+    pub fn unit(self) -> &'static str {
+        match self {
+            Self::Discovery => "candidates",
+            Self::Reconcile => "files",
+            Self::Embedding => "chunks",
+            Self::History => "items",
+            Self::Publication => "steps",
+        }
+    }
 }
 
 /// Progress reporter callback for one index build.

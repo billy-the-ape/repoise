@@ -24,7 +24,6 @@ use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 use std::time::Instant;
 
-use repoise_core::adapter::SnapshotMode;
 use repoise_core::classify::Role;
 use repoise_core::related::RelationKind;
 use repoise_core::store::Store;
@@ -69,13 +68,9 @@ struct SearchAudit {
 pub fn run_mcp(opts: &crate::CliOptions) -> Result<ExitCode, String> {
     let context = crate::build_context(opts)?;
     let allow_refresh = opts.allow_refresh || context.effective.mcp_refresh;
-    let search_mode = match opts.mcp_search_mode.as_deref() {
-        Some("hybrid") => Some(repoise_core::search::SearchMode::Hybrid),
-        Some("vectors-only") => Some(repoise_core::search::SearchMode::VectorsOnly),
-        Some("lexical") => Some(repoise_core::search::SearchMode::Lexical),
-        None => None,
-        _ => unreachable!("validated in parse_args"),
-    };
+    let search_mode = opts.mcp_search_mode.as_deref().map(|value| {
+        repoise_core::search::SearchMode::parse(value).expect("validated in parse_args")
+    });
     let audit = match &opts.mcp_audit_file {
         Some(path) => match audit::Sink::create(path) {
             Ok(sink) => {
@@ -518,11 +513,7 @@ impl Server {
                 Some(mode) => mode,
                 None => return Err("snapshotMode must be a string".into()),
             };
-            let expected = match self.context.mode {
-                SnapshotMode::WorkingTree => "working-tree",
-                SnapshotMode::Committed => "committed",
-                SnapshotMode::PlainDirectory => "plain-directory",
-            };
+            let expected = self.context.mode.name();
             if mode != expected {
                 return Err(format!(
                     "scope mismatch: this server is bound to snapshot mode {expected}, refusing {mode}"
@@ -551,12 +542,8 @@ impl Server {
             "server": {
                 "repoId": self.context.repo_id,
                 "worktreeId": self.context.worktree_id,
-                "snapshotMode": match self.context.mode {
-                    SnapshotMode::WorkingTree => "working-tree",
-                    SnapshotMode::Committed => "committed",
-                    SnapshotMode::PlainDirectory => "plain-directory",
-                },
-                "pinnedSearchMode": self.search_mode.map(search_mode_label),
+                "snapshotMode": self.context.mode.name(),
+                "pinnedSearchMode": self.search_mode.map(|mode| mode.name()),
                 "refreshEnabled": self.allow_refresh
             }
         })
@@ -594,20 +581,17 @@ impl Server {
         let max_results = u32_value(args, "maxResults");
         let max_output_tokens = u64_value(args, "maxOutputTokens");
         let cursor = string_arg(args, "cursor");
-        let requested = match string_arg(args, "mode").as_deref() {
-            Some("hybrid") => Some(repoise_core::search::SearchMode::Hybrid),
-            Some("vectors-only") => Some(repoise_core::search::SearchMode::VectorsOnly),
-            Some("lexical") => Some(repoise_core::search::SearchMode::Lexical),
-            None => None,
-            // Unreachable: the `mode` enum is validated upstream.
-            Some(_) => None,
-        };
+        // The `mode` enum is validated upstream, so an unknown value maps to
+        // "no requested mode" (the pinned/default resolution below applies).
+        let requested = string_arg(args, "mode")
+            .as_deref()
+            .and_then(repoise_core::search::SearchMode::parse);
         // A pinned server mode (--search-mode) is the enforced retrieval
         // mode: omitting `mode` uses it; requesting a different one is a
         // scope mismatch, never a silent downgrade or upgrade.
         let mode = match (self.search_mode, requested) {
             (Some(pinned), Some(requested)) if requested != pinned => {
-                let (pinned, requested) = (search_mode_label(pinned), search_mode_label(requested));
+                let (pinned, requested) = (pinned.name(), requested.name());
                 return Err(fail(format!(
                     "scope mismatch: this server is bound to search mode {pinned}, refusing {requested}"
                 )));
@@ -615,7 +599,7 @@ impl Server {
             (Some(pinned), _) => pinned,
             (None, requested) => requested.unwrap_or(repoise_core::search::SearchMode::Lexical),
         };
-        let requested_mode = Some(search_mode_label(mode).to_string());
+        let requested_mode = Some(mode.name().to_string());
         let not_completed = || SearchAudit {
             requested: requested_mode.clone(),
             effective: None,
@@ -774,15 +758,6 @@ fn scope_input_schema() -> Value {
     })
 }
 
-/// The retrieval mode's wire label.
-fn search_mode_label(mode: repoise_core::search::SearchMode) -> &'static str {
-    match mode {
-        repoise_core::search::SearchMode::Lexical => "lexical",
-        repoise_core::search::SearchMode::Hybrid => "hybrid",
-        repoise_core::search::SearchMode::VectorsOnly => "vectors-only",
-    }
-}
-
 /// Description for the search tool's `mode` property, noting the pinned
 /// server mode (`--search-mode`) when one is set.
 fn search_mode_description(pinned: Option<repoise_core::search::SearchMode>) -> String {
@@ -790,7 +765,7 @@ fn search_mode_description(pinned: Option<repoise_core::search::SearchMode>) -> 
         Some(pinned) => format!(
             "Retrieval mode. This server is pinned to {}; requests naming a \
              different mode are refused.",
-            search_mode_label(pinned)
+            pinned.name()
         ),
         None => "Retrieval mode (default lexical)".to_string(),
     }
