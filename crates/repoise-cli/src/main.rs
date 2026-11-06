@@ -989,7 +989,7 @@ fn run_index_events(
         root: root.to_string_lossy().to_string(),
         repo_id: ctx.repo_id.clone(),
         worktree_id: ctx.worktree_id.clone(),
-        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
+        snapshot_mode: ctx.mode.name().to_string(),
     };
     let stream = events::EventStream::stdout("index");
     stream.start(&scope);
@@ -1471,7 +1471,7 @@ fn run_watch(opts: &CliOptions) -> Result<ExitCode, String> {
         root: root.to_string_lossy().to_string(),
         repo_id: ctx.repo_id.clone(),
         worktree_id: ctx.worktree_id.clone(),
-        snapshot_mode: events::scope_mode_name(ctx.mode).to_string(),
+        snapshot_mode: ctx.mode.name().to_string(),
     };
     // Authoritative one-writer-per-scope lease for the watch scope, held for
     // the watch process lifetime. Resolved before any store access or
@@ -2004,14 +2004,10 @@ fn run_search(opts: &CliOptions) -> Result<ExitCode, String> {
         ));
     }
     let mode = match opts.search_mode.as_deref() {
-        None | Some("lexical") => SearchMode::Lexical,
-        Some("hybrid") => SearchMode::Hybrid,
-        Some("vectors-only") => SearchMode::VectorsOnly,
-        Some(other) => {
-            return Err(format!(
-                "unknown search mode: {other} (expected lexical, hybrid, or vectors-only)"
-            ));
-        }
+        None => SearchMode::Lexical,
+        Some(value) => SearchMode::parse(value).ok_or_else(|| {
+            format!("unknown search mode: {value} (expected lexical, hybrid, or vectors-only)")
+        })?,
     };
     let request = repoise_core::search::SearchRequest {
         query,

@@ -149,6 +149,19 @@ pub enum SnapshotMode {
     PlainDirectory,
 }
 
+impl SnapshotMode {
+    /// Stable kebab-case wire name for scope records, event streams and
+    /// scope-verification arguments (`working-tree`, `committed`,
+    /// `plain-directory`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::WorkingTree => "working-tree",
+            Self::Committed => "committed",
+            Self::PlainDirectory => "plain-directory",
+        }
+    }
+}
+
 /// Optional identity of a *reuse family*: the linked checkouts of one local
 /// repository that may safely reuse immutable parse/embedding artifacts.
 ///

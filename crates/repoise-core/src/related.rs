@@ -303,13 +303,10 @@ pub fn related(
                     for (edge_kind, name, _, chunk_id) in
                         references_to_symbol(&conn, gen_id, symbol_id)?
                     {
-                        let is_new = !seen.iter().any(|id| id == &chunk_id);
-                        if chunk_id == source_chunk_id || !is_new {
+                        if chunk_id == source_chunk_id || seen.iter().any(|id| id == &chunk_id) {
                             continue;
                         }
-                        if is_new {
-                            seen.push(chunk_id.clone());
-                        }
+                        seen.push(chunk_id.clone());
                         if let Some(chunk) = chunk_of(&chunk_id)? {
                             candidates.push(Candidate {
                                 relation: RelationKind::ReferencedBy,

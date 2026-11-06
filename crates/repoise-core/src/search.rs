@@ -72,6 +72,27 @@ pub enum SearchMode {
     VectorsOnly,
 }
 
+impl SearchMode {
+    /// Parses a retrieval-mode name; `None` when unknown.
+    pub fn parse(value: &str) -> Option<SearchMode> {
+        match value {
+            "lexical" => Some(SearchMode::Lexical),
+            "hybrid" => Some(SearchMode::Hybrid),
+            "vectors-only" => Some(SearchMode::VectorsOnly),
+            _ => None,
+        }
+    }
+
+    /// Stable wire name for labels and audit records.
+    pub fn name(self) -> &'static str {
+        match self {
+            SearchMode::Lexical => "lexical",
+            SearchMode::Hybrid => "hybrid",
+            SearchMode::VectorsOnly => "vectors-only",
+        }
+    }
+}
+
 /// One seam for embedding the query itself (a provider call). A `None`
 /// result, or an error, degrades the search to the lexical baseline.
 pub trait QueryEmbedder {
@@ -472,9 +493,8 @@ struct Candidate {
 }
 
 /// Estimates token count (character count / 4), labeled as an estimate.
-pub fn estimate_tokens(text: &str) -> u64 {
-    (text.chars().count() as u64).div_ceil(4)
-}
+/// Re-exported from [`crate::chunk::estimate_tokens`], the single definition.
+pub use crate::chunk::estimate_tokens;
 
 /// Builds a compact excerpt around the first case-insensitive term match.
 pub fn excerpt(text: &str, terms: &[String]) -> String {

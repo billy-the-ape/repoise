@@ -559,9 +559,5 @@ pub fn load_members(root: &Path) -> Result<Vec<MemberEntry>> {
 }
 
 /// Current time in milliseconds since the Unix epoch (diagnostics, GC).
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+/// Re-exported from [`crate::indexing::now_ms`], the single definition.
+pub use crate::indexing::now_ms;
