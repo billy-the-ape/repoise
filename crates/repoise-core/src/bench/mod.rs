@@ -240,7 +240,9 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
             continue;
         }
         // Experiment wall-time cap: checked between trials (a running trial
-        // still completes, bounded by its own wall clock).
+        // still completes, bounded by its own agent wall clock and, for
+        // repoise conditions, the per-trial setup wall clock that bounds and
+        // cancels the index child).
         if let Some(deadline) = experiment_deadline
             && Instant::now() >= deadline
         {

@@ -20,6 +20,9 @@ sha2 = "=0.10.9"
 # Windows) for the authoritative one-writer-per-scope ownership lock.
 # MIT/Apache-2.0; depends only on libc (Unix) and winapi (Windows).
 fs2 = "=0.4.3"
+# Unix-only: setpgid(2) for the bounded benchmark setup child (the bench
+# coordinator needs no other libc surface).
+libc = "=0.2.190"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 tree-sitter = "=0.25.10"
 tree-sitter-language = "=0.1.8"
@@ -27,7 +30,10 @@ tree-sitter-typescript = "=0.23.2"
 tree-sitter-javascript = "=0.25.0"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` (not `forbid`) so the single documented FFI boundary in
+# crates/repoise-core/src/bench/runner.rs can locally allow `unsafe_code`
+# for the setup child's process-group separation (see that module).
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = "warn"

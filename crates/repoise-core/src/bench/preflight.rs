@@ -718,6 +718,10 @@ pub fn dry_run(
         .limits
         .wall_clock_ms
         .unwrap_or(super::suite::DEFAULT_TRIAL_WALL_CLOCK_MS);
+    let setup_wall = suite
+        .budgets
+        .setup_wall_clock_ms
+        .unwrap_or(super::suite::DEFAULT_SETUP_WALL_CLOCK_MS);
     let estimated = trials.len().saturating_mul(per_trial_wall as usize);
     serde_json::json!({
         "schemaVersion": 1,
@@ -772,7 +776,8 @@ pub fn dry_run(
             .collect::<Vec<serde_json::Value>>(),
         "budgets": {
             "perTrial": &suite.limits,
-            "experimentWallClockMs": suite.budgets.experiment_wall_clock_ms
+            "experimentWallClockMs": suite.budgets.experiment_wall_clock_ms,
+            "setupWallClockMs": setup_wall
         },
         "assessment": {
             "gates": serde_json::to_value(suite.gates.as_ref()).unwrap_or_default(),
@@ -793,6 +798,7 @@ pub fn dry_run(
         "assumptions": [
             "estimatedMaxAgentWallMs = trials * per-trial wallClockMs; it is an upper bound on timed agent work and excludes setup (worktree/index), setup is not estimated",
             "per-trial wallClockMs is always in effect: the coordinator applies a default of 900000 ms (15 minutes) when the suite omits limits.wallClockMs, forwards the effective value to the adapter, and enforces it with its own outer watchdog",
+            "per-trial setup (worktree + trial index) is always bounded: the coordinator applies a default of 300000 ms (5 minutes) when the suite omits budgets.setupWallClockMs, and its deadline — like an experiment interrupt — terminates the index child's process tree and records an infra_error setup timeout or setup cancellation; setup time is never charged to the timed agent interval",
             "no completion time is promised; actual time depends on the model, provider and hardware"
         ]
     })
@@ -885,6 +891,21 @@ pub fn write_manifest(
         },
         "limits": &input.suite.limits,
         "budgets": &input.suite.budgets,
+        // The effective (declared-or-default) coordinator-side wall bounds,
+        // frozen so a rebuild and a later report can state which bounds
+        // actually applied without re-deriving the defaults.
+        "effective": {
+            "wallClockMs": input
+                .suite
+                .limits
+                .wall_clock_ms
+                .unwrap_or(super::suite::DEFAULT_TRIAL_WALL_CLOCK_MS),
+            "setupWallClockMs": input
+                .suite
+                .budgets
+                .setup_wall_clock_ms
+                .unwrap_or(super::suite::DEFAULT_SETUP_WALL_CLOCK_MS)
+        },
         "scope": input.suite.scope,
         "seed": input.suite.seed,
         "plan": input.plan
