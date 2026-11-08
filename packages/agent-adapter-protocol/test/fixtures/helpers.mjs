@@ -3,6 +3,27 @@
 // protocol events on stdout and exercises exactly one scenario. The host
 // keeps stdin open after the request and may send control lines (e.g.
 // `cancel`) on cancellation.
+import { statSync } from "node:fs";
+
+// Bounded readiness wait: resolves once `file` exists with at least
+// `minSize` bytes (its contents are the signal), and rejects with a
+// diagnostic after `timeoutMs` instead of polling forever.
+export async function waitForFileSize(file, minSize, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      if (statSync(file).size >= minSize) return;
+    } catch {
+      // Not created yet; keep waiting.
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `readiness timeout: ${file} never reached ${minSize} bytes within ${timeoutMs} ms`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 export function readRequest() {
   return new Promise((resolve) => {

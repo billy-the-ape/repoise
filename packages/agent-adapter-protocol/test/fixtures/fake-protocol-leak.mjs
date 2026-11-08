@@ -7,24 +7,37 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hello, readRequest } from "./helpers.mjs";
+import { hello, readRequest, waitForFileSize } from "./helpers.mjs";
 
 await readRequest();
 hello();
+const heartbeatFile = process.env.PROTO_LEAK_HB_FILE;
+if (!heartbeatFile) {
+  console.error("fake-protocol-leak: PROTO_LEAK_HB_FILE is not set");
+  process.exit(1);
+}
 const heartbeat = join(
   dirname(fileURLToPath(import.meta.url)),
   "heartbeat.mjs",
 );
 const grandchild = spawn(process.execPath, [heartbeat], {
-  env: { ...process.env, HB_FILE: process.env.PROTO_LEAK_HB_FILE },
+  env: { ...process.env, HB_FILE: heartbeatFile },
   stdio: ["ignore", "ignore", "ignore"],
   detached: true,
 });
 grandchild.unref();
-// The host spawns adapters with cwd = outputs.artifactDir.
+// The host spawns adapters with cwd = outputs.artifactDir. Record the pid
+// before waiting on readiness so the host can sweep it on any failure path.
 writeFileSync(join(process.cwd(), "child-pid.txt"), `${grandchild.pid}\n`);
-// Let the heartbeat write a few ticks before the violation fires.
-await new Promise((resolve) => setTimeout(resolve, 200));
+// Explicit readiness handshake: the heartbeat's first successful write is
+// the readiness signal. Wait (bounded) for it before firing the violation,
+// so "heartbeat ran before the kill" is deterministic, not a timing bet.
+try {
+  await waitForFileSize(heartbeatFile, 1, 5000);
+} catch (error) {
+  console.error(`fake-protocol-leak: ${error.message}`);
+  process.exit(1);
+}
 // Oversized line: exceeds the host's maxEventBytes (set small by the test).
 process.stdout.write(`${"A".repeat(4000)}\n`);
 await new Promise(() => {});

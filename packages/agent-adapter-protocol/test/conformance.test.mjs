@@ -16,6 +16,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Ajv from "ajv";
 import { runAdapter } from "../src/index.js";
+import { waitForFileSize } from "./fixtures/helpers.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures");
@@ -224,8 +225,20 @@ test("leaked grandchild is killed with the owned tree", async () => {
     cancelGraceMs: 200,
     env: { LEAK_HB_FILE: heartbeatFile },
   });
-  setTimeout(() => controller.abort(), 400);
+  // Cancel only after the detached heartbeat has really written (bounded
+  // readiness wait), so "ran before the kill" never races startup.
+  let heartbeatReady = true;
+  try {
+    await waitForFileSize(heartbeatFile, 1, 5000);
+  } catch {
+    heartbeatReady = false;
+  }
+  controller.abort();
   const result = await pending;
+  assert.ok(
+    heartbeatReady,
+    "detached heartbeat never wrote within the bounded wait",
+  );
   assert.equal(result.status, "cancelled");
   assert.ok(existsSync(heartbeatFile));
   const first = statSync(heartbeatFile).size;
