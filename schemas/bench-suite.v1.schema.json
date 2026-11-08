@@ -323,6 +323,11 @@
           "type": "integer",
           "minimum": 1,
           "description": "Experiment wall-time cap in milliseconds, checked between trials: a trial already running still completes (bounded by its own wallClockMs); trials not started once the cap passes are recorded as not_started."
+        },
+        "setupWallClockMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-trial setup wall-clock cap in milliseconds, applied to the setup phase's long-running subprocess — the trial index build (worktree materialization is a short local git operation that precedes it). Enforced by the coordinator with an owned, cancellable setup child and kept separate from the agent wall clock (never charged to agentMs). Omitted: the coordinator default of 300000 ms (5 minutes) applies, so a setup bound is always in effect. When the bound fires or an interrupt lands during setup, the index child's process tree is terminated, the trial records infra_error (reason setup_timeout / setup_cancelled), and the workspace is cleaned up."
         }
       }
     },

@@ -94,7 +94,14 @@ registry packing and staging still invoke real npm, never pnpm. Pin and justify
 dependencies; review licenses, native assets and supported targets. Use explicit
 error handling and contextual errors; avoid panics for normal input/I/O failures.
 Minimize unsafe code; document safety invariants and isolate unavoidable FFI
-boundaries. Do not block async executors with CPU-heavy parsing/inference; use
+boundaries. The workspace lint is `unsafe_code = deny` (not `forbid`) for
+exactly one documented exception: the bench setup child's process-group
+separation (`setup_process_group` in
+`crates/repoise-core/src/bench/runner.rs`, `libc::setpgid` behind
+`#![allow(unsafe_code)]`), which puts the coordinator-owned trial index
+subprocess in its own process group so the bounded kill/cancel reaches its
+whole tree. Keep any future exception the same way: a single `deny`-level
+lint, a local `allow`, and a documented safety invariant. Do not block async executors with CPU-heavy parsing/inference; use
 bounded worker scheduling. Keep the application workspace Cargo.lock committed and
 use locked builds. Test behavioral risks such as stale reads, containment, partial
 publication and cache compatibility. For documentation-only changes, validate links,

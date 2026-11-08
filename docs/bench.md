@@ -147,7 +147,7 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   "adapter": { "executable": "/abs/path/to/adapter", "args": [], "env": {} },
   "profile": { "harness": { "name": "clinetool" }, "provider": { "id": "none" } },
   "limits": { "wallClockMs": 120000, "maxIterations": 20 },
-  "budgets": { "experimentWallClockMs": 3600000 },
+  "budgets": { "experimentWallClockMs": 3600000, "setupWallClockMs": 300000 },
   "output": { "dir": "repoise-bench" }
 }
 ```
@@ -196,6 +196,17 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   trials (a trial already running still completes, bounded by its own
   `wallClockMs`); trials not started after it are recorded as `not_started`
   and the report is still published.
+- `budgets.setupWallClockMs` — per-trial setup wall-clock cap in
+  milliseconds, applied to the setup phase's long-running subprocess (the
+  trial index build; worktree materialization is a short local git
+  operation that precedes it). Enforced by the coordinator and kept
+  separate from the agent wall clock (never charged to `agentMs`). The
+  coordinator applies a 5-minute default — 300000 ms — when the suite
+  omits it, so a setup bound is always in effect (the effective value is
+  frozen in the manifest and the dry-run document). When the bound fires
+  or an interrupt lands during setup, the index child's process tree is
+  terminated and reaped, the trial records `infra_error` (reason
+  `setup_timeout` / `setup_cancelled`) and the workspace is cleaned up.
 - `tasks[].evaluator` — how the task is graded after the trial, outside agent
   visibility. `method` is `deterministic` (default), `humanRubric` or
   `modelJudge`; `answerField` names the field of the final event's `data`
@@ -271,8 +282,17 @@ randomized per task/repetition block with the recorded seed). Each trial:
 1. creates a disposable linked git worktree checked out detached at the
    frozen revision (the user's checkout is never reset or cleaned);
 2. for `repoise` conditions, builds a trial-local index in the experiment
-   cache (setup time is recorded separately from the agent interval) and
-   launches a read-only `repoise mcp` server bound to the trial worktree
+   cache as a coordinator-owned subprocess: bounded by the per-trial setup
+   wall clock (`budgets.setupWallClockMs`, default 300000 ms) and cancelled
+   through the experiment interrupt — on either event the index child's
+   process tree is terminated and reaped (releasing its scope lock), the
+   trial records `infra_error` with reason `setup_timeout` or
+   `setup_cancelled`, and the workspace is cleaned up. Setup time is
+   recorded separately from the agent interval and never charged to
+   `agentMs`; the coordinator also re-checks the interrupt before starting
+   agent work, so an interrupt that landed during setup never starts a new
+   agent process. The trial also launches a read-only `repoise mcp` server
+   bound to the trial worktree
    (its env carries the trial cache plus the root config's embedding
    endpoint/API-key variables, so the server can serve hybrid search),
    pinned to the condition's declared `searchMode` with `--search-mode`
@@ -304,8 +324,10 @@ randomized per task/repetition block with the recorded seed). Each trial:
 Trial statuses: `completed`, `error` (adapter/protocol failure or wall-clock
 timeout), `cancelled` (cooperative cancellation), `infra_error` (worktree,
 index, host-bridge or artifact failure — the workspace is always cleaned up
-and the experiment continues), `not_started` (budget, interruption or an
-unrecoverable coordinator failure; the report is always published). When
+and the experiment continues — setup-bound and setup-interrupted failures
+carry their own reasons, `setup_timeout` and `setup_cancelled`, distinct
+from the agent wall-clock timeout), `not_started` (budget, interruption or
+an unrecoverable coordinator failure; the report is always published). When
 the coordinator's outer watchdog force-kills the bridge at the per-trial
 wall-clock deadline, the trial is recorded as `infra_error` (or `cancelled`
 on a coincident interrupt) with reason `host_watchdog`; the report still
@@ -458,7 +480,7 @@ Under `<output.dir>/<experiment.id>/`:
 
 | Path | Content |
 | ---- | ------- |
-| `manifest.json` | Immutable frozen experiment: suite hash, overrides, snapshot, conditions, plan, adapter/host, budgets, guidance, unknowns |
+| `manifest.json` | Immutable frozen experiment: suite hash, overrides, snapshot, conditions, plan, adapter/host, budgets, effective wall bounds (declared-or-default agent and setup wall clocks), guidance, unknowns |
 | `report.json` | Final report (schema v1): status, duration, per-trial records (including `harnessPin`/`harnessVersion`), `counts`, `grading`, `harness` (version drift), `analysis` (when gates declared) and `qualityGate` |
 | `report.md` | Human-readable rendering of `report.json` (derived from the same object) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
@@ -486,9 +508,19 @@ configured local output directory.
 - No `--events` NDJSON stream for `bench` (progress lines only; AP-02 stream
   remains on `index`/`watch`).
 - Token/cost limits are forwarded to the adapter and enforced by the host
-  only where measurable; per-trial wall time is always enforced by the
-  coordinator (15-minute default when the suite omits `wallClockMs`), and the
-  experiment-level cap is checked between trials.
+  only where measurable; per-trial agent wall time is always enforced by the
+  coordinator (15-minute default when the suite omits `wallClockMs`), the
+  per-trial setup wall clock is always enforced the same way (5-minute
+  default when the suite omits `setupWallClockMs`), and the experiment-level
+  cap is checked between trials.
+- Setup subprocess cancellation is scoped to the trial's index child: the
+  coordinator terminates and reaps that child's process tree (Unix process
+  group; Windows tree kill), so a descendant of the index child cannot
+  outlive the experiment's cancellation and the index's scope lock releases
+  with the process. The MCP server and the host bridge are deliberately out
+  of scope: the server is per-trial and cleaned up by the same workspace
+  removal, and the bridge's child tree is owned by the host, not the
+  coordinator.
 
 ## Quick smoke (no live inference)
 

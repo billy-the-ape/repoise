@@ -402,6 +402,16 @@ pub struct Budgets {
     /// trials not started once the cap passes are recorded `not_started` (the
     /// report is still published).
     pub experiment_wall_clock_ms: Option<u64>,
+    /// Per-trial setup wall-clock cap in milliseconds, applied to the
+    /// setup phase's long-running subprocess (the trial index build;
+    /// worktree materialization is a short local git operation that
+    /// precedes it). Enforced by the coordinator with an owned,
+    /// cancellable setup child; it is separate from the agent wall clock
+    /// and never charged to `agentMs`. When omitted the coordinator
+    /// applies [`DEFAULT_SETUP_WALL_CLOCK_MS`], so a setup bound is always
+    /// in effect (the effective value is frozen in the manifest and the
+    /// dry-run document).
+    pub setup_wall_clock_ms: Option<u64>,
 }
 
 /// Default per-trial wall clock applied by the coordinator when the suite
@@ -409,6 +419,15 @@ pub struct Budgets {
 /// always in effect — it is forwarded to the adapter and enforced by the
 /// coordinator's outer watchdog regardless of adapter support.
 pub const DEFAULT_TRIAL_WALL_CLOCK_MS: u64 = 900_000;
+
+/// Default per-trial setup wall clock applied by the coordinator when the
+/// suite omits `budgets.setupWallClockMs`: 5 minutes. The trial index build
+/// is coordinator-owned subprocess work that is never part of the timed
+/// agent interval; the bound is always in effect, and its deadline — like
+/// an experiment interrupt — terminates the setup child's process tree,
+/// recording an `infra_error` setup timeout (or setup cancellation)
+/// instead of letting setup run unbounded.
+pub const DEFAULT_SETUP_WALL_CLOCK_MS: u64 = 300_000;
 
 /// Artifact location settings.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -931,6 +950,19 @@ impl Suite {
         if self.profile.harness.name.trim().is_empty() {
             problems.push("profile.harness.name must not be empty".into());
         }
+        // The coordinator-side wall bounds are always in effect (a zero
+        // value would kill the setup child immediately / fire the watchdog
+        // instantly), so declared values must be positive.
+        if self
+            .budgets
+            .experiment_wall_clock_ms
+            .is_some_and(|ms| ms == 0)
+        {
+            problems.push("budgets.experimentWallClockMs must be at least 1".into());
+        }
+        if self.budgets.setup_wall_clock_ms.is_some_and(|ms| ms == 0) {
+            problems.push("budgets.setupWallClockMs must be at least 1".into());
+        }
         // The expected harness version pin must be a dotted version (the
         // same shape the adapters' version probes parse), so a malformed
         // pin fails suite validation instead of later string parsing in
@@ -1165,6 +1197,21 @@ mod tests {
             "profile": { "harness": { "name": "fake" } }
         });
         value["tasks"] = serde_json::json!([{ "id": "a", "prompt": "x" }]);
+        let suite: Suite = serde_json::from_value(value).unwrap();
+        assert!(suite.validate().is_ok());
+    }
+
+    #[test]
+    fn declared_zero_setup_wall_clock_is_rejected() {
+        // A zero cap would disable the bound — a setup wall clock is always
+        // in effect (default when omitted, declared value otherwise).
+        let mut value = valid_suite_json();
+        value["budgets"]["setupWallClockMs"] = serde_json::json!(0);
+        let suite: Suite = serde_json::from_value(value.clone()).unwrap();
+        let err = suite.validate().unwrap_err();
+        assert!(err.to_string().contains("setupWallClockMs"), "{err}");
+
+        value["budgets"]["setupWallClockMs"] = serde_json::json!(1);
         let suite: Suite = serde_json::from_value(value).unwrap();
         assert!(suite.validate().is_ok());
     }

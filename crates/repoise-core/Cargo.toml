@@ -19,5 +19,10 @@ tree-sitter-language.workspace = true
 tree-sitter-typescript.workspace = true
 tree-sitter-javascript.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# Process-group separation for the bounded, cancellable benchmark setup
+# child (crates/repoise-core/src/bench/runner.rs).
+libc.workspace = true
+
 [lints]
 workspace = true

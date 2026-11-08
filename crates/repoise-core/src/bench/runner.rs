@@ -12,15 +12,19 @@
 //! Trial statuses: host statuses (`completed`, `cancelled`, `agent_error`,
 //! `adapter_error`, `budget_stop`, `timeout`, `protocol_error`) pass through
 //! unchanged; the coordinator adds `infra_error` (its own setup/spawn
-//! failures) and the scheduler adds `not_started` (budget cap,
-//! interruption, drift). Every attempt is recorded; nothing is silently
-//! retried.
+//! failures, including a setup wall-clock timeout — reason `setup_timeout`
+//! — or an interrupt landing during setup — reason `setup_cancelled`) and
+//! the scheduler adds `not_started` (budget cap, interruption, drift).
+//! Setup work is never part of the timed agent interval. Every attempt is
+//! recorded; nothing is silently retried.
 
 use std::fs;
+use std::io;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -50,6 +54,223 @@ const AUDIT_SCHEMA_VERSION: u64 = 1;
 /// The `source` label of summarized audit documents and mode records.
 const AUDIT_SOURCE: &str = "server-side observation";
 
+/// Bound on how much of one setup child's stdout/stderr the coordinator
+/// captures for diagnostics: the readers keep draining (so a full pipe can
+/// never deadlock the child) but store at most this many bytes.
+const MAX_SETUP_PIPE_BYTES: usize = 64 * 1024;
+/// Bound on how much captured setup diagnostic survives into a recorded
+/// trial error (the tail is kept and marked truncated).
+const MAX_SETUP_ERROR_BYTES: usize = 8 * 1024;
+
+/// Process-group separation for one owned setup child.
+///
+/// The workspace denies `unsafe_code`; this is the single documented FFI
+/// boundary that locally allows it, isolated to this module. The setup
+/// child makes itself the leader of a new process group between `fork` and
+/// `exec`, so every descendant inherits the group and the coordinator's
+/// bounded kill (a group signal on Unix) reaches the whole setup tree — a
+/// descendant of the index child must never outlive the experiment's
+/// cancellation. On Windows the equivalent comes from `taskkill /T`.
+#[cfg(unix)]
+mod setup_process_group {
+    #![allow(unsafe_code)]
+
+    use std::io;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Child, Command};
+
+    use libc::setpgid;
+
+    /// Spawns `command` with the child leading its own process group.
+    pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
+        // Safety: `pre_exec` hooks the forked child before `exec`; the hook
+        // only calls `setpgid(0, 0)` (acting on the calling process itself)
+        // and never touches Rust runtime state.
+        unsafe {
+            command.pre_exec(|| {
+                // Runs only in the freshly forked child before `exec`, after
+                // which its address space is replaced; `setpgid(0, 0)` acts
+                // on the calling process itself.
+                if setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            })
+        };
+        command.spawn()
+    }
+}
+
+/// Spawns one owned setup child so its whole process tree can be
+/// terminated (Unix: own process group; Windows: tree kill).
+#[cfg(unix)]
+fn spawn_setup_child(command: &mut Command) -> io::Result<Child> {
+    setup_process_group::spawn(command)
+}
+
+#[cfg(not(unix))]
+fn spawn_setup_child(command: &mut Command) -> io::Result<Child> {
+    command.spawn()
+}
+
+/// Terminates one setup child and its descendant processes (best effort,
+/// mirroring the host bridge kill path): on Unix the child leads its own
+/// process group, so the group signal takes the whole tree; on Windows
+/// `taskkill /T` walks the tree. Signals only; the caller reaps the direct
+/// child.
+fn kill_setup_tree(pid: u32) {
+    if cfg!(windows) {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    } else {
+        // Direct kill first, then the group: after the leader is gone the
+        // group signal still reaches any surviving descendants.
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output();
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{pid}")])
+            .output();
+    }
+}
+
+/// Why a bounded setup child did not complete successfully.
+#[derive(Debug)]
+enum SetupFailureKind {
+    /// The setup wall-clock bound fired before the child completed.
+    Timeout,
+    /// The experiment interrupt landed before or during setup.
+    Interrupted,
+    /// The child could not be spawned / waited on (coordinator-side I/O).
+    Coordinator(String),
+}
+
+/// A failed setup wait, with the bounded captured diagnostic (raw;
+/// sanitized and capped where it is recorded).
+#[derive(Debug)]
+struct SetupFailure {
+    kind: SetupFailureKind,
+    captured: String,
+}
+
+/// Drains one setup pipe until EOF: reads are capped at the store size (the
+/// rest is discarded), so a chatty child can neither deadlock a full pipe
+/// nor grow memory without bound.
+fn drain_setup_pipe<T: Read>(pipe: T, buffer: &Mutex<Vec<u8>>, cap: usize) {
+    let mut reader = BufReader::new(pipe);
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let mut guard = buffer.lock().unwrap();
+                let room = cap.saturating_sub(guard.len());
+                if room > 0 {
+                    guard.extend_from_slice(&chunk[..n.min(room)]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+/// Runs one owned setup child under a hard wall-clock bound and the
+/// experiment interrupt. Both pipes are drained in bounded reader threads;
+/// when the bound fires or the interrupt lands, the child's whole process
+/// tree is terminated and reaped and the captured (bounded) output comes
+/// back with the failure kind. A pre-set interrupt never spawns the child.
+fn run_bounded_setup_command(
+    mut command: Command,
+    bound: Duration,
+    interrupted: &AtomicBool,
+) -> Result<Output, SetupFailure> {
+    if interrupted.load(Ordering::SeqCst) {
+        return Err(SetupFailure {
+            kind: SetupFailureKind::Interrupted,
+            captured: String::new(),
+        });
+    }
+    let deadline = Instant::now() + bound;
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = spawn_setup_child(child).map_err(|err| SetupFailure {
+        kind: SetupFailureKind::Coordinator(format!("spawn: {err}")),
+        captured: String::new(),
+    })?;
+    let stdout_pipe = child.stdout.take().expect("piped stdout");
+    let stderr_pipe = child.stderr.take().expect("piped stderr");
+    let stdout_buf = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buf = Arc::new(Mutex::new(Vec::new()));
+    let stdout_buf_reader = Arc::clone(&stdout_buf);
+    let stderr_buf_reader = Arc::clone(&stderr_buf);
+    let stdout_reader = std::thread::spawn(move || {
+        drain_setup_pipe(stdout_pipe, &stdout_buf_reader, MAX_SETUP_PIPE_BYTES);
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        drain_setup_pipe(stderr_pipe, &stderr_buf_reader, MAX_SETUP_PIPE_BYTES);
+    });
+
+    let mut failure: Option<SetupFailureKind> = None;
+    let mut finished: Option<std::process::ExitStatus> = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                finished = Some(status);
+                break;
+            }
+            Ok(None) => {
+                if interrupted.load(Ordering::SeqCst) {
+                    failure = Some(SetupFailureKind::Interrupted);
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    failure = Some(SetupFailureKind::Timeout);
+                    break;
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(err) => {
+                kill_setup_tree(child.id());
+                let _ = child.wait();
+                return Err(SetupFailure {
+                    kind: SetupFailureKind::Coordinator(format!("wait: {err}")),
+                    captured: String::new(),
+                });
+            }
+        }
+    }
+    // Terminated on failure; on completion this is the no-op sweep of any
+    // lingering descendants (a completed setup must not leave children
+    // holding the pipes).
+    kill_setup_tree(child.id());
+    let status = match finished {
+        Some(status) => status,
+        None => child.wait().map_err(|err| SetupFailure {
+            kind: SetupFailureKind::Coordinator(format!("reap: {err}")),
+            captured: String::new(),
+        })?,
+    };
+    // The tree is gone, so both pipes are closed and the readers are done.
+    let _ = stdout_reader.join();
+    let _ = stderr_reader.join();
+    let stdout = String::from_utf8_lossy(&stdout_buf.lock().unwrap()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr_buf.lock().unwrap()).into_owned();
+    match failure {
+        Some(kind) => Err(SetupFailure {
+            kind,
+            captured: format!("{stdout}{stderr}"),
+        }),
+        None => Ok(Output {
+            status,
+            stdout: stdout.into_bytes(),
+            stderr: stderr.into_bytes(),
+        }),
+    }
+}
 /// Everything the runner needs, shared by every trial of one experiment.
 pub struct RunContext {
     pub self_exe: PathBuf,
@@ -166,7 +387,15 @@ impl RunContext {
         setup.insert("indexManifestHash".into(), Value::Null);
         setup.insert("vectors".into(), Value::Null);
         if condition.retrieval_mode == "repoise" {
-            match build_trial_index(self, &workspace.path) {
+            // The trial index is coordinator-owned setup work: bounded by
+            // the per-trial setup wall clock (separate from the agent wall
+            // clock) and cancellable through the experiment interrupt.
+            let setup_limit_ms = self
+                .suite
+                .budgets
+                .setup_wall_clock_ms
+                .unwrap_or(super::suite::DEFAULT_SETUP_WALL_CLOCK_MS);
+            match build_trial_index(self, &workspace.path, setup_limit_ms, interrupted) {
                 Ok(index) => {
                     setup.insert("indexMs".into(), Value::from(index.elapsed_ms as u64));
                     setup.insert("indexGeneration".into(), Value::from(index.generation_id));
@@ -211,7 +440,7 @@ impl RunContext {
                         );
                     }
                 }
-                Err(message) => {
+                Err(setup_error) => {
                     return self.record_infra(
                         trial,
                         TrialTimings {
@@ -224,8 +453,8 @@ impl RunContext {
                             setup: Value::Object(setup),
                             guidance,
                         },
-                        "index_build_failed",
-                        &message,
+                        setup_error.reason,
+                        &setup_error.detail,
                     );
                 }
             }
@@ -274,6 +503,25 @@ impl RunContext {
         let request_hash = crate::hash::sha256_hex(
             serde_json::to_vec(&redacted).map_err(|err| Error::Json(err.to_string()))?,
         );
+        // Re-check the interrupt before starting agent work: an interrupt
+        // that landed during setup must not start a new agent process.
+        if interrupted.load(Ordering::SeqCst) {
+            return self.record_infra(
+                trial,
+                TrialTimings {
+                    queue_ms,
+                    setup_started,
+                    started,
+                },
+                InfraSetup {
+                    workspace: Some(workspace),
+                    setup: Value::Object(setup),
+                    guidance,
+                },
+                "interrupted_before_agent",
+                "the experiment was interrupted between setup and agent work",
+            );
+        }
         let agent_started = Instant::now();
         // A host failure (spawn, request write, wait) still records the trial
         // as infra_error and removes the workspace, so the run continues and
@@ -1184,6 +1432,7 @@ fn effective_modes_debug(audit: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+#[derive(Debug)]
 struct IndexInfo {
     generation_id: i64,
     manifest_hash: String,
@@ -1206,10 +1455,102 @@ fn index_viable_for_vectors(index: &IndexInfo) -> bool {
     index.vectors_total > 0 && index.vectors_pending == 0 && index.vectors_failed == 0
 }
 
+/// A failed trial setup: the stable recorded reason plus the sanitized,
+/// bounded diagnostic detail for `trial.json` and the run summary.
+#[derive(Debug)]
+struct SetupError {
+    reason: &'static str,
+    detail: String,
+}
+
+/// Maps a bounded setup-child failure to its recorded reason and detail.
+/// Setup timeouts and setup cancellations are distinct infra outcomes,
+/// never agent outcomes: they are separate from the agent wall-clock
+/// timeout and never charged to `agentMs`.
+fn setup_error(ctx: &RunContext, failure: SetupFailure, limit_ms: u64) -> SetupError {
+    match failure.kind {
+        SetupFailureKind::Timeout => SetupError {
+            reason: "setup_timeout",
+            detail: bounded_detail(&redact_setup_secrets(
+                &format!(
+                    "index setup exceeded the {limit_ms} ms setup bound; the index child \
+                     and its process tree were terminated before completion\n{}",
+                    failure.captured
+                ),
+                ctx,
+            )),
+        },
+        SetupFailureKind::Interrupted => SetupError {
+            reason: "setup_cancelled",
+            detail: bounded_detail(&redact_setup_secrets(
+                &format!(
+                    "index setup was terminated by an experiment interrupt before completion\n{}",
+                    failure.captured
+                ),
+                ctx,
+            )),
+        },
+        SetupFailureKind::Coordinator(message) => SetupError {
+            reason: "index_build_failed",
+            detail: bounded_detail(&redact_setup_secrets(&message, ctx)),
+        },
+    }
+}
+
+/// Replaces live secret values in captured setup diagnostics: the setup
+/// child inherits the coordinator's environment (including the embedding
+/// endpoint/API-key values), and a provider error can echo them — recorded
+/// errors are shareable artifacts.
+fn redact_setup_secrets(text: &str, ctx: &RunContext) -> String {
+    let mut values = Vec::new();
+    for name in [
+        ctx.preflight.embedding_endpoint_env.as_deref(),
+        ctx.preflight.embedding_api_key_env.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(value) = std::env::var(name)
+            && !value.is_empty()
+        {
+            values.push(value);
+        }
+    }
+    redact_values(text, &values)
+}
+
+/// Replaces live secret values with a placeholder (split out so it is
+/// testable without mutating the process environment).
+fn redact_values(text: &str, values: &[String]) -> String {
+    let mut out = text.to_string();
+    for value in values {
+        out = out.replace(value, "[REDACTED]");
+    }
+    out
+}
+
+/// Keeps only the bounded tail of a diagnostic for a recorded error.
+fn bounded_detail(text: &str) -> String {
+    if text.len() <= MAX_SETUP_ERROR_BYTES {
+        return text.to_string();
+    }
+    let start = text.ceil_char_boundary(MAX_SETUP_ERROR_BYTES);
+    format!("…(truncated) {}", &text[start..])
+}
+
 /// Builds the trial worktree index through the same `repoise index`
-/// operation (setup time, outside the timed agent interval; the experiment
-/// cache directory is declared in the manifest).
-fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, String> {
+/// operation. The index child is coordinator-owned subprocess work: it is
+/// bounded by the per-trial setup wall clock (separate from, and never
+/// charged to, the timed agent interval), cancellable through the
+/// experiment interrupt, and terminated as a process tree when its bound
+/// fires or the interrupt lands. The experiment cache directory is
+/// declared in the manifest.
+fn build_trial_index(
+    ctx: &RunContext,
+    workspace: &Path,
+    limit_ms: u64,
+    interrupted: &AtomicBool,
+) -> Result<IndexInfo, SetupError> {
     let started = Instant::now();
     let mut command = Command::new(&ctx.self_exe);
     command
@@ -1220,12 +1561,20 @@ fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, St
     if ctx.preflight.snapshot_kind == "commit" {
         command.arg("--committed");
     }
-    let output = command.output().map_err(|err| err.to_string())?;
+    let output = run_bounded_setup_command(command, Duration::from_millis(limit_ms), interrupted)
+        .map_err(|failure| setup_error(ctx, failure, limit_ms))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "index exited {}: {stderr}",
-            output.status.code().unwrap_or(-1)
+        return Err(setup_error(
+            ctx,
+            SetupFailure {
+                kind: SetupFailureKind::Coordinator(format!(
+                    "index exited {}: {stderr}",
+                    output.status.code().unwrap_or(-1)
+                )),
+                captured: String::new(),
+            },
+            limit_ms,
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1238,7 +1587,10 @@ fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, St
                 .and_then(|line| serde_json::from_str(line).ok())
                 .ok_or_else(|| "index produced no JSON output".to_string())
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| SetupError {
+            reason: "index_build_failed",
+            detail: err.to_string(),
+        })?;
     Ok(IndexInfo {
         generation_id: value["generation_id"].as_i64().unwrap_or(0),
         manifest_hash: value["manifest_hash"]
@@ -2059,5 +2411,566 @@ mod tests {
         assert_eq!(record["effective"], Value::Null);
         assert_eq!(record["source"], "configuration only");
         assert!(record["note"].as_str().unwrap().contains("unverified"));
+    }
+    // ------------------------------------------------------------------
+    // Bounded, cancellable setup subprocess (per-trial setup wall clock)
+    // ------------------------------------------------------------------
+
+    fn shell_command(script: &str) -> Command {
+        let mut command = if cfg!(windows) {
+            Command::new("cmd")
+        } else {
+            Command::new("sh")
+        };
+        if cfg!(windows) {
+            command.arg("/c");
+        } else {
+            command.arg("-c");
+        }
+        command.arg(script);
+        command
+    }
+
+    fn stall_body() -> &'static str {
+        if cfg!(windows) {
+            "timeout /t 30 /nobreak > nul"
+        } else {
+            "sleep 30"
+        }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "repoise-runner-setup-test-{}-{}-{tag}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Writes a small executable (shell script / batch) used as a stand-in
+    /// for the coordinator's own `repoise` executable.
+    fn fake_exec(dir: &Path, body: &str) -> PathBuf {
+        let path = if cfg!(windows) {
+            dir.join("fake-index.bat")
+        } else {
+            dir.join("fake-index")
+        };
+        let mut contents = String::new();
+        if cfg!(windows) {
+            contents.push_str("@echo off\r\n");
+        } else {
+            contents.push_str("#!/bin/sh\n");
+        }
+        contents.push_str(body);
+        fs::write(&path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    fn fake_index_json_body() -> &'static str {
+        if cfg!(windows) {
+            "echo {\"generation_id\": 7, \"manifest_hash\": \"mh\", \"vectors_total\": 3, \"embedding\": {\"pending\": 0, \"failed\": 0}}"
+        } else {
+            "echo '{\"generation_id\": 7, \"manifest_hash\": \"mh\", \"vectors_total\": 3, \"embedding\": {\"pending\": 0, \"failed\": 0}}'"
+        }
+    }
+
+    #[test]
+    fn bounded_setup_command_captures_successful_output() {
+        let interrupted = AtomicBool::new(false);
+        let output = run_bounded_setup_command(
+            shell_command("echo '{\"generation_id\": 7}'"),
+            Duration::from_secs(10),
+            &interrupted,
+        )
+        .expect("a successful setup child must complete");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("\"generation_id\": 7"), "{stdout}");
+    }
+
+    #[test]
+    fn bounded_setup_command_drains_a_full_pipe_to_the_capture_cap() {
+        let script = if cfg!(windows) {
+            "powershell -NoProfile -Command \"[Console]::OpenStandardOutput().Write([byte[]]::new(300000))\""
+        } else {
+            "head -c 300000 /dev/zero | tr '\\0' 'A'"
+        };
+        let interrupted = AtomicBool::new(false);
+        let started = Instant::now();
+        let output =
+            run_bounded_setup_command(shell_command(script), Duration::from_secs(20), &interrupted)
+                .expect("draining must not deadlock or hit the bound");
+        assert!(output.status.success());
+        assert_eq!(
+            output.stdout.len(),
+            MAX_SETUP_PIPE_BYTES,
+            "capture must stop at the bound while the pipe keeps draining"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "a chatty child must not stall the wait"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_setup_command_times_out_and_terminates_the_descendant_tree() {
+        let dir = temp_dir("stall");
+        let pid_file = dir.join("heartbeat.pid");
+        let marker = dir.join("heartbeat.ndjson");
+        let script = format!(
+            "echo ready\n( i=0; while [ \"$i\" -lt 1000 ]; do printf 'tick\\n' >> {marker}; sleep 1; i=$((i+1)); done ) & echo $! > {pid}\nsleep 30",
+            marker = marker.display(),
+            pid = pid_file.display(),
+        );
+        let interrupted = AtomicBool::new(false);
+        let started = Instant::now();
+        let failure = run_bounded_setup_command(
+            shell_command(&script),
+            Duration::from_millis(1500),
+            &interrupted,
+        )
+        .expect_err("a stalled setup child must hit the bound");
+        assert!(
+            matches!(failure.kind, SetupFailureKind::Timeout),
+            "{failure:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "the bound must be enforced promptly"
+        );
+        // The readiness line proves the child started doing real work
+        // before it stalled.
+        assert!(failure.captured.contains("ready"), "{}", failure.captured);
+        // The descendant heartbeat must be dead: the group kill took the
+        // whole tree, so the marker stops growing.
+        let heartbeat_pid: i32 = fs::read_to_string(&pid_file)
+            .expect("heartbeat pid recorded")
+            .trim()
+            .parse()
+            .unwrap();
+        let ticks = || fs::read(&marker).map(|bytes| bytes.len()).unwrap_or(0);
+        let before = ticks();
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(
+            ticks(),
+            before,
+            "the descendant heartbeat must have stopped"
+        );
+        // Reaped: `kill -0` must eventually fail.
+        let mut reaped = false;
+        for _ in 0..50 {
+            if let Ok(probe) = Command::new("kill")
+                .args(["-0", &heartbeat_pid.to_string()])
+                .output()
+                && !probe.status.success()
+            {
+                reaped = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(reaped, "the descendant heartbeat must be reaped");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bounded_setup_command_honours_the_experiment_interrupt() {
+        // Pre-set interrupt: the child must never start at all.
+        let interrupted = AtomicBool::new(true);
+        let started = Instant::now();
+        let failure = run_bounded_setup_command(
+            shell_command(stall_body()),
+            Duration::from_secs(30),
+            &interrupted,
+        )
+        .expect_err("a pre-set interrupt must not start setup work");
+        assert!(
+            matches!(failure.kind, SetupFailureKind::Interrupted),
+            "{failure:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // Interrupt lands while the child is running.
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let handle = std::thread::spawn({
+            let interrupted = Arc::clone(&interrupted);
+            move || {
+                std::thread::sleep(Duration::from_millis(300));
+                interrupted.store(true, Ordering::SeqCst);
+            }
+        });
+        let started = Instant::now();
+        let failure = run_bounded_setup_command(
+            shell_command(stall_body()),
+            Duration::from_secs(30),
+            &interrupted,
+        )
+        .expect_err("an interrupt must stop the wait");
+        assert!(
+            matches!(failure.kind, SetupFailureKind::Interrupted),
+            "{failure:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the interrupt must be honoured promptly"
+        );
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn redacted_setup_diagnostics_drop_live_secret_values() {
+        let text = "provider error: key sk-live-abc123 refused";
+        let values = vec!["sk-live-abc123".to_string()];
+        assert_eq!(
+            redact_values(text, &values),
+            "provider error: key [REDACTED] refused"
+        );
+        assert_eq!(redact_values(text, &[]), text);
+    }
+    // ------------------------------------------------------------------
+    // Trial-level: bounded setup through `run_trial`
+    // ------------------------------------------------------------------
+
+    fn make_git_repo(root: &Path) -> String {
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-q"]);
+        git(&["checkout", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+        git(&["add", "README.md"]);
+        git(&["commit", "-q", "-m", "initial"]);
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn test_suite(root: &Path, retrieval_mode: &str, setup_wall_ms: Option<u64>) -> Suite {
+        let mut value = serde_json::json!({
+            "id": "exp-test",
+            "root": root.to_string_lossy().into_owned(),
+            "tasks": [{ "id": "task-a", "prompt": "do it" }],
+            "conditions": [{
+                "id": "cond",
+                "retrievalMode": retrieval_mode,
+                "searchMode": if retrieval_mode == "repoise" { Some("lexical") } else { None }
+            }],
+            "adapter": { "executable": "node" },
+            "profile": { "harness": { "name": "fake" } }
+        });
+        if let Some(ms) = setup_wall_ms {
+            value["budgets"]["setupWallClockMs"] = Value::from(ms);
+        }
+        let suite: Suite = serde_json::from_value(value).expect("valid test suite");
+        suite.validate().expect("valid test suite");
+        suite
+    }
+
+    fn dummy_status_view(root: &Path) -> crate::status::StatusView {
+        use crate::shared::SharingInfo;
+        use crate::status::{
+            StatusCache, StatusConfig, StatusFreshness, StatusScope, StatusSnapshot, StatusView,
+            WriterStatus,
+        };
+        StatusView {
+            version: "test".into(),
+            config: StatusConfig {
+                file: None,
+                problems: vec![],
+            },
+            scope: StatusScope {
+                adapter: "git".into(),
+                root: root.to_path_buf(),
+                mode: "committed".into(),
+                repo_id: "r".into(),
+                worktree_id: "w".into(),
+                remote_identity: None,
+            },
+            snapshot: StatusSnapshot {
+                snapshot_id: "s".into(),
+                revision: None,
+                branch: None,
+                mode: "committed".into(),
+                manifest_hash: "h".into(),
+                dirty_digest: None,
+                dirty_count: 0,
+            },
+            index: None,
+            history_lane: None,
+            freshness: StatusFreshness {
+                status: "fresh".into(),
+                reasons: vec![],
+                snapshot_id: "s".into(),
+                branch: None,
+                dirty_count: 0,
+            },
+            cache: StatusCache {
+                root: root.to_path_buf(),
+                db_path: root.join("db"),
+                db_bytes: 0,
+                wal_bytes: 0,
+            },
+            owner: None,
+            writer: WriterStatus {
+                lock_held: false,
+                state: "free".into(),
+            },
+            sharing: SharingInfo {
+                state: "unavailable".into(),
+                family_id: None,
+                store: None,
+                note: None,
+            },
+            last_error: None,
+        }
+    }
+
+    fn test_run_context(
+        tmp: &Path,
+        repo: &Path,
+        revision: &str,
+        self_exe: &Path,
+        suite: Suite,
+    ) -> RunContext {
+        use crate::bench::preflight::{BridgeSource, Guidance};
+        RunContext {
+            self_exe: self_exe.to_path_buf(),
+            layout: Layout::create(&tmp.join("out"), "exp-test").unwrap(),
+            preflight: Preflight {
+                root: repo.to_path_buf(),
+                remote_identity: None,
+                snapshot_kind: "commit".into(),
+                revision_sha: revision.to_string(),
+                patch_file: None,
+                patch_hash: None,
+                node: tmp.join("node"),
+                node_version: "test".into(),
+                bridge: tmp.join("bridge"),
+                bridge_source: BridgeSource::Override,
+                runner: tmp.join("adapter"),
+                adapter_env_names: vec![],
+                credential_names: vec![],
+                embedding_endpoint_env: None,
+                embedding_api_key_env: None,
+                status: dummy_status_view(repo),
+                config_hash: None,
+                guidance: Guidance {
+                    overlay_present: false,
+                    template_version: None,
+                    agents_md_hash: None,
+                },
+                warnings: vec![],
+            },
+            suite,
+            keep_workspaces: false,
+            adapter_env: vec![],
+            json: true,
+        }
+    }
+
+    fn test_trial() -> Trial {
+        Trial {
+            trial_id: "t-task-a-r0-cond".into(),
+            task_index: 0,
+            task_id: "task-a".into(),
+            condition_index: 0,
+            condition_id: "cond".into(),
+            repetition: 0,
+            ordered_index: 0,
+        }
+    }
+
+    #[test]
+    fn build_trial_index_parses_successful_output() {
+        let tmp = temp_dir("index-ok");
+        let self_exe = fake_exec(&tmp, fake_index_json_body());
+        let ctx = test_run_context(
+            &tmp,
+            &tmp,
+            "deadbeef",
+            &self_exe,
+            test_suite(&tmp, "repoise", None),
+        );
+        let index = build_trial_index(&ctx, &tmp, 30_000, &AtomicBool::new(false))
+            .expect("a successful index output must parse");
+        assert_eq!(index.generation_id, 7);
+        assert_eq!(index.manifest_hash, "mh");
+        assert_eq!(index.vectors_total, 3);
+        assert_eq!(index.vectors_pending, 0);
+        assert_eq!(index.vectors_failed, 0);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_trial_index_timeout_is_bounded_and_reasoned() {
+        let tmp = temp_dir("index-stall");
+        let self_exe = fake_exec(&tmp, stall_body());
+        let ctx = test_run_context(
+            &tmp,
+            &tmp,
+            "deadbeef",
+            &self_exe,
+            test_suite(&tmp, "repoise", Some(800)),
+        );
+        let started = Instant::now();
+        let err = build_trial_index(&ctx, &tmp, 800, &AtomicBool::new(false))
+            .expect_err("a stalled index child must hit the bound");
+        assert_eq!(err.reason, "setup_timeout");
+        assert!(err.detail.contains("800 ms setup bound"), "{}", err.detail);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the setup bound must be enforced promptly"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_trial_index_failure_keeps_the_exit_diagnostic() {
+        let tmp = temp_dir("index-fail");
+        let body = if cfg!(windows) {
+            "echo oops 1>&2\r\nexit 3\r\n"
+        } else {
+            "echo oops >&2\nexit 3\n"
+        };
+        let self_exe = fake_exec(&tmp, body);
+        let ctx = test_run_context(
+            &tmp,
+            &tmp,
+            "deadbeef",
+            &self_exe,
+            test_suite(&tmp, "repoise", None),
+        );
+        let err = build_trial_index(&ctx, &tmp, 30_000, &AtomicBool::new(false))
+            .expect_err("a failed index child must error");
+        assert_eq!(err.reason, "index_build_failed");
+        assert!(err.detail.contains("index exited 3"), "{}", err.detail);
+        assert!(err.detail.contains("oops"), "{}", err.detail);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn run_trial_setup_timeout_is_bounded_recorded_and_cleaned_up() {
+        let tmp = temp_dir("trial-stall");
+        let repo = tmp.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let revision = make_git_repo(&repo);
+        let self_exe = fake_exec(&tmp, stall_body());
+        let ctx = test_run_context(
+            &tmp,
+            &repo,
+            &revision,
+            &self_exe,
+            test_suite(&repo, "repoise", Some(800)),
+        );
+        let trial = test_trial();
+        let started = Instant::now();
+        let outcome = ctx.run_trial(&trial, 0, &AtomicBool::new(false)).unwrap();
+        assert_eq!(outcome.status, "infra_error");
+        assert_eq!(outcome.reason.as_deref(), Some("setup_timeout"));
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "a stalled setup must not hold the trial"
+        );
+
+        let record: Value = serde_json::from_str(
+            &fs::read_to_string(ctx.layout.trial_dir(&trial.trial_id).join("trial.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["status"], "infra_error");
+        assert_eq!(record["reason"], "setup_timeout");
+        assert_eq!(record["timings"]["agentMs"], Value::Null);
+        assert!(record["timings"]["setupMs"].as_u64().unwrap() >= 800);
+        assert_eq!(record["setup"]["indexMs"], Value::Null);
+        assert_eq!(record["completeness"], "partial");
+        // The grading record is censored, and the workspace is cleaned up.
+        let grading: Value = serde_json::from_str(
+            &fs::read_to_string(ctx.layout.trial_dir(&trial.trial_id).join("grading.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(grading["status"], "not_graded");
+        assert!(!ctx.layout.workspace_path(&trial.trial_id).exists());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn run_trial_interrupt_cancels_setup_and_never_starts_the_agent() {
+        let tmp = temp_dir("trial-interrupt");
+        let repo = tmp.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let revision = make_git_repo(&repo);
+        let self_exe = fake_exec(&tmp, fake_index_json_body());
+        let ctx = test_run_context(
+            &tmp,
+            &repo,
+            &revision,
+            &self_exe,
+            test_suite(&repo, "repoise", None),
+        );
+        let trial = test_trial();
+        let interrupted = AtomicBool::new(true);
+        let outcome = ctx.run_trial(&trial, 0, &interrupted).unwrap();
+        assert_eq!(outcome.status, "infra_error");
+        assert_eq!(outcome.reason.as_deref(), Some("setup_cancelled"));
+
+        let record: Value = serde_json::from_str(
+            &fs::read_to_string(ctx.layout.trial_dir(&trial.trial_id).join("trial.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["reason"], "setup_cancelled");
+        assert_eq!(record["timings"]["agentMs"], Value::Null);
+        // The host bridge was never started, and the workspace is removed.
+        assert!(!ctx.layout.adapter_dir(&trial.trial_id).exists());
+        assert!(!ctx.layout.workspace_path(&trial.trial_id).exists());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn run_trial_interrupt_between_setup_and_agent_starts_no_agent() {
+        // Baseline condition: setup does no index work, so an interrupt that
+        // is set after setup (here: from the start) must be caught at the
+        // pre-agent re-check — recorded, never forwarded to the bridge.
+        let tmp = temp_dir("trial-interrupt-baseline");
+        let repo = tmp.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let revision = make_git_repo(&repo);
+        let self_exe = fake_exec(&tmp, "exit 0\n");
+        let ctx = test_run_context(
+            &tmp,
+            &repo,
+            &revision,
+            &self_exe,
+            test_suite(&repo, "baseline", None),
+        );
+        let trial = test_trial();
+        let interrupted = AtomicBool::new(true);
+        let outcome = ctx.run_trial(&trial, 0, &interrupted).unwrap();
+        assert_eq!(outcome.status, "infra_error");
+        assert_eq!(outcome.reason.as_deref(), Some("interrupted_before_agent"));
+        assert!(!ctx.layout.adapter_dir(&trial.trial_id).exists());
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

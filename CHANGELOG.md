@@ -47,6 +47,44 @@ No new environment variables, settings, migrations or deployment actions.
 The candidate is untested against a public registry until an authorized
 publication runs.
 
+### Bounded, cancellable benchmark trial setup
+
+Trial setup (worktree materialization and the trial index build) previously
+ran as an unbounded blocking subprocess wait: a stuck index child could hold
+a run beyond the agent wall clock and delay a handled interruption. Setup
+stays outside the timed agent interval but is now explicitly bounded and
+cancellable.
+
+- New optional `budgets.setupWallClockMs` suite field (milliseconds,
+  minimum 1): the per-trial setup wall-clock cap, enforced by the
+  coordinator and separate from `limits.wallClockMs`. Omitted: the
+  coordinator applies a default of 300000 ms (5 minutes), so a setup bound
+  is always in effect — the effective value is frozen in the immutable
+  manifest (`effective` section) and declared in the dry-run document, and
+  suite validation rejects a declared zero.
+- The trial index child is now spawned as a coordinator-owned subprocess
+  with bounded stdout/stderr capture (readers keep draining so a full pipe
+  cannot deadlock; at most 64 KiB per stream is stored, and recorded
+  diagnostics are capped, tailed and redacted of the embedding
+  endpoint/API-key values). The child leads its own process group (single
+  documented, locally-scoped FFI exception to the workspace's
+  `unsafe_code` denial, behind a documented safety invariant; Windows uses
+  `taskkill /T`), and when its bound fires or the experiment interrupt
+  lands, the whole process tree is terminated and reaped — so a descendant
+  of the index child cannot outlive the experiment's cancellation, and the
+  index's scope lock releases with the process.
+- The coordinator re-checks the interrupt before starting agent work: an
+  interrupt that landed during setup records `infra_error` with reason
+  `interrupted_before_agent` and never starts a new agent process.
+- Distinct infra reasons, never agent outcomes: `setup_timeout` (the bound
+  fired) and `setup_cancelled` (the interrupt landed during setup). The
+  trial keeps its recorded `setupMs`, `agentMs` stays null, the grading
+  record is censored as before, and the workspace is cleaned up — setup
+  time is never charged to the agent wall clock.
+- Docs: [docs/bench.md](docs/bench.md) documents the budget, the effective
+  manifest values, the setup lifecycle and the scoped cancellation
+  limitation; the suite schema documents the new field.
+
 ### VS Code operations extension (AP-07 first slice, development build)
 
 New `apps/vscode/` workspace package: a thin VS Code extension that
