@@ -47,6 +47,46 @@ No new environment variables, settings, migrations or deployment actions.
 The candidate is untested against a public registry until an authorized
 publication runs.
 
+### Benchmark quality gate evidence sufficiency
+
+A completed fast/correct subset could carry a `qualityGate: pass` while
+other planned task/condition cells errored or stayed ungraded (the
+surviving 50% paired gain cleared a 10% threshold and the graded trials
+were all correct). The gate now evaluates explicit evidence sufficiency
+alongside the predeclared quality metrics; raw measurements and
+descriptive statistics are untouched.
+
+- Suite `gates.evidence` (schema v1, optional): per-condition
+  `minTrialCoverage`/`minGradedCoverage`, per-improvement
+  `minPairedTaskFraction` (default 1.0 each: complete coverage of the
+  frozen plan; relax only explicitly) and `claims` (`search-used`,
+  `hybrid-executed`) that require server-side audit proof. Invalid
+  fractions, baseline-condition claims and `hybrid-executed` on a
+  non-hybrid condition fail suite/manifest validation.
+- The report gains an `evidence` record (when gates are declared):
+  per-condition frozen-plan coverage (planned / recorded / missing /
+  metric-eligible / graded and the fractions; the denominator comes from
+  the manifest plan, never the surviving records), per-improvement
+  paired-task coverage, and per-claim audit verdicts. New gate checks
+  (`coverage:<condition>`, `paired-coverage:<candidate>:<metric>`,
+  `claim:<kind>:<condition>`) withhold the pass as `insufficient_data`
+  when evidence is short or unknown — never converting a missing
+  outcome into a wrong answer, a zero or a failure.
+- Claims consume the trial's MCP audit: observed searches support
+  `search-used`; `not_observed` (a complete audit with no search call)
+  refutes it (a real workflow outcome — no-tool trials stay in the
+  primary all-assigned-trials comparison, no observed-use subset is
+  reported as primary); `hybrid-executed` is refuted by an observed
+  lexical fallback or degraded search and is supported only from a
+  complete, clean audit stream — all-hybrid counts from a truncated
+  (`cleanShutdown: false`) or lossy (`malformedRecords > 0`) stream stay
+  unknown, never support. Missing, truncated or unreadable audit stays
+  unknown and keeps the claim from passing. Retrieval-control tasks
+  (category `other`) never carry or refute a claim.
+- `bench report` rebuilds reproduce the same sufficiency and gate
+  decisions from the frozen manifest (verified by a rebuild regression
+  test); run and rebuild verdicts match.
+
 ### VS Code operations extension (AP-07 first slice, development build)
 
 New `apps/vscode/` workspace package: a thin VS Code extension that

@@ -235,6 +235,14 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
   (`agentMs` or `inputTokens`) and `threshold` in (0, 1]). Omitted: the report
   is produced without a gate (`qualityGate.status: not_configured`) and
   without paired analysis.
+  - `gates.evidence` — the evidence-sufficiency policy that decides when a
+    gate verdict may carry a performance claim (see Evidence sufficiency
+    below). `minTrialCoverage`, `minGradedCoverage` and
+    `minPairedTaskFraction` are fractions in [0, 1] (default 1.0 each:
+    complete coverage of the frozen plan) and `claims` predeclares
+    execution claims (`condition` — a non-baseline condition — plus `kind`,
+    `search-used` or `hybrid-executed`). Omitted: the conservative 1.0
+    defaults apply to every declared gate; relax them only explicitly.
 - `report` — report analysis configuration: `bootstrapIterations` (default
   1000) and `bootstrapSeed` (default 0) for the task-cluster bootstrap paired
   interval estimate. Omitted: the defaults apply.
@@ -473,14 +481,25 @@ Method handling:
   (timeout rate, capped/lower-bound timing, labelled success-only medians).
 - `qualityGate` — the predeclared gate evaluated: per-condition correctness
   vs `minCorrectness`, per-improvement median paired reduction vs
-  `threshold`, and the candidate-vs-baseline `correctnessMargin` floor.
-  Status is `pass` only when every declared check was evaluated and passed;
-  any declared check that could not be evaluated makes the overall status
-  `insufficient_data` (with the reason per check), any failed evaluated
-  check makes it `fail`, and `not_configured` when the suite declares no
-  gate — a speed gain without correctness data is never a pass. A pass/fail
-  verdict is descriptive evidence against the predeclared thresholds, not a
-  product gate (the v1 section 11 gates remain the product targets).
+  `threshold`, and the candidate-vs-baseline `correctnessMargin` floor, plus
+  the evidence-validity checks derived from `evidence`
+  (`coverage:<condition>`, `paired-coverage:<candidate>:<metric>` and
+  `claim:<kind>:<condition>`). Status is `pass` only when every declared
+  check was evaluated and passed; any declared check that could not be
+  evaluated makes the overall status `insufficient_data` (with the reason
+  per check), any failed evaluated check makes it `fail`, and
+  `not_configured` when the suite declares no gate — a speed gain without
+  correctness data is never a pass, and neither is one measured on an
+  insufficient subset of the frozen plan. A pass/fail verdict is descriptive
+  evidence against the predeclared thresholds, not a product gate (the v1
+  section 11 gates remain the product targets).
+- `evidence` — present only when `gates` is declared: the evidence-
+  sufficiency record the gate checks are derived from (see Evidence
+  sufficiency below): the effective policy (with `defaultsApplied`), and per
+  gate condition the frozen-plan coverage breakdown (planned, recorded,
+  missing, metric-eligible, graded and the coverage fractions), per declared
+  improvement the paired-task fraction against the planned paired tasks, and
+  per predeclared claim the audit-backed verdict with per-trial evidence.
 
 `bench report` re-runs grading and report assembly from the frozen manifest
 and trial artifacts (see the command surface above). The manifest's task,
@@ -492,6 +511,51 @@ them either), so the rebuilt report sees the same counts as the run; the
 run's status and `failureReason` are carried over from the previous report
 when one exists.
 
+### Evidence sufficiency
+
+A gate `pass` is a claim-bearing verdict: it may not stand on a surviving
+subset of the frozen task/condition/repetition plan. The evidence checks
+enforce this without touching any quality metric — raw counts, censored-
+timeout semantics, correctness rates and every descriptive statistic in
+`counts`/`grading`/`analysis` are computed exactly as before, and the
+evidence verdict only decides whether a `pass` may stand:
+
+- Coverage denominators are the frozen plan (`manifest.json` `trials`),
+  never the surviving records: a trial whose record is missing, corrupt or
+  never written still counts against coverage. Timed-out trials stay
+  metric-eligible (they keep their capped time); infra failures, adapter
+  errors and cancelled trials do not; ungraded slots — including slots
+  whose grading record is missing — count against graded completeness
+  without ever being converted into wrong answers.
+- A coverage shortfall yields the `coverage:<condition>` and
+  `paired-coverage:<candidate>:<metric>` checks as `insufficient_data`,
+  which withholds the pass (never converts it into a failure of an
+  unmeasured trial). The suite's `gates.evidence` thresholds decide how
+  much partial coverage is acceptable; without a declared policy the
+  conservative 1.0 defaults apply (complete coverage).
+- Predeclared claims (`gates.evidence.claims`) are evaluated over the
+  trial's server-side audit (see Server-side retrieval observation) for
+  attempted trials of retrieval-relevant tasks only: tasks explicitly
+  designated as retrieval controls (category `other`) never carry or
+  refute a claim, and baseline conditions run no Repoise retrieval.
+  `search-used` requires the trial's MCP server to record at least one
+  completed or failed search; `hybrid-executed` additionally requires
+  every completed search to report the hybrid effective mode with no
+  degradation — an observed lexical fallback refutes it, and support
+  additionally requires a complete, clean audit stream: all-hybrid counts
+  observed under an unclean shutdown (`cleanShutdown: false`) or with
+  malformed records discarded (`malformedRecords > 0`) stay unknown (the
+  lost tail could have held the refuting search), while a fallback
+  actually recorded in a partial stream still refutes. `not_observed` —
+  a complete audit with no search call — refutes a `search-used` claim
+  (a real workflow outcome), but cannot by itself refute the paired
+  comparison: no-tool trials remain in the primary all-assigned-trials
+  comparison, and no observed-use subset is ever reported as primary.
+  Unknown audit evidence (`incomplete`, `unavailable`, a truncated or
+  lossy `observed` stream, or no audit at all) stays unknown: it keeps
+  the claim `insufficient_data` and the gate from passing, and is never
+  counted as zero tool use.
+
 ## Artifacts
 
 Under `<output.dir>/<experiment.id>/`:
@@ -499,7 +563,7 @@ Under `<output.dir>/<experiment.id>/`:
 | Path | Content |
 | ---- | ------- |
 | `manifest.json` | Immutable frozen experiment: suite hash, overrides, snapshot, conditions, plan, adapter/host, budgets, guidance, unknowns |
-| `report.json` | Final report (schema v1): status, duration, per-trial records (including `harnessPin`/`harnessVersion`), `counts`, `grading`, `harness` (version drift), `analysis` (when gates declared) and `qualityGate` |
+| `report.json` | Final report (schema v1): status, duration, per-trial records (including `harnessPin`/`harnessVersion`), `counts`, `grading`, `harness` (version drift), `analysis` and `evidence` (both when gates declared) and `qualityGate` |
 | `report.md` | Human-readable rendering of `report.json` (derived from the same object) |
 | `trials/<id>/trial.json` | One trial's record (schema v1) |
 | `trials/<id>/grading.json` | One trial's grading record (schema v1); engine records carry `source: "engine"`, operator manual records do not |

@@ -53,6 +53,11 @@ fn default_check_scope() -> String {
 fn default_min_correctness() -> f64 {
     1.0
 }
+/// Conservative evidence-sufficiency default: a claim-bearing gate pass
+/// requires complete coverage of the frozen plan (see `EvidencePolicy`).
+fn default_min_coverage() -> f64 {
+    1.0
+}
 fn default_bootstrap_iterations() -> u32 {
     1000
 }
@@ -78,6 +83,17 @@ pub const EVALUATOR_METHODS: &[&str] = &["deterministic", "humanRubric", "modelJ
 pub const CHECK_TYPES: &[&str] = &["containsAny", "containsAll", "notContains"];
 /// Improvement metrics a quality gate can measure as median paired reductions.
 pub const IMPROVEMENT_METRICS: &[&str] = &["agentMs", "inputTokens"];
+/// Execution claims an evidence policy can demand server-side audit proof
+/// for. `search-used` demands that the trial's Repoise MCP server recorded
+/// at least one search tool call (a counted search is positive evidence,
+/// so a partial stream still proves use); `hybrid-executed` additionally
+/// demands that every completed search actually reported the hybrid
+/// effective mode (a degraded or lexical fallback refutes the claim, even
+/// in a partial stream) and support requires a complete, clean audit
+/// stream: missing, truncated (`cleanShutdown: false`) or lossy
+/// (`malformedRecords > 0`) evidence leaves the claim unknown, never
+/// supported — the lost tail could have held the refuting search.
+pub const CLAIM_KINDS: &[&str] = &["search-used", "hybrid-executed"];
 
 /// One operator-declared benchmark experiment.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -250,6 +266,61 @@ pub struct Gates {
     /// Declared paired comparisons against `baseline`.
     #[serde(default)]
     pub improvements: Vec<Improvement>,
+    /// Evidence-sufficiency policy for the claim-bearing gate verdict.
+    /// Omitted: the documented conservative defaults apply to every
+    /// declared gate (complete frozen-plan coverage, complete grading,
+    /// complete paired-task coverage) — see [`EvidencePolicy`].
+    #[serde(default)]
+    pub evidence: Option<EvidencePolicy>,
+}
+
+/// Evidence-sufficiency policy (readiness plan finding 3). The quality
+/// gate's `pass` is a claim-bearing verdict: it may not stand on a
+/// surviving subset of the frozen task/condition/repetition plan. Every
+/// coverage fraction here divides by the frozen plan (the denominator can
+/// never shrink because records are missing), and a shortfall makes the
+/// gate `insufficient_data` with precise reasons — never a pass, and never
+/// a conversion of missing evidence into a wrong answer or a zero.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct EvidencePolicy {
+    /// Per gate condition: the fraction of its planned trial slots that
+    /// must be metric-eligible (completed or a censored timeout, which
+    /// keeps its recorded capped time). Default 1.0: every planned slot.
+    #[serde(default = "default_min_coverage")]
+    pub min_trial_coverage: f64,
+    /// Per gate condition: the fraction of its planned trial slots that
+    /// must carry a `pass`/`fail` grading record. Default 1.0. Ungraded
+    /// outcomes (no evaluator, censored trials, evaluator errors) count
+    /// against this fraction; they are never relabeled as wrong answers.
+    #[serde(default = "default_min_coverage")]
+    pub min_graded_coverage: f64,
+    /// Per declared improvement: the fraction of planned tasks that must
+    /// carry measured data under both the baseline and the candidate.
+    /// Default 1.0.
+    #[serde(default = "default_min_coverage")]
+    pub min_paired_task_fraction: f64,
+    /// Execution claims that must be supported by the trial's server-side
+    /// audit evidence for the gate to pass. Claims never filter the
+    /// primary comparison: an agent that ignores the offered tool is a
+    /// real workflow outcome reported over all assigned trials.
+    #[serde(default)]
+    pub claims: Vec<ExecutionClaim>,
+}
+
+/// One predeclared execution claim over one non-baseline condition.
+/// Baseline conditions run no Repoise retrieval and can never carry a
+/// claim; `hybrid-executed` additionally requires the condition to
+/// declare `searchMode: hybrid`. Tasks explicitly designated as retrieval
+/// controls (category `other`) are excluded from claim denominators.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ExecutionClaim {
+    /// Condition id the claim attaches to (never the baseline).
+    pub condition: String,
+    /// `search-used` or `hybrid-executed` (see [`CLAIM_KINDS`]).
+    #[serde(rename = "kind")]
+    pub kind: String,
 }
 
 /// One declared paired comparison: the median per-task reduction of
@@ -849,6 +920,66 @@ pub(crate) fn gates_problems(gates: &Gates, conditions: &[Condition]) -> Vec<Str
             candidates.push(improvement.candidate.as_str());
         }
     }
+    if let Some(evidence) = &gates.evidence {
+        if !(0.0..=1.0).contains(&evidence.min_trial_coverage) {
+            problems.push("gates.evidence.minTrialCoverage must be a fraction in [0, 1]".into());
+        }
+        if !(0.0..=1.0).contains(&evidence.min_graded_coverage) {
+            problems.push("gates.evidence.minGradedCoverage must be a fraction in [0, 1]".into());
+        }
+        if !(0.0..=1.0).contains(&evidence.min_paired_task_fraction) {
+            problems
+                .push("gates.evidence.minPairedTaskFraction must be a fraction in [0, 1]".into());
+        }
+        let mut claim_keys: Vec<(&str, &str)> = Vec::new();
+        for claim in &evidence.claims {
+            if !CLAIM_KINDS.contains(&claim.kind.as_str()) {
+                problems.push(format!(
+                    "gates.evidence.claims kind '{}' must be one of: {}",
+                    claim.kind,
+                    CLAIM_KINDS.join(", ")
+                ));
+            }
+            match conditions
+                .iter()
+                .find(|condition| condition.id == claim.condition)
+            {
+                None => problems.push(format!(
+                    "gates.evidence.claims condition '{}' is not a declared condition id",
+                    claim.condition
+                )),
+                Some(condition) => {
+                    if condition.retrieval_mode == "baseline" {
+                        problems.push(format!(
+                            "gates.evidence.claims condition '{}' is a baseline condition: \
+                             baseline trials run no Repoise retrieval, so no execution claim \
+                             can attach to it",
+                            claim.condition
+                        ));
+                    }
+                    if claim.kind == "hybrid-executed"
+                        && condition.search_mode.as_deref() != Some("hybrid")
+                    {
+                        problems.push(format!(
+                            "gates.evidence.claims kind 'hybrid-executed' requires condition \
+                             '{}' to declare searchMode 'hybrid' (a lexical condition can \
+                             never execute hybrid search, so the claim could never be \
+                             supported)",
+                            claim.condition
+                        ));
+                    }
+                }
+            }
+            if claim_keys.contains(&(claim.condition.as_str(), claim.kind.as_str())) {
+                problems.push(format!(
+                    "gates.evidence.claims ({}, {}) is declared twice",
+                    claim.condition, claim.kind
+                ));
+            } else {
+                claim_keys.push((claim.condition.as_str(), claim.kind.as_str()));
+            }
+        }
+    }
     problems
 }
 
@@ -1210,5 +1341,111 @@ mod tests {
         value["tasks"] = serde_json::json!([{ "id": "a", "prompt": "x" }]);
         let suite: Suite = serde_json::from_value(value).unwrap();
         assert!(suite.validate().is_ok());
+    }
+
+    #[test]
+    fn evidence_policy_defaults_are_conservative_and_claims_validate() {
+        // A gates block without `evidence` still deserializes (old suites
+        // and manifests keep loading) and reports no policy problems.
+        let mut gates_json = serde_json::json!({
+            "baseline": "baseline",
+            "improvements": [{ "candidate": "hybrid", "metric": "agentMs", "threshold": 0.1 }]
+        });
+        let gates: Gates = serde_json::from_value(gates_json.clone()).unwrap();
+        assert!(gates.evidence.is_none());
+        let conditions: Vec<Condition> = serde_json::from_value(serde_json::json!([
+            { "id": "baseline", "retrievalMode": "baseline" },
+            { "id": "hybrid", "retrievalMode": "repoise", "searchMode": "hybrid" },
+            { "id": "lexical", "retrievalMode": "repoise", "searchMode": "lexical" }
+        ]))
+        .unwrap();
+        assert!(gates_problems(&gates, &conditions).is_empty());
+
+        // A fully declared evidence policy validates.
+        gates_json["evidence"] = serde_json::json!({
+            "minTrialCoverage": 0.75,
+            "minGradedCoverage": 1.0,
+            "minPairedTaskFraction": 0.5,
+            "claims": [
+                { "condition": "hybrid", "kind": "hybrid-executed" },
+                { "condition": "lexical", "kind": "search-used" }
+            ]
+        });
+        let gates: Gates = serde_json::from_value(gates_json).unwrap();
+        let evidence = gates.evidence.as_ref().unwrap();
+        assert_eq!(evidence.min_trial_coverage, 0.75);
+        assert_eq!(evidence.min_graded_coverage, 1.0);
+        assert_eq!(evidence.min_paired_task_fraction, 0.5);
+        assert_eq!(evidence.claims.len(), 2);
+        assert!(gates_problems(&gates, &conditions).is_empty());
+
+        // Omitted policy fields keep the conservative 1.0 defaults.
+        let gates: Gates =
+            serde_json::from_value(serde_json::json!({ "baseline": "baseline", "evidence": {
+                "claims": [{ "condition": "hybrid", "kind": "search-used" }]
+            } }))
+            .unwrap();
+        let evidence = gates.evidence.as_ref().unwrap();
+        assert_eq!(evidence.min_trial_coverage, 1.0);
+        assert_eq!(evidence.min_graded_coverage, 1.0);
+        assert_eq!(evidence.min_paired_task_fraction, 1.0);
+    }
+
+    #[test]
+    fn invalid_evidence_claims_and_coverage_fractions_are_rejected() {
+        let conditions: Vec<Condition> = serde_json::from_value(serde_json::json!([
+            { "id": "baseline", "retrievalMode": "baseline" },
+            { "id": "hybrid", "retrievalMode": "repoise", "searchMode": "hybrid" },
+            { "id": "lexical", "retrievalMode": "repoise", "searchMode": "lexical" }
+        ]))
+        .unwrap();
+        for (evidence, expected) in [
+            (
+                serde_json::json!({ "minTrialCoverage": 1.5 }),
+                "gates.evidence.minTrialCoverage must be a fraction in [0, 1]",
+            ),
+            (
+                serde_json::json!({ "minGradedCoverage": -0.1 }),
+                "gates.evidence.minGradedCoverage must be a fraction in [0, 1]",
+            ),
+            (
+                serde_json::json!({ "minPairedTaskFraction": 2.0 }),
+                "gates.evidence.minPairedTaskFraction must be a fraction in [0, 1]",
+            ),
+            (
+                serde_json::json!({ "claims": [{ "condition": "hybrid", "kind": "fast-execution" }] }),
+                "must be one of: search-used, hybrid-executed",
+            ),
+            (
+                serde_json::json!({ "claims": [{ "condition": "ghost", "kind": "search-used" }] }),
+                "is not a declared condition id",
+            ),
+            (
+                serde_json::json!({ "claims": [{ "condition": "baseline", "kind": "search-used" }] }),
+                "is a baseline condition",
+            ),
+            (
+                serde_json::json!({ "claims": [{ "condition": "lexical", "kind": "hybrid-executed" }] }),
+                "requires condition 'lexical' to declare searchMode 'hybrid'",
+            ),
+            (
+                serde_json::json!({ "claims": [
+                    { "condition": "hybrid", "kind": "search-used" },
+                    { "condition": "hybrid", "kind": "search-used" }
+                ] }),
+                "is declared twice",
+            ),
+        ] {
+            let gates: Gates = serde_json::from_value(serde_json::json!({
+                "baseline": "baseline",
+                "evidence": evidence
+            }))
+            .unwrap();
+            let problems = gates_problems(&gates, &conditions);
+            assert!(
+                problems.iter().any(|p| p.contains(expected)),
+                "{expected}: {problems:?}"
+            );
+        }
     }
 }
