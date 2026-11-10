@@ -307,6 +307,12 @@
           "default": 900000,
           "description": "Per-trial wall-clock cap in milliseconds. Omitting it applies the coordinator default of 900000 ms (15 minutes); the effective value is forwarded to the adapter and enforced by the coordinator's outer watchdog, so a per-trial wall bound is always in effect."
         },
+        "setupWallClockMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1800000,
+          "description": "Per-trial setup wall-clock cap in milliseconds (worktree creation plus the trial index build). Setup time is outside the timed agent interval: it is recorded in setupMs, never charged to agentMs, and is additive to wallClockMs, not part of it. Omitting it applies the coordinator default of 1800000 ms (30 minutes). The trial index child is owned (null stdin, drained pipes, always reaped): on the bound or an interrupt it is killed and reaped and the trial is recorded as an infra_error with reason setup_timeout or setup_interrupted."
+        },
         "maxIterations": { "type": "integer", "minimum": 1 },
         "maxToolCalls": { "type": "integer", "minimum": 1 },
         "tokenBudget": { "type": "integer", "minimum": 1 },

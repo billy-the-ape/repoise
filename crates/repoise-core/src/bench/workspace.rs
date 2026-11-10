@@ -7,6 +7,16 @@
 //! Materialization policy (recorded in the manifest): tracked content is
 //! checked out by Git, symlinks are preserved, submodules are not
 //! initialized, and LFS pointers are not fetched.
+//!
+//! Setup-boundary audit (PR 2): `create`, `remove` and `apply_patch` drive
+//! local, non-network Git commands through `GitAdapter::run_git` (blocking
+//! `Command::output()`). Git's file locks fail fast on contention and no
+//! provider or agent network is reachable from here, so an indefinite hang
+//! is not expected; these waits are deliberately not given their own
+//! deadline or interrupt handling in this build. The only setup step that
+//! can make unbounded provider requests — the trial index build — is the
+//! bounded, cancellable owned setup child in `runner.rs`. See
+//! `docs/bench.md` (Setup subprocess boundary).
 
 use std::path::{Path, PathBuf};
 

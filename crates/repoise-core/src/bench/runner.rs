@@ -6,20 +6,23 @@
 //! delegates the agent process to the protocol host through the checked-in
 //! Node bridge: protocol enforcement, usage accounting and child-tree
 //! cleanup have one source of truth (the host). The coordinator adds
-//! external monotonic timing, cancellation, an outer watchdog and the
-//! per-trial record.
+//! external monotonic timing, cancellation, an outer watchdog, a bounded
+//! and cancellable setup interval (worktree + index, outside the timed
+//! agent interval; see `build_trial_index`) and the per-trial record.
 //!
 //! Trial statuses: host statuses (`completed`, `cancelled`, `agent_error`,
 //! `adapter_error`, `budget_stop`, `timeout`, `protocol_error`) pass through
 //! unchanged; the coordinator adds `infra_error` (its own setup/spawn
-//! failures) and the scheduler adds `not_started` (budget cap,
+//! failures, including the setup bounds `setup_timeout` /
+//! `setup_interrupted` and `interrupted` for a trial whose agent interval
+//! never started) and the scheduler adds `not_started` (budget cap,
 //! interruption, drift). Every attempt is recorded; nothing is silently
 //! retried.
 
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +48,10 @@ pub const AUDIT_SINK_FILENAME: &str = "mcp-audit.ndjson";
 /// Bound on how much of one trial's audit sink the coordinator reads
 /// (per-record bytes are already bounded at the server).
 const MAX_AUDIT_READ_BYTES: u64 = 16 * 1024 * 1024;
+/// Bound on how much of one setup child's stdout/stderr the coordinator
+/// keeps (the tail: the last progress/error lines of a stuck child are the
+/// useful diagnostics).
+const MAX_SETUP_DIAGNOSTIC_BYTES: u64 = 256 * 1024;
 /// The `schemaVersion` value of summarized audit documents and mode records.
 const AUDIT_SCHEMA_VERSION: u64 = 1;
 /// The `source` label of summarized audit documents and mode records.
@@ -166,7 +173,7 @@ impl RunContext {
         setup.insert("indexManifestHash".into(), Value::Null);
         setup.insert("vectors".into(), Value::Null);
         if condition.retrieval_mode == "repoise" {
-            match build_trial_index(self, &workspace.path) {
+            match build_trial_index(self, &workspace.path, interrupted) {
                 Ok(index) => {
                     setup.insert("indexMs".into(), Value::from(index.elapsed_ms as u64));
                     setup.insert("indexGeneration".into(), Value::from(index.generation_id));
@@ -211,7 +218,7 @@ impl RunContext {
                         );
                     }
                 }
-                Err(message) => {
+                Err(failure) => {
                     return self.record_infra(
                         trial,
                         TrialTimings {
@@ -224,8 +231,8 @@ impl RunContext {
                             setup: Value::Object(setup),
                             guidance,
                         },
-                        "index_build_failed",
-                        &message,
+                        failure.reason,
+                        &failure.detail,
                     );
                 }
             }
@@ -233,6 +240,29 @@ impl RunContext {
         let setup_ms = setup_started.elapsed().as_millis();
 
         // --- The timed agent interval ---------------------------------------
+        // Re-check the interrupt before starting agent work: an interrupt
+        // during setup records this trial (setup time only, agentMs null)
+        // and the agent is never launched; the scheduler then marks the
+        // remaining slots not_started, so the report stays interrupted
+        // (exit 4) with setup time never charged to the agent interval.
+        if interrupted.load(Ordering::SeqCst) {
+            return self.record_infra(
+                trial,
+                TrialTimings {
+                    queue_ms,
+                    setup_started,
+                    started,
+                },
+                InfraSetup {
+                    workspace: Some(workspace),
+                    setup: Value::Object(setup),
+                    guidance,
+                },
+                "interrupted",
+                "the run was interrupted before the agent interval started; \
+                 the agent was never launched and no agent time was charged",
+            );
+        }
         let request = match build_request(self, trial, condition, task, &workspace) {
             Ok(value) => value,
             Err(err) => {
@@ -1206,11 +1236,175 @@ fn index_viable_for_vectors(index: &IndexInfo) -> bool {
     index.vectors_total > 0 && index.vectors_pending == 0 && index.vectors_failed == 0
 }
 
+/// Failure of the bounded trial-index build: the stable `reason` recorded in
+/// the trial (always distinct from an agent `timeout` — setup time is never
+/// charged to the agent interval) and the bounded, secret-redacted `detail`.
+struct SetupIndexFailure {
+    reason: &'static str,
+    detail: String,
+}
+
+/// One owned setup subprocess's outcome: its exit status plus the bounded
+/// stdout/stderr captured by draining both pipes while it ran.
+#[derive(Debug)]
+struct SetupChild {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Why a bounded setup wait ended before its child exited. The child is
+/// killed and reaped before the failure is returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SetupChildFailure {
+    /// The run was interrupted (operator cancel).
+    Interrupted,
+    /// The setup deadline elapsed.
+    TimedOut,
+    /// A wait on the child failed; it was killed.
+    Io(String),
+}
+
+/// Spawns one owned setup child: null stdin and piped stdout/stderr that
+/// `wait_setup_child` always drains and reaps (normal exit, or force-kill
+/// at the deadline/interrupt), so no setup child can outlive the
+/// coordinator and a full pipe cannot deadlock the wait.
+fn spawn_setup_child(command: &mut Command) -> Result<Child, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| err.to_string())
+}
+
+/// Bounded wait on an owned setup child: polls until the child exits, the
+/// setup deadline elapses, or the run is interrupted. On the deadline or an
+/// interrupt the child is force-killed and reaped before the failure is
+/// returned, so an unattended run can never hang in setup and the child's
+/// scope lock (the OS lock it held for the trial workspace) is released on
+/// death.
+fn wait_setup_child(
+    child: &mut Child,
+    deadline: Instant,
+    interrupted: &AtomicBool,
+) -> Result<SetupChild, (SetupChildFailure, Vec<u8>)> {
+    let stdout_pipe = child.stdout.take().expect("piped stdout");
+    let stderr_pipe = child.stderr.take().expect("piped stderr");
+    let stdout_handle = std::thread::spawn(move || drain_bounded(stdout_pipe));
+    let stderr_handle = std::thread::spawn(move || drain_bounded(stderr_pipe));
+    let wait = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {
+                if interrupted.load(Ordering::SeqCst) {
+                    break Err(SetupChildFailure::Interrupted);
+                } else if Instant::now() >= deadline {
+                    break Err(SetupChildFailure::TimedOut);
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(err) => break Err(SetupChildFailure::Io(err.to_string())),
+        }
+    };
+    match wait {
+        Ok(status) => {
+            let stdout = stdout_handle.join().unwrap_or_default();
+            let stderr = stderr_handle.join().unwrap_or_default();
+            Ok(SetupChild {
+                status,
+                stdout,
+                stderr,
+            })
+        }
+        Err(failure) => {
+            force_kill_setup_child(child);
+            // Killed: both pipes close and the drains finish. The partial
+            // stderr is returned for bounded diagnostics.
+            let stderr = stderr_handle.join().unwrap_or_default();
+            Err((failure, stderr))
+        }
+    }
+}
+
+/// Reads one setup pipe to EOF, keeping only the final
+/// `MAX_SETUP_DIAGNOSTIC_BYTES` bytes: the tail holds a stuck child's last
+/// progress/error lines, and unbounded capture is not acceptable for
+/// diagnostics that may be recorded into a trial.
+fn drain_bounded(pipe: impl Read + Send + 'static) -> Vec<u8> {
+    let mut kept: Vec<u8> = Vec::new();
+    let mut reader = BufReader::new(pipe);
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                kept.extend_from_slice(&chunk[..n]);
+                if kept.len() > MAX_SETUP_DIAGNOSTIC_BYTES as usize {
+                    let drop = kept.len() - MAX_SETUP_DIAGNOSTIC_BYTES as usize;
+                    kept.drain(..drop);
+                }
+            }
+        }
+    }
+    kept
+}
+
+/// Force-kills an owned setup child and reaps it. The guaranteed kill is
+/// std's own (`Child::kill`: SIGKILL on Unix, TerminateProcess on Windows),
+/// which needs no helper binary — a minimal image without `kill`/procps or
+/// a denied `taskkill` can never turn the following `wait` into an
+/// unbounded block and silently defeat the setup deadline. On Windows the
+/// recorded-tree `taskkill /T` runs first as an extra step (matching the
+/// host bridge convention; std's kill only terminates the direct child).
+/// The setup child the coordinator spawns (`repoise index`) does no
+/// forking — parsing and provider calls run in-process — so no broad
+/// process-name kills are ever needed.
+fn force_kill_setup_child(child: &mut Child) {
+    if cfg!(windows) {
+        let pid = child.id();
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Replaces every occurrence of a known secret value (e.g. an embedding
+/// API key that may echo into a setup child's stderr through the inherited
+/// process environment) with a placeholder, so recorded setup diagnostics
+/// stay shareable.
+fn redact_secret_values(text: &str, secrets: &[String]) -> String {
+    let mut out = text.to_string();
+    for secret in secrets {
+        if !secret.is_empty() {
+            out = out.replace(secret, "[REDACTED]");
+        }
+    }
+    out
+}
+
 /// Builds the trial worktree index through the same `repoise index`
 /// operation (setup time, outside the timed agent interval; the experiment
-/// cache directory is declared in the manifest).
-fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, String> {
+/// cache directory is declared in the manifest). Setup is bounded by its
+/// own limit (`limits.setupWallClockMs`, default 30 minutes — separate
+/// from, and additive to, the agent `wallClockMs`) with the run's
+/// interrupt state checked while it runs: on the bound or an interrupt the
+/// owned child is killed and reaped and the failure carries a stable setup
+/// reason (`setup_timeout` / `setup_interrupted`), never an agent timeout.
+fn build_trial_index(
+    ctx: &RunContext,
+    workspace: &Path,
+    interrupted: &AtomicBool,
+) -> Result<IndexInfo, SetupIndexFailure> {
     let started = Instant::now();
+    let setup_limit_ms = ctx
+        .suite
+        .limits
+        .setup_wall_clock_ms
+        .unwrap_or(super::suite::DEFAULT_SETUP_WALL_CLOCK_MS);
+    let deadline = started + Duration::from_millis(setup_limit_ms);
     let mut command = Command::new(&ctx.self_exe);
     command
         .arg("index")
@@ -1220,15 +1414,67 @@ fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, St
     if ctx.preflight.snapshot_kind == "commit" {
         command.arg("--committed");
     }
-    let output = command.output().map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "index exited {}: {stderr}",
-            output.status.code().unwrap_or(-1)
-        ));
+    // The child inherits the coordinator's process environment, where the
+    // embedding credentials named in the root config live: redact those
+    // values from any captured setup diagnostics.
+    let mut secrets: Vec<String> = Vec::new();
+    for name in [
+        ctx.preflight.embedding_endpoint_env.as_deref(),
+        ctx.preflight.embedding_api_key_env.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(value) = std::env::var(name) {
+            secrets.push(value);
+        }
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut child = match spawn_setup_child(&mut command) {
+        Ok(child) => child,
+        Err(err) => {
+            return Err(SetupIndexFailure {
+                reason: "index_build_failed",
+                detail: format!("setup index child spawn failed: {err}"),
+            });
+        }
+    };
+    let child = match wait_setup_child(&mut child, deadline, interrupted) {
+        Ok(child) => child,
+        Err((failure, stderr)) => {
+            let stderr = redact_secret_values(&String::from_utf8_lossy(&stderr), &secrets);
+            return Err(match failure {
+                SetupChildFailure::Interrupted => SetupIndexFailure {
+                    reason: "setup_interrupted",
+                    detail: format!(
+                        "the run was interrupted during index setup; the setup \
+                         child was killed and reaped: {stderr}"
+                    ),
+                },
+                SetupChildFailure::TimedOut => SetupIndexFailure {
+                    reason: "setup_timeout",
+                    detail: format!(
+                        "index setup exceeded the {setup_limit_ms} ms setup limit; \
+                         the setup child was killed and reaped: {stderr}"
+                    ),
+                },
+                SetupChildFailure::Io(err) => SetupIndexFailure {
+                    reason: "index_build_failed",
+                    detail: format!("setup child wait failed: {err}"),
+                },
+            });
+        }
+    };
+    if !child.status.success() {
+        let stderr = redact_secret_values(&String::from_utf8_lossy(&child.stderr), &secrets);
+        return Err(SetupIndexFailure {
+            reason: "index_build_failed",
+            detail: format!(
+                "index exited {}: {stderr}",
+                child.status.code().unwrap_or(-1)
+            ),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&child.stdout);
     let value: Value = serde_json::from_str(stdout.trim())
         .or_else(|_| {
             stdout
@@ -1238,7 +1484,10 @@ fn build_trial_index(ctx: &RunContext, workspace: &Path) -> Result<IndexInfo, St
                 .and_then(|line| serde_json::from_str(line).ok())
                 .ok_or_else(|| "index produced no JSON output".to_string())
         })
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| SetupIndexFailure {
+            reason: "index_build_failed",
+            detail: format!("index produced no parseable JSON output: {err}"),
+        })?;
     Ok(IndexInfo {
         generation_id: value["generation_id"].as_i64().unwrap_or(0),
         manifest_hash: value["manifest_hash"]
@@ -2059,5 +2308,164 @@ mod tests {
         assert_eq!(record["effective"], Value::Null);
         assert_eq!(record["source"], "configuration only");
         assert!(record["note"].as_str().unwrap().contains("unverified"));
+    }
+
+    // --- Bounded, cancellable setup children (PR 2) ----------------------
+
+    /// A child that ignores its arguments and stalls: Unix `sleep 30`,
+    /// Windows `ping -n 31 127.0.0.1`.
+    fn stall_command() -> Command {
+        if cfg!(windows) {
+            let mut command = Command::new("ping");
+            command.args(["-n", "31", "127.0.0.1"]);
+            command
+        } else {
+            let mut command = Command::new("sleep");
+            command.arg("30");
+            command
+        }
+    }
+
+    /// Prints one file to stdout: Unix `cat <file>`, Windows `cmd /c type`.
+    fn file_print_command(path: &Path) -> Command {
+        if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args(["/c", "type", &path.to_string_lossy()]);
+            command
+        } else {
+            let mut command = Command::new("cat");
+            command.arg(path);
+            command
+        }
+    }
+
+    fn temp_dir_for(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("repoise-bench-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A stalled setup child is killed and reaped at the setup deadline —
+    /// the bounded wait returns promptly (never at the 30 s child lifetime)
+    /// and the child is gone afterwards.
+    #[test]
+    fn setup_child_timeout_is_bounded_and_kills_the_child() {
+        let mut child = spawn_setup_child(&mut stall_command()).expect("spawn");
+        // Read only by the Unix probe below; gating the binding keeps the
+        // Windows build warning-free under `-D warnings`.
+        #[cfg(not(windows))]
+        let pid = child.id();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let started = Instant::now();
+        let result = wait_setup_child(&mut child, deadline, &AtomicBool::new(false));
+        let elapsed = started.elapsed();
+        let (failure, _stderr) = result.expect_err("the stalled child must time out");
+        assert_eq!(failure, SetupChildFailure::TimedOut);
+        assert!(
+            elapsed.as_millis() < 10_000,
+            "the bounded wait returned in {elapsed:?} (the child stalls for 30 s)"
+        );
+        // Killed and reaped: on Unix the pid must be gone (a live or zombie
+        // pid would still answer `kill -0`).
+        #[cfg(not(windows))]
+        {
+            let probe = Command::new("kill").args(["-0", &pid.to_string()]).output();
+            let probe = probe.expect("kill -0");
+            assert_eq!(
+                probe.status.code(),
+                Some(1),
+                "setup child {pid} survived the bounded wait"
+            );
+        }
+    }
+
+    /// A run interrupt during setup kills the child promptly: the bounded
+    /// wait ends `Interrupted` long before the 30 s child lifetime.
+    #[test]
+    fn setup_child_interrupt_is_bounded_and_kills_the_child() {
+        let mut child = spawn_setup_child(&mut stall_command()).expect("spawn");
+        let interrupted = std::sync::Arc::new(AtomicBool::new(false));
+        let flipper = interrupted.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            flipper.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let result = wait_setup_child(&mut child, deadline, &interrupted);
+        let elapsed = started.elapsed();
+        let (failure, _stderr) = result.expect_err("the interrupt must stop the wait");
+        assert_eq!(failure, SetupChildFailure::Interrupted);
+        assert!(
+            elapsed.as_millis() < 10_000,
+            "the interrupted wait returned in {elapsed:?}"
+        );
+    }
+
+    /// A child that fills the stdout pipe must not deadlock the wait (the
+    /// pipes are drained), and the captured diagnostic is bounded to the
+    /// final `MAX_SETUP_DIAGNOSTIC_BYTES` tail of the stream.
+    #[test]
+    fn setup_child_drains_full_pipes_and_keeps_the_tail() {
+        let dir = temp_dir_for("setup-drain");
+        let filler = dir.join("filler.bin");
+        let cap = MAX_SETUP_DIAGNOSTIC_BYTES as usize;
+        let pattern: Vec<u8> = (0..(cap * 2 + 4096))
+            .map(|i| b"abcdefghijklmnopqrstuvwxyz"[i % 26])
+            .collect();
+        std::fs::write(&filler, &pattern).unwrap();
+        let mut child = spawn_setup_child(&mut file_print_command(&filler)).expect("spawn");
+        let result = wait_setup_child(
+            &mut child,
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        );
+        let done = result.expect("drained pipes must not deadlock the wait");
+        assert!(done.status.success());
+        assert_eq!(
+            done.stdout.len(),
+            cap,
+            "the capture must be exactly the bounded tail"
+        );
+        assert_eq!(
+            done.stdout.as_slice(),
+            &pattern[pattern.len() - cap..],
+            "the kept bytes must be the tail of the stream"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The success path returns the child's status and full (small) output.
+    #[test]
+    fn setup_child_success_captures_status_and_output() {
+        let dir = temp_dir_for("setup-success");
+        let small = dir.join("small.txt");
+        let content = b"setup ok";
+        std::fs::write(&small, content).unwrap();
+        let mut child = spawn_setup_child(&mut file_print_command(&small)).expect("spawn");
+        let done = wait_setup_child(
+            &mut child,
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        )
+        .expect("a quick exit must succeed");
+        assert!(done.status.success());
+        assert_eq!(done.stdout.as_slice(), content);
+        assert!(done.stderr.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Known secret values are removed from captured setup diagnostics
+    /// (empty values are ignored, other text is untouched).
+    #[test]
+    fn redact_secret_values_replaces_known_values_only() {
+        let text = "error calling provider with key sk-test-secret-1 then again sk-test-secret-1";
+        let redacted = redact_secret_values(text, &["sk-test-secret-1".to_string(), String::new()]);
+        assert_eq!(
+            redacted,
+            "error calling provider with key [REDACTED] then again [REDACTED]"
+        );
+        assert_eq!(redact_secret_values("plain text", &[]), "plain text");
     }
 }
