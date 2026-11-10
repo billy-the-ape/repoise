@@ -11,7 +11,8 @@ on:
 jobs:
   review:
     uses: billy-the-ape/claude-plugins/.github/workflows/claude-review.yml@main
-    secrets: inherit
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     with:
       pr_number: ${{ inputs.pr_number }}
     permissions:
