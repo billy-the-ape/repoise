@@ -385,6 +385,16 @@ pub struct Limits {
     /// wall bound is always in effect (forwarded to the adapter and enforced
     /// by the coordinator's outer watchdog).
     pub wall_clock_ms: Option<u64>,
+    /// Per-trial setup wall-clock cap in milliseconds (worktree creation
+    /// plus the trial index build). Setup time is outside the timed agent
+    /// interval: it is recorded in `setupMs`, never charged to `agentMs`,
+    /// and it does not extend or reduce `wallClockMs` — it is additive to
+    /// it. When omitted the coordinator applies
+    /// [`DEFAULT_SETUP_WALL_CLOCK_MS`], so a finite setup bound is always
+    /// in effect: on the bound (or an interrupt) the owned setup child is
+    /// killed and reaped and the trial is recorded `infra_error`
+    /// (`setup_timeout` / `setup_interrupted`).
+    pub setup_wall_clock_ms: Option<u64>,
     pub max_iterations: Option<u64>,
     pub max_tool_calls: Option<u64>,
     pub token_budget: Option<u64>,
@@ -409,6 +419,15 @@ pub struct Budgets {
 /// always in effect — it is forwarded to the adapter and enforced by the
 /// coordinator's outer watchdog regardless of adapter support.
 pub const DEFAULT_TRIAL_WALL_CLOCK_MS: u64 = 900_000;
+
+/// Default per-trial setup wall clock applied by the coordinator when the
+/// suite omits `limits.setupWallClockMs`: 30 minutes. Setup (worktree
+/// creation plus the trial index build) is outside the timed agent interval
+/// and bounded on its own: a stuck setup child (e.g. a hung provider request
+/// during indexing) is killed and reaped at the bound, and the trial is
+/// recorded `infra_error` — setup time is never charged to `agentMs`, and
+/// the bound is additive to, not part of, `wallClockMs`.
+pub const DEFAULT_SETUP_WALL_CLOCK_MS: u64 = 1_800_000;
 
 /// Artifact location settings.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -965,6 +984,11 @@ impl Suite {
         if let Some(report) = &self.report {
             problems.extend(report_problems(report));
         }
+        // A zero setup bound would arm the setup watchdog instantly and
+        // kill every trial's index child before it could start.
+        if self.limits.setup_wall_clock_ms == Some(0) {
+            problems.push("limits.setupWallClockMs must be at least 1".into());
+        }
         if let Some(problem) = problems.first() {
             return Err(Error::Config(problem.clone()));
         }
@@ -1050,6 +1074,25 @@ mod tests {
     #[test]
     fn valid_ids_pass_validation() {
         let suite: Suite = serde_json::from_value(valid_suite_json()).unwrap();
+        assert!(suite.validate().is_ok());
+    }
+
+    #[test]
+    fn zero_setup_wall_clock_is_rejected() {
+        let mut value = valid_suite_json();
+        value["limits"] = serde_json::json!({ "setupWallClockMs": 0 });
+        let suite: Suite = serde_json::from_value(value.clone()).unwrap();
+        let err = suite.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("limits.setupWallClockMs must be at least 1"),
+            "{}",
+            err
+        );
+        // A finite bound at least 1 validates (the omitted default is the
+        // 30-minute constant applied by the coordinator).
+        value["limits"] = serde_json::json!({ "setupWallClockMs": 1 });
+        let suite: Suite = serde_json::from_value(value).unwrap();
         assert!(suite.validate().is_ok());
     }
 

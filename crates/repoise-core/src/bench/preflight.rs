@@ -263,6 +263,11 @@ pub fn run(suite: &Suite, suite_path: &Path, output_root: &Path) -> Result<Prefl
 
     // Execution prerequisites: Node, the host bridge (override, installed
     // companion, or source checkout), and the adapter executable.
+    // Setup-boundary audit (PR 2): `node -v` is a local, immediate command
+    // (no network, no locks), so this blocking wait is bounded in practice
+    // and needs no deadline; the only setup step that can make unbounded
+    // provider requests is the trial index build, which is the bounded,
+    // cancellable owned setup child in `runner.rs`.
     let node = find_executable("node").ok_or_else(|| {
         Error::Config("node executable not found on PATH (required to drive agent adapters)".into())
     })?;
@@ -791,8 +796,9 @@ pub fn dry_run(
         },
         "estimatedMaxAgentWallMs": estimated,
         "assumptions": [
-            "estimatedMaxAgentWallMs = trials * per-trial wallClockMs; it is an upper bound on timed agent work and excludes setup (worktree/index), setup is not estimated",
+            "estimatedMaxAgentWallMs = trials * per-trial wallClockMs; it is an upper bound on timed agent work and excludes setup (worktree/index), which is bounded separately by limits.setupWallClockMs and not estimated here",
             "per-trial wallClockMs is always in effect: the coordinator applies a default of 900000 ms (15 minutes) when the suite omits limits.wallClockMs, forwards the effective value to the adapter, and enforces it with its own outer watchdog",
+            "per-trial setup (worktree + index) is bounded by limits.setupWallClockMs (default 1800000 ms, 30 minutes), separate from and additive to wallClockMs; setup time is recorded in setupMs and never charged to agent time",
             "no completion time is promised; actual time depends on the model, provider and hardware"
         ]
     })

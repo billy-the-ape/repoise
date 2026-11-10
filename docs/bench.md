@@ -192,6 +192,17 @@ Required fields: `id`, `root`, `tasks`, `conditions`, `adapter`, `profile`.
 - `limits` — per-trial caps forwarded to the adapter (`wallClockMs` is always
   enforced by the coordinator regardless of adapter support; the coordinator
   applies a 15-minute default — 900000 ms — when the suite omits it).
+  `setupWallClockMs` bounds the per-trial setup interval (worktree creation
+  plus the trial index build) separately from, and additively to,
+  `wallClockMs`: setup time is recorded in `setupMs`, never charged to
+  `agentMs`, and the coordinator applies a 30-minute default (1800000 ms)
+  when the suite omits it. The trial index child is owned (null stdin,
+  drained pipes, always reaped): on the setup bound or an interrupt it is
+  killed and reaped (its scope lock is released by the OS on death) and the
+  trial is recorded as `infra_error` with reason `setup_timeout` (bound) or
+  `setup_interrupted` (interrupt), and the run continues under the
+  experiment budget. The effective `limits` group — including
+  `setupWallClockMs` — is frozen into the manifest at start.
 - `budgets.experimentWallClockMs` — experiment wall-time cap checked between
   trials (a trial already running still completes, bounded by its own
   `wallClockMs`); trials not started after it are recorded as `not_started`
@@ -271,7 +282,9 @@ randomized per task/repetition block with the recorded seed). Each trial:
 1. creates a disposable linked git worktree checked out detached at the
    frozen revision (the user's checkout is never reset or cleaned);
 2. for `repoise` conditions, builds a trial-local index in the experiment
-   cache (setup time is recorded separately from the agent interval) and
+   cache (setup time is recorded separately from the agent interval and
+   bounded by `limits.setupWallClockMs` — the index child is an owned
+   subprocess that is killed and reaped on the bound or an interrupt) and
    launches a read-only `repoise mcp` server bound to the trial worktree
    (its env carries the trial cache plus the root config's embedding
    endpoint/API-key variables, so the server can serve hybrid search),
@@ -310,7 +323,34 @@ the coordinator's outer watchdog force-kills the bridge at the per-trial
 wall-clock deadline, the trial is recorded as `infra_error` (or `cancelled`
 on a coincident interrupt) with reason `host_watchdog`; the report still
 counts it as a censored timeout (it keeps its recorded agentMs at or above
-the cap) rather than as an infra failure.
+the cap) rather than as an infra failure. Setup bounds are distinct from
+agent timeouts: an index build killed at `limits.setupWallClockMs` is
+recorded `infra_error` with reason `setup_timeout`, an index build killed
+by an operator interrupt is recorded `infra_error` with reason
+`setup_interrupted`, and an interrupt that lands after setup but before the
+agent starts is recorded `infra_error` with reason `interrupted` (the agent
+is never launched and `agentMs` stays null). All setup diagnostics are
+size-bounded and secret-redacted.
+
+### Setup subprocess boundary
+
+Setup (worktree creation, the trial index build, guidance edits) runs
+outside the timed agent interval. The only setup step that can make
+unbounded provider network calls is the trial index build: it is an owned
+setup child (null stdin, drained stdout/stderr pipes, always reaped) waited
+with the `limits.setupWallClockMs` deadline and the run's interrupt state.
+On the bound or an interrupt its process is force-killed and reaped before
+the next step (the OS releases the trial scope lock it held on death), so
+neither an unattended run nor a pending SIGINT can be held open by a stuck
+setup child; captured diagnostics are bounded to the stream tail and known
+credential values are redacted. A setup timeout is a per-trial
+`infra_error`; the experiment continues under its existing budgets
+(the experiment wall-time cap stays checked between trials). The remaining
+setup waits were audited and left without their own deadline in this
+build because they are local, non-network operations that fail fast:
+worktree create/remove and patch apply (`bench/workspace.rs`, local Git
+with non-blocking file locks), the per-trial drift re-check (local
+`git rev-parse`), and preflight's `node -v` probe.
 
 ## Server-side retrieval observation
 
@@ -487,7 +527,9 @@ configured local output directory.
   remains on `index`/`watch`).
 - Token/cost limits are forwarded to the adapter and enforced by the host
   only where measurable; per-trial wall time is always enforced by the
-  coordinator (15-minute default when the suite omits `wallClockMs`), and the
+  coordinator (15-minute default when the suite omits `wallClockMs`), per-trial
+  setup is always bounded separately (30-minute default when the suite omits
+  `setupWallClockMs`; see Setup subprocess boundary), and the
   experiment-level cap is checked between trials.
 
 ## Quick smoke (no live inference)
