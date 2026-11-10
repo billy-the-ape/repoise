@@ -296,6 +296,15 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
     // matches what a `bench report` rebuild re-reads.
     let trial_data = collect_trials(&layout)?;
     let provenance = provenance_from_manifest(&manifest)?;
+    // The frozen plan's (task, condition) slots: evidence-sufficiency
+    // denominators that surviving records can never shrink.
+    let slots: Vec<analysis::PlannedSlot> = trials
+        .iter()
+        .map(|trial| analysis::PlannedSlot {
+            task_id: trial.task_id.clone(),
+            condition_id: trial.condition_id.clone(),
+        })
+        .collect();
     let input = ReportInput {
         experiment_id: &suite.id,
         suite_hash,
@@ -303,7 +312,7 @@ pub fn run(request: &BenchRequest, interrupted: Arc<AtomicBool>) -> Result<Bench
         conditions: &suite.conditions,
         gates: suite.gates.as_ref(),
         report_spec: suite.report.as_ref(),
-        planned: trials.len(),
+        slots: &slots,
         trials: &trial_data,
     };
     let ended_at = runner::now_utc();
@@ -479,7 +488,9 @@ struct ReportInput<'a> {
     conditions: &'a [suite::Condition],
     gates: Option<&'a suite::Gates>,
     report_spec: Option<&'a suite::ReportSpec>,
-    planned: usize,
+    /// The frozen task/condition/repetition plan: the evidence-sufficiency
+    /// denominators. Missing records can never shrink it.
+    slots: &'a [analysis::PlannedSlot],
     trials: &'a [analysis::TrialData],
 }
 
@@ -521,7 +532,7 @@ fn assemble_report(
             })
         })
         .collect();
-    let counts = analysis::counts(input.trials, input.planned);
+    let counts = analysis::counts(input.trials, input.slots.len());
     let grading = analysis::grading_summary(input.trials, input.tasks);
     let paired = input.gates.map(|gates| {
         let spec = input.report_spec.unwrap_or(&suite::ReportSpec {
@@ -530,7 +541,25 @@ fn assemble_report(
         });
         analysis::paired_analysis(input.trials, input.tasks, gates, spec)
     });
-    let gate = analysis::quality_gate(input.trials, input.conditions, input.gates, paired.as_ref());
+    // Evidence validity is evaluated only when a gate exists to carry the
+    // verdict; the descriptive analysis above never changes because of it.
+    let evidence = input.gates.map(|gates| {
+        analysis::evidence_summary(
+            input.trials,
+            input.tasks,
+            input.conditions,
+            gates,
+            input.slots,
+            paired.as_ref(),
+        )
+    });
+    let gate = analysis::quality_gate(
+        input.trials,
+        input.conditions,
+        input.gates,
+        paired.as_ref(),
+        evidence.as_ref(),
+    );
     serde_json::json!({
         "schemaVersion": 1,
         "experimentId": input.experiment_id,
@@ -545,6 +574,7 @@ fn assemble_report(
         "grading": grading,
         "harness": analysis::harness_drift(input.trials),
         "analysis": paired,
+        "evidence": evidence,
         "qualityGate": gate
     })
 }
@@ -689,10 +719,23 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
         )));
     }
 
-    let planned = manifest["trials"]
+    // The frozen plan recorded in the manifest is the evidence denominator:
+    // the rebuilt verdict divides by the same planned slots the run used,
+    // even when some trial records are missing from disk.
+    let slots: Vec<analysis::PlannedSlot> = manifest["trials"]
         .as_array()
-        .map(|trials| trials.len())
-        .unwrap_or(0);
+        .map(|trials| {
+            trials
+                .iter()
+                .filter_map(|trial| {
+                    Some(analysis::PlannedSlot {
+                        task_id: trial["taskId"].as_str()?.to_string(),
+                        condition_id: trial["conditionId"].as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Re-grade every recorded trial offline: deterministic checks re-run,
     // valid manual grading records are picked up, engine failures are
@@ -782,7 +825,7 @@ pub fn rebuild(request: &RebuildRequest) -> Result<BenchOutcome, Error> {
         conditions: &conditions,
         gates: gates.as_ref(),
         report_spec: report_spec.as_ref(),
-        planned,
+        slots: &slots,
         trials: &trials,
     };
     let report = assemble_report(
@@ -1061,6 +1104,144 @@ mod tests {
         assert!(!unstarted.join("grading.json").exists());
         assert_eq!(report["grading"]["overall"]["pass"], 1);
         assert_eq!(report["counts"]["notGraded"], 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_applies_evidence_sufficiency_from_the_frozen_plan() {
+        // A gated experiment where the candidate wins big on one task but
+        // infra-fails the other: every predeclared quality check passes on
+        // the surviving subset, yet the evidence record (built from the
+        // frozen manifest plan, not the surviving records) withholds the
+        // pass. The offline rebuild reproduces the same verdict.
+        let dir =
+            std::env::temp_dir().join(format!("repoise-bench-evidence-{}", std::process::id()));
+        let experiment = dir.join("exp");
+        let trials_dir = experiment.join("trials");
+        for id in ["t-a-base", "t-b-base", "t-a-cand", "t-b-cand"] {
+            std::fs::create_dir_all(trials_dir.join(id).join("adapter")).unwrap();
+        }
+        let manifest = serde_json::json!({
+            "suiteHash": "hash",
+            "startedAtUtc": "2026-01-01T00:00:00Z",
+            "tasks": [
+                {
+                    "id": "task-a",
+                    "version": "1",
+                    "heldOut": false,
+                    "promptHash": "hash-a",
+                    "evaluator": {
+                        "method": "deterministic",
+                        "answerField": "answer",
+                        "checks": [{ "id": "c1", "type": "containsAll", "values": ["ok"] }]
+                    }
+                },
+                {
+                    "id": "task-b",
+                    "version": "1",
+                    "heldOut": false,
+                    "promptHash": "hash-b",
+                    "evaluator": {
+                        "method": "deterministic",
+                        "answerField": "answer",
+                        "checks": [{ "id": "c2", "type": "containsAll", "values": ["ok"] }]
+                    }
+                }
+            ],
+            "conditions": [
+                { "id": "base", "retrievalMode": "baseline" },
+                { "id": "cand", "retrievalMode": "repoise", "searchMode": "lexical" }
+            ],
+            "gates": {
+                "baseline": "base",
+                "minCorrectness": 1.0,
+                "improvements": [
+                    { "candidate": "cand", "metric": "agentMs", "threshold": 0.10 }
+                ]
+            },
+            "report": null,
+            "trials": [
+                { "trialId": "t-a-base", "taskId": "task-a", "conditionId": "base", "repetition": 0, "orderedIndex": 0 },
+                { "trialId": "t-a-cand", "taskId": "task-a", "conditionId": "cand", "repetition": 0, "orderedIndex": 1 },
+                { "trialId": "t-b-base", "taskId": "task-b", "conditionId": "base", "repetition": 0, "orderedIndex": 2 },
+                { "trialId": "t-b-cand", "taskId": "task-b", "conditionId": "cand", "repetition": 0, "orderedIndex": 3 }
+            ]
+        });
+        std::fs::write(
+            experiment.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let write_trial = |id: &str, task: &str, condition: &str, status: &str, agent_ms| {
+            let trial_dir = trials_dir.join(id);
+            let record = serde_json::json!({
+                "trialId": id,
+                "taskId": task,
+                "conditionId": condition,
+                "repetition": 0,
+                "status": status,
+                "reason": if status == "completed" { serde_json::Value::Null } else { serde_json::json!("adapter_failure") },
+                "timings": { "agentMs": agent_ms }
+            });
+            std::fs::write(
+                trial_dir.join("trial.json"),
+                serde_json::to_string(&record).unwrap(),
+            )
+            .unwrap();
+            if status == "completed" {
+                std::fs::write(
+                    trial_dir.join("adapter").join("events.ndjson"),
+                    r#"{"t":"final","data":{"answer":"ok"}}"#,
+                )
+                .unwrap();
+            }
+        };
+        write_trial("t-a-base", "task-a", "base", "completed", 2000);
+        write_trial("t-b-base", "task-b", "base", "completed", 2000);
+        write_trial("t-a-cand", "task-a", "cand", "error", 50);
+        write_trial("t-b-cand", "task-b", "cand", "completed", 1000);
+
+        let outcome = rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        })
+        .unwrap();
+        let report = &outcome.payload;
+        // The surviving subset keeps reporting its real numbers: the 50%
+        // paired gain is present and clears the 10% threshold.
+        assert_eq!(report["analysis"]["comparisons"][0]["pairedTasks"], 1);
+        assert_eq!(
+            report["qualityGate"]["checks"][2]["name"],
+            "improvement:cand:agentMs"
+        );
+        assert_eq!(report["qualityGate"]["checks"][2]["status"], "passed");
+        // The verdict is withheld on evidence: coverage divides by the four
+        // frozen plan slots; the errored candidate slot keeps the run from
+        // being sufficient, and nothing was converted into a failure.
+        assert_eq!(report["evidence"]["planned"], 4);
+        assert_eq!(report["evidence"]["policy"]["defaultsApplied"], true);
+        let cand = report["evidence"]["byCondition"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["conditionId"] == "cand")
+            .unwrap();
+        assert_eq!(cand["planned"], 2);
+        assert_eq!(cand["metricEligible"], 1);
+        assert_eq!(cand["missing"], 0);
+        assert_eq!(cand["sufficient"], false);
+        assert_eq!(report["qualityGate"]["status"], "insufficient_data");
+        // A second rebuild (with the first rebuild's report on disk)
+        // reproduces the same sufficiency and gate decisions.
+        let again = rebuild(&RebuildRequest {
+            output: dir.clone(),
+            experiment_id: "exp".into(),
+            json: false,
+        })
+        .unwrap();
+        assert_eq!(again.payload["evidence"], report["evidence"]);
+        assert_eq!(again.payload["qualityGate"], report["qualityGate"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

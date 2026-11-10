@@ -382,6 +382,55 @@
               }
             }
           }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Evidence-sufficiency policy for the claim-bearing gate verdict. Coverage fractions divide by the frozen task/condition/repetition plan: missing records never shrink a denominator, and a shortfall makes the gate insufficient_data (never a pass, never a wrong answer or deleted trial). Omitted: the conservative 1.0 defaults apply.",
+          "properties": {
+            "minTrialCoverage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 1.0,
+              "description": "Per gate condition: the fraction of its planned trial slots that must be metric-eligible (completed or a censored timeout)."
+            },
+            "minGradedCoverage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 1.0,
+              "description": "Per gate condition: the fraction of its planned trial slots that must carry a pass/fail grading record."
+            },
+            "minPairedTaskFraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 1.0,
+              "description": "Per declared improvement: the fraction of planned tasks that must carry measured data under both the baseline and the candidate."
+            },
+            "claims": {
+              "type": "array",
+              "description": "Execution claims that must be supported by the trial's server-side audit evidence for the gate to pass. Claims never filter the primary comparison.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["condition", "kind"],
+                "properties": {
+                  "condition": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Condition id the claim attaches to (never the baseline condition)."
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": ["search-used", "hybrid-executed"],
+                    "description": "search-used: the trial's Repoise MCP server recorded at least one search call. hybrid-executed: additionally every completed search reported the hybrid effective mode (requires the condition to declare searchMode hybrid)."
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

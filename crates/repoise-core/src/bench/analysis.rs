@@ -15,7 +15,20 @@
 //! - a zero baseline makes a reduction ratio undefined: it is reported as
 //!   null with the affected tasks named, never approximated;
 //! - small samples (fewer than 5 paired tasks) carry an "exploratory" label
-//!   alongside the percentile interval.
+//!   alongside the percentile interval;
+//! - the gate verdict is claim-bearing only when the declared
+//!   evidence-sufficiency policy holds over the frozen task/condition/
+//!   repetition plan ([`evidence_summary`]): coverage divides by the plan
+//!   (never by the surviving records), the retrieval audit's condition
+//!   fidelity is reported per condition, and predeclared execution claims
+//!   must be supported by observed server-side evidence — unknown audit
+//!   evidence stays unknown;
+//! - evidence validity is kept separate from the quality metrics: raw
+//!   counts, censored-timeout semantics and every descriptive statistic
+//!   are reported unchanged, and missing evidence is never converted into
+//!   a wrong answer, a zero or a deleted trial.
+
+use std::collections::BTreeMap;
 
 use serde_json::Value;
 
@@ -592,8 +605,601 @@ fn condition_grading(trials: &[TrialData], condition_id: &str) -> (usize, usize)
     (pass, graded)
 }
 
+// --- Evidence sufficiency and condition fidelity --------------------------
+
+/// One planned trial slot from the frozen task/condition/repetition plan.
+/// Evidence sufficiency always divides by these slots, never by the
+/// surviving records: a missing or unreadable `trial.json` cannot shrink a
+/// denominator.
+#[derive(Clone, Debug)]
+pub struct PlannedSlot {
+    pub task_id: String,
+    pub condition_id: String,
+}
+
+fn planned_slots_for(slots: &[PlannedSlot], condition: &str) -> usize {
+    slots
+        .iter()
+        .filter(|slot| slot.condition_id == condition)
+        .count()
+}
+
+/// A trial's summarized server-side audit (`trial.json` `audit`), when one
+/// was recorded. Older trial records without the field carry no audit
+/// evidence: unknown, never "no tool use".
+fn audit_of(trial: &TrialData) -> Option<&Value> {
+    trial.trial.get("audit").filter(|audit| audit.is_object())
+}
+
+fn audit_counter(audit: &Value, path: &str) -> u64 {
+    audit.pointer(path).and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// The paired-task count a comparison recorded (0 when the comparison is
+/// missing or carried no measured pair).
+fn paired_task_count(paired: Option<&Value>, candidate: &str, metric: &str) -> u64 {
+    paired
+        .and_then(|value| value["comparisons"].as_array())
+        .and_then(|comparisons| {
+            comparisons.iter().find(|comparison| {
+                comparison["candidate"].as_str() == Some(candidate)
+                    && comparison["metric"].as_str() == Some(metric)
+            })
+        })
+        .and_then(|comparison| comparison["pairedTasks"].as_u64())
+        .unwrap_or(0)
+}
+
+/// The `reasons` array of an evidence record, joined for a gate check.
+fn join_reasons(record: &Value) -> String {
+    record["reasons"]
+        .as_array()
+        .map(|reasons| {
+            reasons
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default()
+}
+
+/// Classify one attempted trial's audit evidence for a claim kind:
+/// `supported` (observed proof), `refuted` (observed counter-evidence:
+/// no search for `search-used`, degraded/fallback/non-hybrid searches
+/// for `hybrid-executed`), `not_proven` (a clean observation that simply
+/// does not prove the claim) or `unknown` (missing or truncated evidence —
+/// never zero use, never support, never a refutation).
+fn classify_claim_trial(kind: &str, audit: Option<&Value>) -> (&'static str, String) {
+    let Some(audit) = audit else {
+        return (
+            "unknown",
+            "no server-side audit summary was recorded on this trial: the executed retrieval \
+             mode is unknown, never assumed"
+                .to_string(),
+        );
+    };
+    match audit["status"].as_str() {
+        Some("observed") => {
+            let succeeded = audit_counter(audit, "/searches/succeeded");
+            let failed = audit_counter(audit, "/searches/failed");
+            let degraded = audit_counter(audit, "/searches/degraded");
+            let hybrid = audit_counter(audit, "/searches/effective/hybrid");
+            let modes_total: u64 = audit
+                .pointer("/searches/effective")
+                .and_then(Value::as_object)
+                .map(|modes| modes.values().filter_map(Value::as_u64).sum())
+                .unwrap_or(0);
+            let non_hybrid = modes_total.saturating_sub(hybrid);
+            if kind == "hybrid-executed" {
+                if degraded > 0 {
+                    (
+                        "refuted",
+                        format!(
+                            "{degraded} completed search(es) reported a degraded fallback: a \
+                             hybrid-executed claim fails on observed fallback evidence"
+                        ),
+                    )
+                } else if non_hybrid > 0 {
+                    (
+                        "refuted",
+                        format!(
+                            "{non_hybrid} completed search(es) reported a non-hybrid effective \
+                             mode (a silent lexical fallback): a hybrid-executed claim fails on \
+                             observed fallback evidence"
+                        ),
+                    )
+                } else if hybrid > 0 && hybrid == succeeded {
+                    (
+                        "supported",
+                        format!(
+                            "all {hybrid} completed search(es) reported the hybrid effective \
+                             mode with no degradation"
+                        ),
+                    )
+                } else if succeeded == 0 {
+                    (
+                        "not_proven",
+                        "searches were attempted but none completed: the hybrid mode was never \
+                         observably executed"
+                            .to_string(),
+                    )
+                } else {
+                    (
+                        "not_proven",
+                        format!(
+                            "{} completed search(es) recorded no effective mode: mode coverage \
+                             is incomplete, the claim stays unproven",
+                            succeeded.saturating_sub(modes_total)
+                        ),
+                    )
+                }
+            } else if succeeded + failed > 0 {
+                (
+                    "supported",
+                    format!(
+                        "the trial's server recorded {} search tool call(s)",
+                        succeeded + failed
+                    ),
+                )
+            } else {
+                (
+                    "unknown",
+                    "audit status is observed but no search record was counted: inconsistent \
+                     evidence stays unknown"
+                        .to_string(),
+                )
+            }
+        }
+        Some("not_observed") => {
+            if kind == "hybrid-executed" {
+                (
+                    "not_proven",
+                    "a complete audit stream recorded no search call: a real offered-tool \
+                     workflow outcome, but it cannot prove hybrid engine execution"
+                        .to_string(),
+                )
+            } else {
+                (
+                    "refuted",
+                    "a complete audit stream recorded no search tool call: the declared search \
+                     was not exercised on a retrieval-relevant task"
+                        .to_string(),
+                )
+            }
+        }
+        Some("incomplete") => (
+            "unknown",
+            "the audit stream never reached a clean server end: only the recorded tail is \
+             known; the rest is unknown, never zero use"
+                .to_string(),
+        ),
+        Some("unavailable") => (
+            "unknown",
+            "the trial's audit sink is absent or unreadable: missing evidence is unknown, never \
+             zero use and never support"
+                .to_string(),
+        ),
+        _ => (
+            "unknown",
+            "the audit summary carries an unrecognized status: unknown evidence stays unknown"
+                .to_string(),
+        ),
+    }
+}
+
+/// Evaluates the declared evidence-sufficiency policy over the frozen plan
+/// and summarizes the retrieval audit's condition fidelity (a completed
+/// fast/correct subset must not certify a claim-bearing verdict while other
+/// planned slots errored, stayed ungraded or silently degraded).
+///
+/// The quality metrics are untouched: raw counts, censored-timeout
+/// semantics and every descriptive statistic stay exactly as recorded.
+/// This decides only whether a `pass` may stand:
+///
+/// - coverage denominators are the frozen task/condition/repetition slots
+///   (`slots`), never the surviving records; timed-out trials stay
+///   metric-eligible (they keep their capped time), infra failures and
+///   cancelled trials do not, and ungraded slots (including slots whose
+///   record is missing) count against grading completeness — without ever
+///   being converted into wrong answers;
+/// - per condition, the server-side audit fidelity is reported
+///   descriptively: observed tool use, clean no-search outcomes (a real
+///   workflow outcome, kept in the primary comparison — never deleted),
+///   incomplete/unavailable/missing audit, searches by effective mode and
+///   degradation counts;
+/// - predeclared execution claims (`gates.evidence.claims`) are evaluated
+///   over attempted trials of retrieval-relevant tasks only (tasks
+///   explicitly designated as retrieval controls — category `other` — and
+///   baseline conditions are excluded): observed fallback or non-use
+///   refutes a claim, missing or truncated evidence stays unknown and
+///   keeps the claim unproven.
+pub fn evidence_summary(
+    trials: &[TrialData],
+    tasks: &[TaskProvenance],
+    conditions: &[Condition],
+    gates: &Gates,
+    slots: &[PlannedSlot],
+    paired: Option<&Value>,
+) -> Value {
+    let policy = gates.evidence.clone();
+    let min_trial = policy
+        .as_ref()
+        .map_or(1.0, |policy| policy.min_trial_coverage);
+    let min_graded = policy
+        .as_ref()
+        .map_or(1.0, |policy| policy.min_graded_coverage);
+    let min_paired = policy
+        .as_ref()
+        .map_or(1.0, |policy| policy.min_paired_task_fraction);
+    let claims = policy.map(|policy| policy.claims).unwrap_or_default();
+
+    let mut reasons: Vec<String> = Vec::new();
+
+    let by_condition: Vec<Value> = conditions
+        .iter()
+        .map(|condition| {
+            let planned = planned_slots_for(slots, &condition.id);
+            let mut completed = 0usize;
+            let mut timed_out = 0usize;
+            let mut infra_failed = 0usize;
+            let mut cancelled = 0usize;
+            let mut not_started = 0usize;
+            let mut graded = 0usize;
+            let mut observed_use = 0usize;
+            let mut clean_no_search = 0usize;
+            let mut audit_incomplete = 0usize;
+            let mut audit_unavailable = 0usize;
+            let mut audit_missing = 0usize;
+            let mut searches_succeeded = 0u64;
+            let mut searches_failed = 0u64;
+            let mut searches_degraded = 0u64;
+            let mut malformed_records = 0u64;
+            let mut effective_modes: BTreeMap<String, u64> = BTreeMap::new();
+            for trial in trials
+                .iter()
+                .filter(|data| data.trial["conditionId"].as_str() == Some(condition.id.as_str()))
+            {
+                let status = trial.trial["status"].as_str().unwrap_or("unknown");
+                match status {
+                    "completed" => completed += 1,
+                    _ if is_timed_out(&trial.trial) => timed_out += 1,
+                    "error" | "infra_error" => infra_failed += 1,
+                    "cancelled" => cancelled += 1,
+                    _ => not_started += 1,
+                }
+                if matches!(grading_status(trial), Some("pass") | Some("fail")) {
+                    graded += 1;
+                }
+                if condition.retrieval_mode == "repoise" && status != "not_started" {
+                    match audit_of(trial).and_then(|audit| audit["status"].as_str()) {
+                        None => audit_missing += 1,
+                        Some("observed") => observed_use += 1,
+                        Some("not_observed") => clean_no_search += 1,
+                        Some("incomplete") => audit_incomplete += 1,
+                        _ => audit_unavailable += 1,
+                    }
+                    if let Some(audit) = audit_of(trial) {
+                        searches_succeeded += audit_counter(audit, "/searches/succeeded");
+                        searches_failed += audit_counter(audit, "/searches/failed");
+                        searches_degraded += audit_counter(audit, "/searches/degraded");
+                        malformed_records += audit_counter(audit, "/malformedRecords");
+                        if let Some(modes) =
+                            audit.pointer("/searches/effective").and_then(Value::as_object)
+                        {
+                            for (mode, count) in modes {
+                                *effective_modes.entry(mode.clone()).or_insert(0) +=
+                                    count.as_u64().unwrap_or(0);
+                            }
+                        }
+                    }
+                }
+            }
+            let recorded = completed + timed_out + infra_failed + cancelled + not_started;
+            let missing = planned.saturating_sub(recorded);
+            let attempted = completed + timed_out + infra_failed + cancelled;
+            let metric_eligible = completed + timed_out;
+            let trial_coverage = if planned > 0 {
+                metric_eligible as f64 / planned as f64
+            } else {
+                0.0
+            };
+            let graded_coverage = if planned > 0 {
+                graded as f64 / planned as f64
+            } else {
+                0.0
+            };
+            let mut condition_reasons: Vec<String> = Vec::new();
+            if planned == 0 {
+                condition_reasons.push(format!(
+                    "condition '{}': the frozen plan contains no planned slot for it, so no \
+                     coverage denominator exists",
+                    condition.id
+                ));
+            }
+            if planned > 0 && trial_coverage < min_trial {
+                condition_reasons.push(format!(
+                    "condition '{}': only {} of {} planned trial slots are metric-eligible \
+                     (completed or censored timeout; {} infra/adapter failure(s), {} cancelled, \
+                     {} recorded not started, {} never recorded at all) — trial coverage \
+                     {trial_coverage:.3} is below the declared minimum {min_trial:.3}",
+                    condition.id,
+                    metric_eligible,
+                    planned,
+                    infra_failed,
+                    cancelled,
+                    not_started,
+                    missing
+                ));
+            }
+            if planned > 0 && graded_coverage < min_graded {
+                condition_reasons.push(format!(
+                    "condition '{}': only {} of {} planned trial slots carry a pass/fail \
+                     grading record — graded coverage {graded_coverage:.3} is below the \
+                     declared minimum {min_graded:.3} (ungraded, evaluator-error and \
+                     missing-outcome slots count against completeness; they are never \
+                     converted into wrong answers)",
+                    condition.id, graded, planned
+                ));
+            }
+            let sufficient = condition_reasons.is_empty();
+            reasons.extend(condition_reasons.iter().cloned());
+            let is_repoise = condition.retrieval_mode == "repoise";
+            serde_json::json!({
+                "conditionId": condition.id,
+                "retrievalMode": condition.retrieval_mode,
+                "searchMode": condition.search_mode,
+                "planned": planned,
+                "recorded": recorded,
+                "missing": missing,
+                "attempted": attempted,
+                "completed": completed,
+                "timedOut": timed_out,
+                "infraFailed": infra_failed,
+                "cancelled": cancelled,
+                "notStarted": not_started,
+                "metricEligible": metric_eligible,
+                "graded": graded,
+                "trialCoverage": trial_coverage,
+                "gradedCoverage": graded_coverage,
+                "sufficient": sufficient,
+                "reasons": condition_reasons,
+                "observedUse": is_repoise.then_some(observed_use),
+                "cleanNoSearch": is_repoise.then_some(clean_no_search),
+                "auditIncomplete": is_repoise.then_some(audit_incomplete),
+                "auditUnavailable": is_repoise.then_some(audit_unavailable),
+                "auditMissing": is_repoise.then_some(audit_missing),
+                "searches": is_repoise.then(|| serde_json::json!({
+                    "succeeded": searches_succeeded,
+                    "failed": searches_failed,
+                    "degraded": searches_degraded,
+                    "effective": effective_modes
+                })),
+                "malformedAuditRecords": is_repoise.then_some(malformed_records),
+                "observedUseNote": is_repoise.then(|| "observedUse counts trials whose server-side audit recorded at least one search: a selection-biased subset reported separately — the primary workflow comparison always covers every assigned trial and never filters on observed tool use".to_string())
+            })
+        })
+        .collect();
+
+    let by_comparison: Vec<Value> = gates
+        .improvements
+        .iter()
+        .map(|improvement| {
+            let mut baseline_tasks: Vec<&str> = Vec::new();
+            let mut candidate_tasks: Vec<&str> = Vec::new();
+            for slot in slots {
+                let tasks_with = if slot.condition_id == gates.baseline {
+                    &mut baseline_tasks
+                } else if slot.condition_id == improvement.candidate {
+                    &mut candidate_tasks
+                } else {
+                    continue;
+                };
+                if !tasks_with.contains(&slot.task_id.as_str()) {
+                    tasks_with.push(&slot.task_id);
+                }
+            }
+            let planned_paired = baseline_tasks
+                .iter()
+                .filter(|task| candidate_tasks.contains(task))
+                .count();
+            let paired_tasks =
+                paired_task_count(paired, &improvement.candidate, &improvement.metric);
+            let fraction = if planned_paired > 0 {
+                paired_tasks as f64 / planned_paired as f64
+            } else {
+                0.0
+            };
+            let mut comparison_reasons: Vec<String> = Vec::new();
+            if planned_paired == 0 {
+                comparison_reasons.push(format!(
+                    "improvement {}:{}: the frozen plan declares no task slotted under both \
+                     '{}' and '{}', so the paired comparison has no denominator",
+                    improvement.candidate,
+                    improvement.metric,
+                    gates.baseline,
+                    improvement.candidate
+                ));
+            } else if fraction < min_paired {
+                comparison_reasons.push(format!(
+                    "improvement {}:{}: only {} of {} planned tasks carry measured data under \
+                     both '{}' and '{}' — paired task fraction {fraction:.3} is below the \
+                     declared minimum {min_paired:.3}",
+                    improvement.candidate,
+                    improvement.metric,
+                    paired_tasks,
+                    planned_paired,
+                    gates.baseline,
+                    improvement.candidate
+                ));
+            }
+            let sufficient = comparison_reasons.is_empty();
+            reasons.extend(comparison_reasons.iter().cloned());
+            serde_json::json!({
+                "baseline": gates.baseline,
+                "candidate": improvement.candidate,
+                "metric": improvement.metric,
+                "pairedTasks": paired_tasks,
+                "plannedPairedTasks": planned_paired,
+                "pairedTaskFraction": fraction,
+                "sufficient": sufficient,
+                "reasons": comparison_reasons
+            })
+        })
+        .collect();
+
+    // Tasks explicitly designated as retrieval controls (category `other`
+    // is the declared escape hatch for tasks that need no retrieval) are
+    // excluded from claim denominators: a claim about Repoise execution
+    // can neither be carried nor refuted by a task that never needs
+    // retrieval.
+    let control_tasks: Vec<&str> = tasks
+        .iter()
+        .filter(|task| task.category.as_deref() == Some("other"))
+        .map(|task| task.id.as_str())
+        .collect();
+    let claim_records: Vec<Value> = claims
+        .iter()
+        .map(|claim| {
+            let relevant_planned = slots
+                .iter()
+                .filter(|slot| {
+                    slot.condition_id == claim.condition
+                        && !control_tasks.contains(&slot.task_id.as_str())
+                })
+                .count();
+            let mut supported = 0usize;
+            let mut refuted = 0usize;
+            let mut not_proven = 0usize;
+            let mut unknown = 0usize;
+            let mut control_trials = 0usize;
+            let mut attempted = 0usize;
+            let mut trial_evidence: Vec<Value> = Vec::new();
+            for trial in trials
+                .iter()
+                .filter(|data| data.trial["conditionId"].as_str() == Some(claim.condition.as_str()))
+            {
+                let status = trial.trial["status"].as_str().unwrap_or("unknown");
+                if status == "not_started" {
+                    continue;
+                }
+                let task_id = trial.trial["taskId"].as_str().unwrap_or("");
+                if control_tasks.contains(&task_id) {
+                    control_trials += 1;
+                    continue;
+                }
+                attempted += 1;
+                let (classification, note) = classify_claim_trial(&claim.kind, audit_of(trial));
+                match classification {
+                    "supported" => supported += 1,
+                    "refuted" => refuted += 1,
+                    "not_proven" => not_proven += 1,
+                    _ => unknown += 1,
+                }
+                trial_evidence.push(serde_json::json!({
+                    "trialId": trial.trial["trialId"],
+                    "classification": classification,
+                    "note": note
+                }));
+            }
+            let verdict = if refuted > 0 {
+                "not_supported"
+            } else if supported > 0 && unknown == 0 && not_proven == 0 {
+                "supported"
+            } else {
+                "insufficient_data"
+            };
+            let mut claim_reasons: Vec<String> = Vec::new();
+            if refuted > 0 {
+                claim_reasons.push(format!(
+                    "claim ({}, '{}'): refuted by {} attempted trial(s) whose server-side audit \
+                     observed fallback or non-use on retrieval-relevant tasks",
+                    claim.kind, claim.condition, refuted
+                ));
+            }
+            if attempted == 0 {
+                claim_reasons.push(format!(
+                    "claim ({}, '{}'): no attempted trial on a retrieval-relevant task, so the \
+                     claim has no evidence either way",
+                    claim.kind, claim.condition
+                ));
+            } else if supported > 0 && (unknown > 0 || not_proven > 0) {
+                claim_reasons.push(format!(
+                    "claim ({}, '{}'): partially proven — {} supported but {} not proven and {} \
+                     unknown; unknown audit evidence stays unknown and cannot support the claim",
+                    claim.kind, claim.condition, supported, not_proven, unknown
+                ));
+            } else if supported == 0 && refuted == 0 {
+                claim_reasons.push(format!(
+                    "claim ({}, '{}'): no attempted trial produced observed support ({} not \
+                     proven, {} unknown)",
+                    claim.kind, claim.condition, not_proven, unknown
+                ));
+            }
+            let not_started_relevant = relevant_planned.saturating_sub(attempted);
+            if not_started_relevant > 0 {
+                claim_reasons.push(format!(
+                    "claim ({}, '{}'): {} relevant planned slot(s) never started; the claim \
+                     stands on attempted trials only",
+                    claim.kind, claim.condition, not_started_relevant
+                ));
+            }
+            if verdict != "supported" {
+                reasons.extend(claim_reasons.iter().cloned());
+            }
+            serde_json::json!({
+                "condition": claim.condition,
+                "kind": claim.kind,
+                "relevantPlannedSlots": relevant_planned,
+                "attempted": attempted,
+                "controlTaskTrials": control_trials,
+                "supported": supported,
+                "refuted": refuted,
+                "notProven": not_proven,
+                "unknown": unknown,
+                "verdict": verdict,
+                "reasons": claim_reasons,
+                "trialEvidence": trial_evidence
+            })
+        })
+        .collect();
+
+    let sufficient = reasons.is_empty();
+    serde_json::json!({
+        "policy": {
+            "minTrialCoverage": min_trial,
+            "minGradedCoverage": min_graded,
+            "minPairedTaskFraction": min_paired,
+            "claims": claims
+                .iter()
+                .map(|claim| serde_json::json!({ "condition": claim.condition, "kind": claim.kind }))
+                .collect::<Vec<Value>>(),
+            "defaultsApplied": gates.evidence.is_none(),
+            "note": "coverage divides by the frozen task/condition/repetition plan: missing \
+                     records never shrink a denominator; unmet coverage yields \
+                     'insufficient_data', never a pass, and never converts a missing outcome \
+                     into a wrong answer, a zero or a deleted trial. A suite without \
+                     gates.evidence carries these conservative 1.0 defaults; relax them \
+                     explicitly to accept partial coverage"
+        },
+        "planned": slots.len(),
+        "byCondition": by_condition,
+        "byComparison": by_comparison,
+        "claims": claim_records,
+        "sufficient": sufficient,
+        "reasons": reasons
+    })
+}
+
 /// Evaluates the predeclared quality gate against the collected trials.
 /// Checks are declared before the experiment; this only measures them.
+/// `evidence` is the [`evidence_summary`] record for the same gate: its
+/// coverage shortfalls and claim verdicts become gate checks
+/// (`coverage:<condition>`, `paired-coverage:<candidate>:<metric>` and
+/// `claim:<kind>:<condition>`), so a claim-bearing `pass` can never stand
+/// on insufficient evidence: unmet coverage and unproven claims are
+/// `insufficient_data`, observed fallback or no-use refutes the claim
+/// (`failed`). The quality metrics above are untouched either way.
 /// Overall status: `insufficient_data` when no check was declared or any
 /// check could not be evaluated, `fail` when any evaluated check fails, and
 /// `pass` only when every declared check was evaluated and passed.
@@ -602,6 +1208,7 @@ pub fn quality_gate(
     conditions: &[Condition],
     gates: Option<&Gates>,
     paired: Option<&Value>,
+    evidence: Option<&Value>,
 ) -> Value {
     let Some(gates) = gates else {
         return serde_json::json!({
@@ -689,6 +1296,77 @@ pub fn quality_gate(
                 "note": "candidate and baseline both need at least one graded trial"
             }),
         });
+    }
+    // Evidence validity checks (kept separate from the quality metrics
+    // above): a coverage shortfall or an unproven execution claim makes
+    // the claim-bearing verdict insufficient_data; observed fallback or
+    // no-use refutes a claim (failed). None of these changes any measured
+    // number: raw counts and descriptive statistics stand on their own.
+    if let Some(evidence) = evidence {
+        if let Some(entries) = evidence["byCondition"].as_array() {
+            for entry in entries {
+                checks.push(serde_json::json!({
+                    "name": format!("coverage:{}", entry["conditionId"].as_str().unwrap_or("?")),
+                    "observed": entry["trialCoverage"],
+                    "threshold": evidence["policy"]["minTrialCoverage"],
+                    "gradedObserved": entry["gradedCoverage"],
+                    "gradedThreshold": evidence["policy"]["minGradedCoverage"],
+                    "planned": entry["planned"],
+                    "metricEligible": entry["metricEligible"],
+                    "graded": entry["graded"],
+                    "status": if entry["sufficient"].as_bool().unwrap_or(false) {
+                        "passed"
+                    } else {
+                        "insufficient_data"
+                    },
+                    "reason": join_reasons(entry)
+                }));
+            }
+        }
+        if let Some(entries) = evidence["byComparison"].as_array() {
+            for entry in entries {
+                checks.push(serde_json::json!({
+                    "name": format!(
+                        "paired-coverage:{}:{}",
+                        entry["candidate"].as_str().unwrap_or("?"),
+                        entry["metric"].as_str().unwrap_or("?")
+                    ),
+                    "observed": entry["pairedTaskFraction"],
+                    "threshold": evidence["policy"]["minPairedTaskFraction"],
+                    "pairedTasks": entry["pairedTasks"],
+                    "plannedPairedTasks": entry["plannedPairedTasks"],
+                    "status": if entry["sufficient"].as_bool().unwrap_or(false) {
+                        "passed"
+                    } else {
+                        "insufficient_data"
+                    },
+                    "reason": join_reasons(entry)
+                }));
+            }
+        }
+        if let Some(entries) = evidence["claims"].as_array() {
+            for entry in entries {
+                let verdict = entry["verdict"].as_str().unwrap_or("insufficient_data");
+                checks.push(serde_json::json!({
+                    "name": format!(
+                        "claim:{}:{}",
+                        entry["kind"].as_str().unwrap_or("?"),
+                        entry["condition"].as_str().unwrap_or("?")
+                    ),
+                    "verdict": verdict,
+                    "supported": entry["supported"],
+                    "refuted": entry["refuted"],
+                    "notProven": entry["notProven"],
+                    "unknown": entry["unknown"],
+                    "status": match verdict {
+                        "supported" => "passed",
+                        "not_supported" => "failed",
+                        _ => "insufficient_data"
+                    },
+                    "reason": join_reasons(entry)
+                }));
+            }
+        }
     }
     // The gate passes only when every predeclared check was evaluated and
     // passed: a speed gain with insufficient correctness data is not a pass.
@@ -874,6 +1552,116 @@ pub fn render_markdown(report: &Value) -> String {
             }
         }
     }
+    if let Some(evidence) = report["evidence"].as_object() {
+        md.push_str("## Evidence sufficiency\n\n");
+        md.push_str(
+            "- A gate `pass` is claim-bearing only when these checks hold; unmet coverage is \
+             `insufficient_data`, never a pass, and never converts a missing outcome into a \
+             wrong answer, a zero or a deleted trial.\n",
+        );
+        let policy = &evidence["policy"];
+        md.push_str(&format!(
+            "- Policy: trial coverage >= {}, graded coverage >= {}, paired task fraction >= {}{}.\n\n",
+            policy["minTrialCoverage"]
+                .as_f64()
+                .map(|v| format!("{v:.3}"))
+                .unwrap_or("n/a".into()),
+            policy["minGradedCoverage"]
+                .as_f64()
+                .map(|v| format!("{v:.3}"))
+                .unwrap_or("n/a".into()),
+            policy["minPairedTaskFraction"]
+                .as_f64()
+                .map(|v| format!("{v:.3}"))
+                .unwrap_or("n/a".into()),
+            if policy["defaultsApplied"].as_bool() == Some(true) {
+                " (the suite declared no gates.evidence: conservative defaults applied)"
+            } else {
+                ""
+            }
+        ));
+        if let Some(rows) = evidence["byCondition"].as_array() {
+            md.push_str("| Condition | Planned | Completed | Timed out | Infra failed | Cancelled | Not started | Missing | Metric-eligible | Graded | Verdict |\n");
+            md.push_str("|---|---|---|---|---|---|---|---|---|---|---|\n");
+            for row in rows {
+                md.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                    row["conditionId"].as_str().unwrap_or("?"),
+                    row["planned"].as_u64().unwrap_or(0),
+                    row["completed"].as_u64().unwrap_or(0),
+                    row["timedOut"].as_u64().unwrap_or(0),
+                    row["infraFailed"].as_u64().unwrap_or(0),
+                    row["cancelled"].as_u64().unwrap_or(0),
+                    row["notStarted"].as_u64().unwrap_or(0),
+                    row["missing"].as_u64().unwrap_or(0),
+                    row["metricEligible"].as_u64().unwrap_or(0),
+                    row["graded"].as_u64().unwrap_or(0),
+                    if row["sufficient"].as_bool() == Some(true) {
+                        "sufficient"
+                    } else {
+                        "INSUFFICIENT"
+                    }
+                ));
+                if let Some(reasons) = row["reasons"].as_array() {
+                    for reason in reasons.iter().filter_map(Value::as_str) {
+                        md.push_str(&format!(
+                            "- `{}`: {reason}\n",
+                            row["conditionId"].as_str().unwrap_or("?")
+                        ));
+                    }
+                }
+            }
+            md.push('\n');
+        }
+        if let Some(rows) = evidence["byComparison"].as_array() {
+            for row in rows {
+                md.push_str(&format!(
+                    "- Paired coverage {} vs {} ({}): {}/{} planned tasks paired -> {}.\n",
+                    row["candidate"].as_str().unwrap_or("?"),
+                    row["baseline"].as_str().unwrap_or("?"),
+                    row["metric"].as_str().unwrap_or("?"),
+                    row["pairedTasks"].as_u64().unwrap_or(0),
+                    row["plannedPairedTasks"].as_u64().unwrap_or(0),
+                    if row["sufficient"].as_bool() == Some(true) {
+                        "sufficient"
+                    } else {
+                        "INSUFFICIENT"
+                    }
+                ));
+            }
+            md.push('\n');
+        }
+        if let Some(claims) = evidence["claims"].as_array() {
+            for claim in claims {
+                md.push_str(&format!(
+                    "- Claim `{}` on `{}`: {} ({} supported, {} refuted, {} not proven, {} unknown; {} attempted trial(s), {} control-task trial(s)).\n",
+                    claim["kind"].as_str().unwrap_or("?"),
+                    claim["condition"].as_str().unwrap_or("?"),
+                    claim["verdict"].as_str().unwrap_or("?"),
+                    claim["supported"].as_u64().unwrap_or(0),
+                    claim["refuted"].as_u64().unwrap_or(0),
+                    claim["notProven"].as_u64().unwrap_or(0),
+                    claim["unknown"].as_u64().unwrap_or(0),
+                    claim["attempted"].as_u64().unwrap_or(0),
+                    claim["controlTaskTrials"].as_u64().unwrap_or(0)
+                ));
+                if let Some(reasons) = claim["reasons"].as_array() {
+                    for reason in reasons.iter().filter_map(Value::as_str) {
+                        md.push_str(&format!("  - {reason}\n"));
+                    }
+                }
+            }
+            md.push('\n');
+        }
+        md.push_str(&format!(
+            "**Evidence sufficient for a claim-bearing pass:** {}\n\n",
+            if evidence["sufficient"].as_bool() == Some(true) {
+                "yes"
+            } else {
+                "no"
+            }
+        ));
+    }
     if let Some(gate) = report["qualityGate"].as_object() {
         md.push_str(&format!(
             "## Quality gate: {}\n\n",
@@ -994,6 +1782,28 @@ mod tests {
                 required_capabilities: Vec::new(),
             },
         ]
+    }
+
+    /// The frozen plan: one slot per (task, condition) for the given ids.
+    fn slots_for(tasks: &[&str], condition_ids: &[&str]) -> Vec<PlannedSlot> {
+        tasks
+            .iter()
+            .flat_map(|task| {
+                condition_ids.iter().map(move |condition| PlannedSlot {
+                    task_id: (*task).to_string(),
+                    condition_id: (*condition).to_string(),
+                })
+            })
+            .collect()
+    }
+
+    /// Gate over the standard two-task plan (task-a, task-b) with the
+    /// declared gates and the evidence record computed from the same plan.
+    fn gated(trials: &[TrialData], gates: &Gates, paired: Option<&Value>) -> Value {
+        let slots = slots_for(&["task-a", "task-b"], &["baseline", "candidate"]);
+        let evidence =
+            evidence_summary(trials, &base_tasks(), &conditions(), gates, &slots, paired);
+        quality_gate(trials, &conditions(), Some(gates), paired, Some(&evidence))
     }
 
     #[test]
@@ -1263,7 +2073,7 @@ mod tests {
         let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
         // The improvement check passes: reduction 0.5 >= 0.1. The
         // correctness checks fail: candidate 0.5 < 1.0.
-        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        let gate = gated(&trials, &gates, Some(&paired));
         assert_eq!(gate["status"], "fail");
         let names: Vec<&str> = gate["checks"]
             .as_array()
@@ -1277,13 +2087,21 @@ mod tests {
                 "correctness:baseline",
                 "correctness:candidate",
                 "improvement:candidate:agentMs",
-                "correctness-margin:candidate"
+                "correctness-margin:candidate",
+                "coverage:baseline",
+                "coverage:candidate",
+                "paired-coverage:candidate:agentMs"
             ]
         );
         assert_eq!(gate["checks"][2]["status"], "passed");
         assert_eq!(gate["checks"][2]["observed"], 0.5);
         assert_eq!(gate["checks"][1]["status"], "failed");
         assert_eq!(gate["checks"][3]["status"], "failed");
+        // Fully covered plan: the evidence checks pass but cannot rescue a
+        // failed quality metric.
+        assert_eq!(gate["checks"][4]["status"], "passed");
+        assert_eq!(gate["checks"][5]["status"], "passed");
+        assert_eq!(gate["checks"][6]["status"], "passed");
     }
 
     #[test]
@@ -1298,14 +2116,14 @@ mod tests {
             None,
         )];
         assert_eq!(
-            quality_gate(&trials, &[], None, None)["status"],
+            quality_gate(&trials, &[], None, None, None)["status"],
             "not_configured"
         );
         let gates = gates();
         let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
         // Nothing graded and no paired data for the candidate: the gate
         // must not pass.
-        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        let gate = gated(&trials, &gates, Some(&paired));
         assert_eq!(gate["status"], "insufficient_data");
     }
 
@@ -1355,7 +2173,7 @@ mod tests {
         ];
         let gates = gates();
         let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
-        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        let gate = gated(&trials, &gates, Some(&paired));
         assert_eq!(gate["status"], "insufficient_data");
         let checks: Vec<(&str, &str)> = gate["checks"]
             .as_array()
@@ -1375,6 +2193,9 @@ mod tests {
                 ("correctness:candidate", "insufficient_data"),
                 ("improvement:candidate:agentMs", "insufficient_data"),
                 ("correctness-margin:candidate", "insufficient_data"),
+                ("coverage:baseline", "passed"),
+                ("coverage:candidate", "insufficient_data"),
+                ("paired-coverage:candidate:agentMs", "insufficient_data"),
             ]
         );
     }
@@ -1385,8 +2206,9 @@ mod tests {
         // errors on task-a (50 ms) and passes task-b in 1900 ms against a
         // 2000 ms baseline. task-a drops out of the paired comparison (its
         // only candidate trial is non-eligible), the observed reduction is
-        // 5%, below the 10% threshold, so the gate must fail rather than
-        // pass on apparent speed.
+        // 5%, below the 10% threshold, so the improvement check fails — and
+        // the evidence checks independently mark the run insufficient: half
+        // the planned candidate slots never produced a measurement.
         let trials = vec![
             trial(
                 "task-a",
@@ -1441,8 +2263,8 @@ mod tests {
         assert_eq!(comparison["pairedTasks"], 1);
         assert!((comparison["medianPairedReduction"].as_f64().unwrap() - 0.05).abs() < 1e-9);
 
-        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
-        assert_eq!(gate["status"], "fail");
+        let gate = gated(&trials, &gates, Some(&paired));
+        assert_eq!(gate["status"], "insufficient_data");
         let checks: Vec<(&str, &str)> = gate["checks"]
             .as_array()
             .unwrap()
@@ -1461,8 +2283,217 @@ mod tests {
                 ("correctness:candidate", "passed"),
                 ("improvement:candidate:agentMs", "failed"),
                 ("correctness-margin:candidate", "passed"),
+                ("coverage:baseline", "passed"),
+                ("coverage:candidate", "insufficient_data"),
+                ("paired-coverage:candidate:agentMs", "insufficient_data"),
             ]
         );
+        // The descriptive statistics are untouched by the evidence verdict:
+        // the surviving paired reduction is still reported exactly.
+        assert_eq!(gate["checks"][2]["observed"], 0.05);
+    }
+
+    #[test]
+    fn large_surviving_gain_on_partial_coverage_is_insufficient_not_pass() {
+        // The counterexample the old gate allowed through: the candidate
+        // errors on task-a but beats the baseline by 50% on task-b. The
+        // surviving paired reduction (0.5) clears the 10% threshold and the
+        // graded trials are all correct, so every predeclared quality check
+        // passes — but the surviving subset cannot certify the result: the
+        // gate must report insufficient_data, never pass.
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-b",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "error",
+                Some("adapter_failure"),
+                Some(50),
+                None,
+                None,
+            ),
+            trial(
+                "task-b",
+                "candidate",
+                "completed",
+                None,
+                Some(1000),
+                None,
+                Some("pass"),
+            ),
+        ];
+        let gates = gates();
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        assert_eq!(paired["comparisons"][0]["pairedTasks"], 1);
+        assert!(
+            (paired["comparisons"][0]["medianPairedReduction"]
+                .as_f64()
+                .unwrap()
+                - 0.5)
+                .abs()
+                < 1e-9
+        );
+        let gate = gated(&trials, &gates, Some(&paired));
+        assert_eq!(gate["status"], "insufficient_data");
+        // Every predeclared quality check passes; the evidence checks are
+        // what withhold the pass.
+        let by_name: Vec<(&str, &str)> = gate["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|check| {
+                (
+                    check["name"].as_str().unwrap(),
+                    check["status"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            by_name,
+            vec![
+                ("correctness:baseline", "passed"),
+                ("correctness:candidate", "passed"),
+                ("improvement:candidate:agentMs", "passed"),
+                ("correctness-margin:candidate", "passed"),
+                ("coverage:baseline", "passed"),
+                ("coverage:candidate", "insufficient_data"),
+                ("paired-coverage:candidate:agentMs", "insufficient_data"),
+            ]
+        );
+        // The unmeasured slot is named in the shortfall, and the raw counts
+        // elsewhere in the report are unchanged.
+        let coverage = &gate["checks"][5];
+        assert_eq!(coverage["planned"], 2);
+        assert_eq!(coverage["metricEligible"], 1);
+        assert!(
+            coverage["reason"]
+                .as_str()
+                .unwrap()
+                .contains("infra/adapter failure")
+        );
+    }
+
+    #[test]
+    fn missing_trial_record_cannot_shrink_the_coverage_denominator() {
+        // A planned slot whose trial.json never landed (or is unreadable)
+        // stays planned: coverage divides by the frozen plan, so the record
+        // cannot go missing its way into a pass.
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "completed",
+                None,
+                Some(1000),
+                None,
+                Some("pass"),
+            ),
+        ];
+        let gates = gates();
+        let slots = slots_for(&["task-a", "task-b"], &["baseline", "candidate"]);
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let evidence = evidence_summary(
+            &trials,
+            &base_tasks(),
+            &conditions(),
+            &gates,
+            &slots,
+            Some(&paired),
+        );
+        assert_eq!(evidence["planned"], 4);
+        assert_eq!(evidence["byCondition"][0]["missing"], 1);
+        assert_eq!(evidence["byCondition"][0]["trialCoverage"], 0.5);
+        assert_eq!(evidence["byCondition"][0]["sufficient"], false);
+        assert_eq!(evidence["byCondition"][1]["missing"], 1);
+        assert_eq!(evidence["sufficient"], false);
+        let gate = quality_gate(
+            &trials,
+            &conditions(),
+            Some(&gates),
+            Some(&paired),
+            Some(&evidence),
+        );
+        assert_eq!(gate["status"], "insufficient_data");
+    }
+
+    #[test]
+    fn ungraded_trials_and_unrun_tasks_hold_the_verdict_insufficient() {
+        // All slots completed and are fast, but grading records are missing
+        // for one task and one planned task never ran: correctness
+        // denominators stay honest (no wrong answers are invented), and the
+        // graded-coverage policy withholds the pass.
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "completed",
+                None,
+                Some(1000),
+                None,
+                None, // no grading record at all
+            ),
+        ];
+        let gates = gates();
+        let slots = slots_for(&["task-a", "task-b"], &["baseline", "candidate"]);
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let evidence = evidence_summary(
+            &trials,
+            &base_tasks(),
+            &conditions(),
+            &gates,
+            &slots,
+            Some(&paired),
+        );
+        // task-b was planned for both conditions but never recorded.
+        assert_eq!(evidence["byCondition"][0]["missing"], 1);
+        assert_eq!(evidence["byCondition"][1]["graded"], 0);
+        assert_eq!(evidence["byCondition"][1]["gradedCoverage"], 0.0);
+        let gate = quality_gate(
+            &trials,
+            &conditions(),
+            Some(&gates),
+            Some(&paired),
+            Some(&evidence),
+        );
+        assert_eq!(gate["status"], "insufficient_data");
+        // The ungraded completed trial is still not a correctness failure.
+        let condition_grading = &gate["checks"][1];
+        assert_eq!(condition_grading["status"], "insufficient_data");
     }
 
     #[test]
@@ -1550,7 +2581,25 @@ mod tests {
         ];
         let gates = gates();
         let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
-        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        // One planned task (task-a), both conditions completed and graded:
+        // the evidence is sufficient and the gate passes.
+        let slots = slots_for(&["task-a"], &["baseline", "candidate"]);
+        let evidence = evidence_summary(
+            &trials,
+            &base_tasks(),
+            &conditions(),
+            &gates,
+            &slots,
+            Some(&paired),
+        );
+        assert_eq!(evidence["sufficient"], true);
+        let gate = quality_gate(
+            &trials,
+            &conditions(),
+            Some(&gates),
+            Some(&paired),
+            Some(&evidence),
+        );
         let report = json!({
             "experimentId": "exp-test",
             "status": "completed",
@@ -1560,6 +2609,7 @@ mod tests {
             "counts": counts(&trials, 2),
             "grading": grading_summary(&trials, &base_tasks()),
             "analysis": paired,
+            "evidence": evidence,
             "qualityGate": gate
         });
         let md = render_markdown(&report);
@@ -1570,6 +2620,8 @@ mod tests {
         assert!(md.contains("success-only median agentMs"));
         assert!(md.contains("## Quality gate: pass"));
         assert!(md.contains("censored"));
+        assert!(md.contains("## Evidence sufficiency"));
+        assert!(md.contains("**Evidence sufficient for a claim-bearing pass:** yes"));
     }
 
     #[test]
@@ -1606,7 +2658,7 @@ mod tests {
             "counts": counts(&trials, 2),
             "grading": grading_summary(&trials, &base_tasks()),
             "harness": harness_drift(&trials),
-            "qualityGate": quality_gate(&trials, &conditions(), None, None)
+            "qualityGate": quality_gate(&trials, &conditions(), None, None, None)
         });
         let md = render_markdown(&report);
         // The version list must be plain strings: `Value::to_string()` keeps
@@ -1637,7 +2689,7 @@ mod tests {
             "counts": counts(&single, 1),
             "grading": grading_summary(&single, &base_tasks()),
             "harness": harness_drift(&single),
-            "qualityGate": quality_gate(&single, &conditions(), None, None)
+            "qualityGate": quality_gate(&single, &conditions(), None, None, None)
         });
         let single_md = render_markdown(&single_report);
         assert!(!single_md.contains("## Harness version drift"));
@@ -1710,8 +2762,268 @@ mod tests {
                 .unwrap()
                 .contains("not a supported metric")
         );
-        let gate = quality_gate(&trials, &conditions(), Some(&gates), Some(&paired));
+        let gate = gated(&trials, &gates, Some(&paired));
         assert_eq!(gate["status"], "insufficient_data");
+    }
+
+    /// Gates that predeclare one execution claim on the candidate.
+    fn claim_gates(kind: &str) -> Gates {
+        serde_json::from_value(json!({
+            "baseline": "baseline",
+            "minCorrectness": 1.0,
+            "improvements": [{ "candidate": "candidate", "metric": "agentMs", "threshold": 0.10 }],
+            "evidence": { "claims": [{ "condition": "candidate", "kind": kind }] }
+        }))
+        .unwrap()
+    }
+
+    /// Fully covered two-task run (all completed, all graded); the task-a
+    /// candidate trial carries `audit` when given. task-b is a category
+    /// "other" retrieval control: its trial can neither carry nor refute a
+    /// claim.
+    fn covered_run_with_audit(audit: Option<Value>) -> Vec<TrialData> {
+        let mut trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-b",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "completed",
+                None,
+                Some(1000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-b",
+                "candidate",
+                "completed",
+                None,
+                Some(1000),
+                None,
+                Some("pass"),
+            ),
+        ];
+        if let Some(audit) = audit {
+            trials[2].trial["audit"] = audit;
+        }
+        trials
+    }
+
+    fn verdict_for(kind: &str, audit: Option<Value>) -> (Value, Value) {
+        let trials = covered_run_with_audit(audit);
+        let gates = claim_gates(kind);
+        let slots = slots_for(&["task-a", "task-b"], &["baseline", "candidate"]);
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let evidence = evidence_summary(
+            &trials,
+            &base_tasks(),
+            &conditions(),
+            &gates,
+            &slots,
+            Some(&paired),
+        );
+        let gate = quality_gate(
+            &trials,
+            &conditions(),
+            Some(&gates),
+            Some(&paired),
+            Some(&evidence),
+        );
+        (evidence["claims"][0].clone(), gate)
+    }
+
+    #[test]
+    fn search_used_claim_is_supported_only_by_observed_server_calls() {
+        let (claim, gate) = verdict_for(
+            "search-used",
+            Some(json!({
+                "status": "observed",
+                "searches": { "attempted": 2, "succeeded": 2, "failed": 0, "degraded": 0,
+                              "effective": { "lexical": 2 } }
+            })),
+        );
+        assert_eq!(claim["verdict"], "supported");
+        assert_eq!(claim["supported"], 1);
+        assert_eq!(claim["controlTaskTrials"], 1);
+        assert_eq!(gate["status"], "pass");
+    }
+
+    #[test]
+    fn clean_no_search_trial_refutes_a_search_used_claim() {
+        // The audit stream was complete: the agent never called the offered
+        // tool on the retrieval-relevant task. The trial stays in the
+        // primary comparison, but the claim is refuted and the gate fails.
+        let (claim, gate) = verdict_for("search-used", Some(json!({ "status": "not_observed" })));
+        assert_eq!(claim["verdict"], "not_supported");
+        assert_eq!(claim["refuted"], 1);
+        let claim_check = gate["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "claim:search-used:candidate")
+            .unwrap();
+        assert_eq!(claim_check["status"], "failed");
+        assert_eq!(gate["status"], "fail");
+    }
+
+    #[test]
+    fn missing_or_truncated_audit_evidence_stays_unknown() {
+        // No audit recorded (older/failed sink): unknown, never zero use.
+        let (claim, gate) = verdict_for("search-used", None);
+        assert_eq!(claim["verdict"], "insufficient_data");
+        assert_eq!(claim["unknown"], 1);
+        assert_eq!(claim["refuted"], 0);
+        assert_eq!(gate["status"], "insufficient_data");
+        // Truncated stream: the recorded tail is all that is known.
+        let (claim, gate) = verdict_for("search-used", Some(json!({ "status": "incomplete" })));
+        assert_eq!(claim["verdict"], "insufficient_data");
+        assert_eq!(claim["unknown"], 1);
+        assert_eq!(gate["status"], "insufficient_data");
+        // Unreadable sink: same unknown treatment.
+        let (claim, _) = verdict_for("search-used", Some(json!({ "status": "unavailable" })));
+        assert_eq!(claim["verdict"], "insufficient_data");
+        assert_eq!(claim["unknown"], 1);
+    }
+
+    #[test]
+    fn hybrid_claim_requires_actual_hybrid_searches_not_pooled_fallback() {
+        let hybrid_audit = |effective: Value, degraded: u64, succeeded: u64| {
+            json!({
+                "status": "observed",
+                "searches": { "attempted": succeeded, "succeeded": succeeded, "failed": 0,
+                              "degraded": degraded, "effective": effective }
+            })
+        };
+        // All searches observably hybrid: supported.
+        let (claim, gate) = verdict_for(
+            "hybrid-executed",
+            Some(hybrid_audit(json!({ "hybrid": 2 }), 0, 2)),
+        );
+        assert_eq!(claim["verdict"], "supported");
+        assert_eq!(gate["status"], "pass");
+        // A silently pooled lexical search inside a "hybrid" condition:
+        // refuted on observed fallback evidence.
+        let (claim, gate) = verdict_for(
+            "hybrid-executed",
+            Some(hybrid_audit(json!({ "hybrid": 1, "lexical": 1 }), 0, 2)),
+        );
+        assert_eq!(claim["verdict"], "not_supported");
+        assert_eq!(claim["refuted"], 1);
+        assert_eq!(gate["status"], "fail");
+        // A degraded (fallback) search: refuted.
+        let (claim, _) = verdict_for(
+            "hybrid-executed",
+            Some(hybrid_audit(json!({ "hybrid": 1 }), 1, 2)),
+        );
+        assert_eq!(claim["verdict"], "not_supported");
+        // A clean no-search workflow outcome cannot prove hybrid execution,
+        // but it is a real workflow outcome: not proven, not refuted, and
+        // the trial is never dropped from the primary comparison.
+        let (claim, gate) =
+            verdict_for("hybrid-executed", Some(json!({ "status": "not_observed" })));
+        assert_eq!(claim["verdict"], "insufficient_data");
+        assert_eq!(claim["notProven"], 1);
+        assert_eq!(claim["refuted"], 0);
+        assert_eq!(gate["status"], "insufficient_data");
+        // Unknown audit stays unknown.
+        let (claim, _) = verdict_for("hybrid-executed", None);
+        assert_eq!(claim["verdict"], "insufficient_data");
+        assert_eq!(claim["unknown"], 1);
+    }
+
+    #[test]
+    fn declared_relaxed_coverage_policy_may_accept_partial_coverage() {
+        // The suite may explicitly predeclare the coverage it accepts. With
+        // 0.5 thresholds the single measured pair carries the run, and the
+        // shortfall stays visible in the evidence record (coverage values
+        // and reasons are still reported).
+        let trials = vec![
+            trial(
+                "task-a",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-b",
+                "baseline",
+                "completed",
+                None,
+                Some(2000),
+                None,
+                Some("pass"),
+            ),
+            trial(
+                "task-a",
+                "candidate",
+                "error",
+                Some("adapter_failure"),
+                Some(50),
+                None,
+                None,
+            ),
+            trial(
+                "task-b",
+                "candidate",
+                "completed",
+                None,
+                Some(1000),
+                None,
+                Some("pass"),
+            ),
+        ];
+        let gates: Gates = serde_json::from_value(json!({
+            "baseline": "baseline",
+            "minCorrectness": 1.0,
+            "improvements": [{ "candidate": "candidate", "metric": "agentMs", "threshold": 0.10 }],
+            "evidence": {
+                "minTrialCoverage": 0.5,
+                "minGradedCoverage": 0.5,
+                "minPairedTaskFraction": 0.5
+            }
+        }))
+        .unwrap();
+        let slots = slots_for(&["task-a", "task-b"], &["baseline", "candidate"]);
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let evidence = evidence_summary(
+            &trials,
+            &base_tasks(),
+            &conditions(),
+            &gates,
+            &slots,
+            Some(&paired),
+        );
+        assert_eq!(evidence["policy"]["defaultsApplied"], false);
+        assert_eq!(evidence["byCondition"][1]["trialCoverage"], 0.5);
+        assert_eq!(evidence["byCondition"][1]["sufficient"], true);
+        let gate = quality_gate(
+            &trials,
+            &conditions(),
+            Some(&gates),
+            Some(&paired),
+            Some(&evidence),
+        );
+        assert_eq!(gate["status"], "pass");
     }
 
     #[test]
