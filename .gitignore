@@ -28,6 +28,7 @@ node_modules/
 dist/
 .turbo/
 apps/vscode/out/
+apps/vscode/*.vsix
 
 # Repoise generated data and operator-only local overrides (never commit)
 .repoise/

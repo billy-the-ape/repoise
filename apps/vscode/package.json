@@ -1,11 +1,15 @@
 {
-  "name": "@repoise/vscode",
+  "name": "repoise-vscode",
   "displayName": "Repoise",
   "description": "Inspect Repoise setup, freshness and coverage, run indexing, supervise an extension-owned watch and set up the Repoise stdio MCP server. A thin operations UI over the installed Repoise CLI (docs/vscode.md).",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "publisher": "repoise",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/billy-the-ape/repoise.git"
+  },
   "engines": {
     "vscode": "^1.103.0"
   },
@@ -83,11 +87,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "package": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p tsconfig.json && vsce package --no-dependencies",
     "test": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\" && tsc -p tsconfig.json && node scripts/copy-fixtures.cjs && node --test \"out/test/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "20.19.0",
     "@types/vscode": "1.103.0",
+    "@vscode/vsce": "4.1.0",
     "typescript": "5.9.3"
   }
 }

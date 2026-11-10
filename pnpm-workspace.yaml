@@ -11,3 +11,8 @@ packages:
   - . # root development package (private; never published)
   - "apps/*" # reserved for application packages (e.g. apps/vscode)
   - "packages/*" # reserved for library/adapter packages
+# Dev installs never run dependency lifecycle scripts (root .npmrc
+# ignore-scripts=true); @vscode/vsce-sign only matters for signing/publishing,
+# which this repository does not do. Explicitly deny its build script.
+allowBuilds:
+  "@vscode/vsce-sign": false

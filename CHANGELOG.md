@@ -57,10 +57,38 @@ package → PATH), shows per-worktree status/freshness/coverage, runs
 cooperative cancellation), and provides read-only MCP definitions
 (`repoise.mcp.refresh` opt-in) plus VS Code `vscode.lm` MCP registration
 where the host supports it. Untrusted workspaces never execute
-repository-local binaries. No marketplace identity, packaging, publication
-or bundled binary; benchmark UI remains proposed. See
+repository-local binaries. No marketplace identity, publication or bundled
+binary; local preview VSIX packaging exists (see the next section);
+benchmark UI remains proposed. See
 [docs/vscode.md](docs/vscode.md); the suite (fake-CLI event streams) runs
 in all three CI Check jobs.
+
+### VS Code extension local preview VSIX packaging
+
+`apps/vscode` can now be packaged as an installable local preview:
+`pnpm --filter repoise-vscode run package` performs a clean TypeScript
+build and runs the pinned `@vscode/vsce` dev dependency
+(`vsce package --no-dependencies`), producing
+`apps/vscode/repoise-vscode-<version>.vsix` with the deterministic manifest
+identity `repoise.repoise-vscode` at the `0.1.0-alpha.2` candidate version.
+`repoise` is a local preview publisher identity, not a registered
+Marketplace publisher, and nothing is published or bundled: the native CLI
+stays a separately installed prerequisite.
+
+- The package was renamed `@repoise/vscode` → `repoise-vscode` because VS
+  Code extension names must be unscoped (vsce rejects scoped names); the
+  extension version now tracks the alpha candidate scheme.
+- The extension gained a `README.md` and `LICENSE` so the archive carries
+  README/license metadata; `.vscodeignore` excludes tests, fixtures, source
+  maps, TypeScript sources, scripts and generated VSIX files. The packaged
+  archive contents were inspected and verified (23 files: manifest,
+  package.json, README, license and compiled modules only).
+- `pnpm-workspace.yaml` explicitly denies the `@vscode/vsce-sign` build
+  script (`allowBuilds`), keeping dev installs free of dependency lifecycle
+  scripts; the frozen lockfile install passes.
+- Documented in [docs/vscode.md](docs/vscode.md) (new Packaging section).
+  Packaged-artifact extension-host smoke, the install walkthrough and CI
+  packaging coverage remain open in the readiness plan.
 
 ### Optional benchmark companion distribution
 

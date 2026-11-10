@@ -3,8 +3,11 @@
 Current state: the `apps/vscode/` package is a thin VS Code operations UI over
 the installed Repoise CLI. It is a development build inside this repository;
 there is no marketplace identity, no publication, and no bundled native
-binary. The second slice (benchmark configuration/execution/report display)
-is proposed work — see the
+binary. A reproducible local preview VSIX can be built for install-and-test
+use (see [Packaging](#packaging-local-preview-vsix)); the extension-host
+smoke from the packaged artifact, the remote-host matrix and live client
+compatibility remain to be established. The second slice (benchmark
+configuration/execution/report display) is proposed work — see the
 [AP-07 plan](plans/agent-platform/07-vscode-extension.md).
 
 The extension never implements indexing, search, watch logic, retrieval or
@@ -82,7 +85,7 @@ arrays and renders the AP-02 machine contracts
 
 ```sh
 pnpm install
-pnpm --filter @repoise/vscode run test
+pnpm --filter repoise-vscode run test
 ```
 
 The suite compiles TypeScript, then runs `node --test` against a
@@ -105,11 +108,47 @@ Verified against the installed CLI: `capabilities --json`, `status --json`
 `watch --events` with SIGTERM cancellation all parse through the extension's
 stream/status parsers (checked November 3, 2026).
 
+## Packaging (local preview VSIX)
+
+```sh
+pnpm install --frozen-lockfile
+pnpm --filter repoise-vscode run package
+# produces apps/vscode/repoise-vscode-<version>.vsix
+code --install-extension apps/vscode/repoise-vscode-<version>.vsix
+```
+
+The `package` script does a clean TypeScript build first (`out/` is removed
+and rebuilt) and then runs the pinned `@vscode/vsce` dev dependency
+(`vsce package --no-dependencies`), so the archive always matches the
+current sources and never carries a dependency tree. The versioned artifact
+name `repoise-vscode-<version>.vsix` is deterministic from the manifest, and
+the VSIX manifest identity is `repoise.repoise-vscode` at the repository's
+current preview version (`0.1.0-alpha.2` in lockstep with the alpha.2
+candidate CLI). `repoise` is a local preview publisher identity, **not** a
+registered Marketplace publisher; these VSIX files are for local
+install-and-test use only and nothing is published.
+
+The packaged archive (verified by inspecting it after `pnpm run package`)
+contains the compiled runtime modules (`out/extension.js`, `out/core/`,
+`out/ui/`), the manifest, the license (`LICENSE.txt`) and the package
+README, and excludes tests, fixtures, source maps, TypeScript sources,
+scripts and `node_modules` via `.vscodeignore`. It never bundles or
+downloads a native CLI; install a capability-compatible alpha.2-or-newer
+`repoise` candidate separately (or point `repoise.cliPath` at one).
+
+Installing this VSIX into a real VS Code window and exercising activation,
+commands, status rendering and the watch supervisor from the packaged
+artifact has not been certified yet — that extension-host smoke is part of
+the same readiness lane and its results are recorded when measured.
+
 ## Deferred / not claimed
 
 - Benchmark configuration, execution, cancellation and report display
   (AP-07 second slice; depends on the AP-04/AP-05 contracts).
-- VSIX packaging, extension publisher/identity, remote-host matrix
-  (Remote SSH/WSL) and a live client/version MCP compatibility matrix.
+- Marketplace publisher registration and publication of the VSIX (local
+  preview packaging exists; see [Packaging](#packaging-local-preview-vsix)),
+  a live extension-host smoke from the packaged artifact, the remote-host
+  matrix (Remote SSH/WSL) and a live client/version MCP compatibility
+  matrix.
 - Cross-window ownership transport beyond the OS scope lock and the status
   owner marker; a service/daemon remains a separate decision.
