@@ -6,7 +6,10 @@ the Repoise stdio MCP server definition. It never implements indexing,
 search, watch logic or agent behavior — every operation shells out to the
 native CLI with argument arrays.
 
-Full documentation: [`docs/vscode.md`](../docs/vscode.md) in the repository.
+Full documentation: [`docs/vscode.md`](https://github.com/billy-the-ape/repoise/blob/main/docs/vscode.md)
+in the repository (the same guide file inside this checkout's `docs/`
+directory; an absolute link is used deliberately so the packaged README
+resolves correctly as well).
 
 ## Prerequisites
 

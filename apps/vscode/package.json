@@ -8,7 +8,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/billy-the-ape/repoise.git"
+    "url": "git+https://github.com/billy-the-ape/repoise.git",
+    "directory": "apps/vscode"
   },
   "engines": {
     "vscode": "^1.103.0"
