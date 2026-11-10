@@ -1350,22 +1350,24 @@ fn drain_bounded(pipe: impl Read + Send + 'static) -> Vec<u8> {
     kept
 }
 
-/// Force-kills an owned setup child and reaps it (best effort). The setup
-/// child the coordinator spawns (`repoise index`) does no forking — parsing
-/// and provider calls run in-process — so killing the process is sufficient
-/// (on Windows the recorded-tree `taskkill /T` is applied, matching the host
-/// bridge convention); no broad process-name kills.
+/// Force-kills an owned setup child and reaps it. The guaranteed kill is
+/// std's own (`Child::kill`: SIGKILL on Unix, TerminateProcess on Windows),
+/// which needs no helper binary — a minimal image without `kill`/procps or
+/// a denied `taskkill` can never turn the following `wait` into an
+/// unbounded block and silently defeat the setup deadline. On Windows the
+/// recorded-tree `taskkill /T` runs first as an extra step (matching the
+/// host bridge convention; std's kill only terminates the direct child).
+/// The setup child the coordinator spawns (`repoise index`) does no
+/// forking — parsing and provider calls run in-process — so no broad
+/// process-name kills are ever needed.
 fn force_kill_setup_child(child: &mut Child) {
-    let pid = child.id();
     if cfg!(windows) {
+        let pid = child.id();
         let _ = Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
-    } else {
-        let _ = Command::new("kill")
-            .args(["-KILL", &pid.to_string()])
-            .output();
     }
+    let _ = child.kill();
     let _ = child.wait();
 }
 
@@ -2350,6 +2352,9 @@ mod tests {
     #[test]
     fn setup_child_timeout_is_bounded_and_kills_the_child() {
         let mut child = spawn_setup_child(&mut stall_command()).expect("spawn");
+        // Read only by the Unix probe below; gating the binding keeps the
+        // Windows build warning-free under `-D warnings`.
+        #[cfg(not(windows))]
         let pid = child.id();
         let deadline = Instant::now() + Duration::from_millis(300);
         let started = Instant::now();
