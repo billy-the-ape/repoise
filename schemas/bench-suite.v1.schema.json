@@ -425,7 +425,7 @@
                   "kind": {
                     "type": "string",
                     "enum": ["search-used", "hybrid-executed"],
-                    "description": "search-used: the trial's Repoise MCP server recorded at least one search call. hybrid-executed: additionally every completed search reported the hybrid effective mode (requires the condition to declare searchMode hybrid)."
+                    "description": "search-used: the trial's Repoise MCP server recorded at least one search call. hybrid-executed: additionally every completed search reported the hybrid effective mode (requires the condition to declare searchMode hybrid); support requires a complete, clean audit stream (cleanShutdown true, malformedRecords 0) - a truncated or lossy stream leaves the claim unknown, never supported."
                   }
                 }
               }

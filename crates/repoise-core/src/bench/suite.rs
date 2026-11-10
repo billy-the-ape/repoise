@@ -85,10 +85,14 @@ pub const CHECK_TYPES: &[&str] = &["containsAny", "containsAll", "notContains"];
 pub const IMPROVEMENT_METRICS: &[&str] = &["agentMs", "inputTokens"];
 /// Execution claims an evidence policy can demand server-side audit proof
 /// for. `search-used` demands that the trial's Repoise MCP server recorded
-/// at least one search tool call; `hybrid-executed` additionally demands
-/// that every completed search actually reported the hybrid effective mode
-/// (a degraded or lexical fallback refutes the claim, and missing or
-/// truncated audit evidence never supports it).
+/// at least one search tool call (a counted search is positive evidence,
+/// so a partial stream still proves use); `hybrid-executed` additionally
+/// demands that every completed search actually reported the hybrid
+/// effective mode (a degraded or lexical fallback refutes the claim, even
+/// in a partial stream) and support requires a complete, clean audit
+/// stream: missing, truncated (`cleanShutdown: false`) or lossy
+/// (`malformedRecords > 0`) evidence leaves the claim unknown, never
+/// supported — the lost tail could have held the refuting search.
 pub const CLAIM_KINDS: &[&str] = &["search-used", "hybrid-executed"];
 
 /// One operator-declared benchmark experiment.

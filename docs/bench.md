@@ -541,14 +541,20 @@ evidence verdict only decides whether a `pass` may stand:
   `search-used` requires the trial's MCP server to record at least one
   completed or failed search; `hybrid-executed` additionally requires
   every completed search to report the hybrid effective mode with no
-  degradation — an observed lexical fallback refutes it. `observed` audit
-  with no searches refutes a `search-used` claim (a real workflow
-  outcome), but cannot by itself refute the paired comparison: no-tool
-  trials remain in the primary all-assigned-trials comparison, and no
-  observed-use subset is ever reported as primary. Unknown audit evidence
-  (`incomplete`, `unavailable`, or no audit at all) stays unknown: it
-  keeps the claim `insufficient_data` and the gate from passing, and is
-  never counted as zero tool use.
+  degradation — an observed lexical fallback refutes it, and support
+  additionally requires a complete, clean audit stream: all-hybrid counts
+  observed under an unclean shutdown (`cleanShutdown: false`) or with
+  malformed records discarded (`malformedRecords > 0`) stay unknown (the
+  lost tail could have held the refuting search), while a fallback
+  actually recorded in a partial stream still refutes. `not_observed` —
+  a complete audit with no search call — refutes a `search-used` claim
+  (a real workflow outcome), but cannot by itself refute the paired
+  comparison: no-tool trials remain in the primary all-assigned-trials
+  comparison, and no observed-use subset is ever reported as primary.
+  Unknown audit evidence (`incomplete`, `unavailable`, a truncated or
+  lossy `observed` stream, or no audit at all) stays unknown: it keeps
+  the claim `insufficient_data` and the gate from passing, and is never
+  counted as zero tool use.
 
 ## Artifacts
 

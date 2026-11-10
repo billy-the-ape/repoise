@@ -670,6 +670,16 @@ fn join_reasons(record: &Value) -> String {
 /// for `hybrid-executed`), `not_proven` (a clean observation that simply
 /// does not prove the claim) or `unknown` (missing or truncated evidence —
 /// never zero use, never support, never a refutation).
+///
+/// A counted search is positive evidence of use, so `search-used` support
+/// does not depend on stream completeness. A `hybrid-executed` claim is
+/// different: the absence of fallback is what the claim asserts, and a
+/// truncated (no clean server end) or lossy (malformed records discarded)
+/// stream could have lost exactly the refuting record — so hybrid support
+/// requires a complete, clean stream (`cleanShutdown: true` and
+/// `malformedRecords: 0`); otherwise it is unknown. Observed refuting
+/// evidence (a fallback or degraded search) counts even in a partial
+/// stream, because it was actually recorded.
 fn classify_claim_trial(kind: &str, audit: Option<&Value>) -> (&'static str, String) {
     let Some(audit) = audit else {
         return (
@@ -710,13 +720,28 @@ fn classify_claim_trial(kind: &str, audit: Option<&Value>) -> (&'static str, Str
                         ),
                     )
                 } else if hybrid > 0 && hybrid == succeeded {
-                    (
-                        "supported",
-                        format!(
-                            "all {hybrid} completed search(es) reported the hybrid effective \
-                             mode with no degradation"
-                        ),
-                    )
+                    let clean = audit["cleanShutdown"].as_bool() == Some(true);
+                    let malformed = audit_counter(audit, "/malformedRecords");
+                    if clean && malformed == 0 {
+                        (
+                            "supported",
+                            format!(
+                                "all {hybrid} completed search(es) reported the hybrid effective \
+                                 mode with no degradation on a complete, clean audit stream"
+                            ),
+                        )
+                    } else {
+                        (
+                            "unknown",
+                            format!(
+                                "all {hybrid} recorded search(es) reported the hybrid mode, but \
+                                 the audit stream is not complete (clean end: {clean}, malformed \
+                                 records: {malformed}): the lost tail could have held a fallback \
+                                 or degraded search — partial evidence never supports a \
+                                 hybrid-executed claim"
+                            ),
+                        )
+                    }
                 } else if succeeded == 0 {
                     (
                         "not_proven",
@@ -2907,11 +2932,14 @@ mod tests {
         let hybrid_audit = |effective: Value, degraded: u64, succeeded: u64| {
             json!({
                 "status": "observed",
+                "cleanShutdown": true,
+                "malformedRecords": 0,
                 "searches": { "attempted": succeeded, "succeeded": succeeded, "failed": 0,
                               "degraded": degraded, "effective": effective }
             })
         };
-        // All searches observably hybrid: supported.
+        // All searches observably hybrid on a complete, clean stream:
+        // supported.
         let (claim, gate) = verdict_for(
             "hybrid-executed",
             Some(hybrid_audit(json!({ "hybrid": 2 }), 0, 2)),
@@ -2946,6 +2974,65 @@ mod tests {
         let (claim, _) = verdict_for("hybrid-executed", None);
         assert_eq!(claim["verdict"], "insufficient_data");
         assert_eq!(claim["unknown"], 1);
+    }
+
+    #[test]
+    fn hybrid_support_requires_a_complete_clean_stream_refutation_survives_truncation() {
+        // Regression: the audit summarizer reports `status: "observed"` as
+        // soon as any search was counted - even after a watchdog kill or
+        // with malformed records discarded (cleanShutdown false /
+        // malformedRecords > 0). All-hybrid counts from such a stream are
+        // unknown, never support: the lost tail could have held exactly
+        // the fallback search the claim denies.
+        let truncated = |clean: bool, malformed: u64| {
+            json!({
+                "status": "observed",
+                "cleanShutdown": clean,
+                "malformedRecords": malformed,
+                "searches": { "attempted": 2, "succeeded": 2, "failed": 0, "degraded": 0,
+                              "effective": { "hybrid": 2 } }
+            })
+        };
+        // Truncated (no clean server end) though every recorded search is hybrid.
+        let (claim, gate) = verdict_for("hybrid-executed", Some(truncated(false, 0)));
+        assert_eq!(claim["verdict"], "insufficient_data");
+        assert_eq!(claim["unknown"], 1);
+        assert_eq!(claim["supported"], 0);
+        assert_eq!(gate["status"], "insufficient_data");
+        // Complete but lossy (malformed records discarded): same unknown.
+        let (claim, gate) = verdict_for("hybrid-executed", Some(truncated(true, 1)));
+        assert_eq!(claim["verdict"], "insufficient_data");
+        assert_eq!(claim["unknown"], 1);
+        assert_eq!(gate["status"], "insufficient_data");
+        // A refuting fallback actually recorded inside a partial stream
+        // still refutes: what was seen is real counter-evidence.
+        let (claim, gate) = verdict_for(
+            "hybrid-executed",
+            Some(json!({
+                "status": "observed",
+                "cleanShutdown": false,
+                "malformedRecords": 0,
+                "searches": { "attempted": 2, "succeeded": 2, "failed": 0, "degraded": 0,
+                              "effective": { "hybrid": 1, "lexical": 1 } }
+            })),
+        );
+        assert_eq!(claim["verdict"], "not_supported");
+        assert_eq!(claim["refuted"], 1);
+        assert_eq!(gate["status"], "fail");
+        // search-used support is unaffected: one counted search proves use
+        // even on a partial stream (the positive record was seen).
+        let (claim, gate) = verdict_for(
+            "search-used",
+            Some(json!({
+                "status": "observed",
+                "cleanShutdown": false,
+                "malformedRecords": 2,
+                "searches": { "attempted": 1, "succeeded": 1, "failed": 0, "degraded": 0,
+                              "effective": { "lexical": 1 } }
+            })),
+        );
+        assert_eq!(claim["verdict"], "supported");
+        assert_eq!(gate["status"], "pass");
     }
 
     #[test]

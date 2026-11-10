@@ -73,18 +73,20 @@ descriptive statistics are untouched.
   when evidence is short or unknown — never converting a missing
   outcome into a wrong answer, a zero or a failure.
 - Claims consume the trial's MCP audit: observed searches support
-  `search-used`; observed no-search refutes it (a real workflow outcome —
-  no-tool trials stay in the primary all-assigned-trials comparison, no
-  observed-use subset is reported as primary); `hybrid-executed` is
-  refuted by an observed lexical fallback or degraded search; missing,
-  truncated or unreadable audit stays unknown and keeps the claim from
-  passing. Retrieval-control tasks (category `other`) never carry or
-  refute a claim.
+  `search-used`; `not_observed` (a complete audit with no search call)
+  refutes it (a real workflow outcome — no-tool trials stay in the
+  primary all-assigned-trials comparison, no observed-use subset is
+  reported as primary); `hybrid-executed` is refuted by an observed
+  lexical fallback or degraded search and is supported only from a
+  complete, clean audit stream — all-hybrid counts from a truncated
+  (`cleanShutdown: false`) or lossy (`malformedRecords > 0`) stream stay
+  unknown, never support. Missing, truncated or unreadable audit stays
+  unknown and keeps the claim from passing. Retrieval-control tasks
+  (category `other`) never carry or refute a claim.
 - `bench report` rebuilds reproduce the same sufficiency and gate
   decisions from the frozen manifest (verified by a rebuild regression
   test); run and rebuild verdicts match.
 
-### VS Code operations extension (AP-07 first slice, development build)
 ### VS Code operations extension (AP-07 first slice, development build)
 
 New `apps/vscode/` workspace package: a thin VS Code extension that
