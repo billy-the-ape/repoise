@@ -247,7 +247,12 @@ orchestrate the same steps; the adapter packages' `test` scripts
 (`node --test test/*.test.mjs`) join the root `test` task through Turbo, so
 CI (`pnpm exec turbo run test` in the Check jobs) runs them too. The native
 bridge tasks run single-threaded per platform with Turbo output caching
-disabled. The offline lexical evaluation
+disabled. The extension package also exposes a `package` script
+(`pnpm --filter repoise-vscode run package`): a clean build plus the pinned
+`@vscode/vsce` dev dependency producing a local preview VSIX (see the
+[VS Code guide](vscode.md)); its `@vscode/vsce-sign` build script is
+explicitly denied in `pnpm-workspace.yaml` because dev installs run no
+dependency lifecycle scripts. The offline lexical evaluation
 harness runs separately: cargo build --package repoise-cli, then
 node scripts/eval/harness.mjs (results in the git-ignored eval-results/
 directory); see the [eval runbook](../scripts/eval/RUNBOOK.md).

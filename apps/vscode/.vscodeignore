@@ -1,12 +1,14 @@
-# Never bundle source, tests, fixtures or the monorepo.
+# Never bundle source, tests, fixtures or the monorepo. vsce anchors patterns
+# at the package root, so multi-level excludes need an explicit `**`.
 .vscode/**
 .gitignore
 src/**
+**/*.ts
 node_modules/**
 out/test/**
 scripts/**
 tsconfig.json
-*.ts
-*.map
-*.ts.map
+**/*.map
 .vscode-test/**
+dist/**
+**/*.vsix
