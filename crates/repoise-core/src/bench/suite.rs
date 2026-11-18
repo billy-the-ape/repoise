@@ -274,7 +274,7 @@ pub struct Gates {
     pub evidence: Option<EvidencePolicy>,
 }
 
-/// Evidence-sufficiency policy (readiness plan finding 3). The quality
+/// Evidence-sufficiency policy. The quality
 /// gate's `pass` is a claim-bearing verdict: it may not stand on a
 /// surviving subset of the frozen task/condition/repetition plan. Every
 /// coverage fraction here divides by the frozen plan (the denominator can
