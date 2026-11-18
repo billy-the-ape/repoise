@@ -274,13 +274,13 @@ pub struct Gates {
     pub evidence: Option<EvidencePolicy>,
 }
 
-/// Evidence-sufficiency policy. The quality
-/// gate's `pass` is a claim-bearing verdict: it may not stand on a
-/// surviving subset of the frozen task/condition/repetition plan. Every
-/// coverage fraction here divides by the frozen plan (the denominator can
-/// never shrink because records are missing), and a shortfall makes the
-/// gate `insufficient_data` with precise reasons — never a pass, and never
-/// a conversion of missing evidence into a wrong answer or a zero.
+/// Evidence-sufficiency policy. The quality gate's `pass` is a claim-bearing
+/// verdict: it may not stand on a surviving subset of the frozen
+/// task/condition/repetition plan. Every coverage fraction here divides by the
+/// frozen plan (the denominator can never shrink because records are missing),
+/// and a shortfall makes the gate `insufficient_data` with precise reasons —
+/// never a pass, and never a conversion of missing evidence into a wrong
+/// answer or a zero.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EvidencePolicy {
