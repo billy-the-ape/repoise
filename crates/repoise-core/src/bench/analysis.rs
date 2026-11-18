@@ -680,7 +680,23 @@ fn join_reasons(record: &Value) -> String {
 /// `malformedRecords: 0`); otherwise it is unknown. Observed refuting
 /// evidence (a fallback or degraded search) counts even in a partial
 /// stream, because it was actually recorded.
-fn classify_claim_trial(kind: &str, audit: Option<&Value>) -> (&'static str, String) {
+///
+/// `agent_ran` says whether this trial actually ran its agent phase
+/// (`completed`, or a censored timeout), and `trial_status` is its recorded
+/// status for the report text. `agent_ran` gates only the refutation
+/// inferred from an *absence* of searches: the coordinator summarizes the
+/// audit sink for every repoise trial, so a trial that died in setup or was
+/// cancelled before the first search still yields a clean `not_observed`
+/// audit with zero searches. That is a missing outcome, not observed
+/// non-use, so it classifies as `unknown` and can never turn the claim
+/// check into a `failed`. A search that was actually recorded refutes or
+/// supports regardless of how the trial later ended.
+fn classify_claim_trial(
+    kind: &str,
+    audit: Option<&Value>,
+    agent_ran: bool,
+    trial_status: &str,
+) -> (&'static str, String) {
     let Some(audit) = audit else {
         return (
             "unknown",
@@ -777,7 +793,22 @@ fn classify_claim_trial(kind: &str, audit: Option<&Value>) -> (&'static str, Str
             }
         }
         Some("not_observed") => {
-            if kind == "hybrid-executed" {
+            if !agent_ran {
+                // The coordinator summarizes the sink for every repoise
+                // trial, so a trial that errored, failed on infrastructure
+                // or was cancelled before the first search lands here with
+                // a clean zero-search audit. That is a missing outcome: it
+                // proves nothing about whether the agent would have used
+                // the tool, so it never refutes and never counts as use.
+                (
+                    "unknown",
+                    format!(
+                        "the audit stream is clean but recorded no search call, and the trial \
+                         never completed its agent phase (status '{trial_status}'): a missing \
+                         outcome stays unknown, never observed non-use"
+                    ),
+                )
+            } else if kind == "hybrid-executed" {
                 (
                     "not_proven",
                     "a complete audit stream recorded no search call: a real offered-tool \
@@ -836,9 +867,12 @@ fn classify_claim_trial(kind: &str, audit: Option<&Value>) -> (&'static str, Str
 /// - predeclared execution claims (`gates.evidence.claims`) are evaluated
 ///   over attempted trials of retrieval-relevant tasks only (tasks
 ///   explicitly designated as retrieval controls — category `other` — and
-///   baseline conditions are excluded): observed fallback or non-use
-///   refutes a claim, missing or truncated evidence stays unknown and
-///   keeps the claim unproven.
+///   baseline conditions are excluded): an observed fallback, or no search
+///   on a trial that actually ran its agent phase, refutes a claim; a
+///   missing outcome (an errored, infrastructure-failed or cancelled trial,
+///   whose zero-search audit the coordinator still summarizes) stays
+///   unknown and never becomes a `failed` check, and missing or truncated
+///   evidence stays unknown and keeps the claim unproven.
 pub fn evidence_summary(
     trials: &[TrialData],
     tasks: &[TaskProvenance],
@@ -1114,7 +1148,12 @@ pub fn evidence_summary(
                     continue;
                 }
                 attempted += 1;
-                let (classification, note) = classify_claim_trial(&claim.kind, audit_of(trial));
+                // Only a trial that actually reached its agent phase can
+                // speak for or against a retrieval claim through an absent
+                // audit; a recorded search counts whatever the status.
+                let agent_ran = status == "completed" || is_timed_out(&trial.trial);
+                let (classification, note) =
+                    classify_claim_trial(&claim.kind, audit_of(trial), agent_ran, status);
                 match classification {
                     "supported" => supported += 1,
                     "refuted" => refuted += 1,
@@ -1585,20 +1624,16 @@ pub fn render_markdown(report: &Value) -> String {
              wrong answer, a zero or a deleted trial.\n",
         );
         let policy = &evidence["policy"];
+        let frac = |key: &str| {
+            policy[key]
+                .as_f64()
+                .map_or_else(|| "n/a".to_string(), |v| format!("{v:.3}"))
+        };
         md.push_str(&format!(
             "- Policy: trial coverage >= {}, graded coverage >= {}, paired task fraction >= {}{}.\n\n",
-            policy["minTrialCoverage"]
-                .as_f64()
-                .map(|v| format!("{v:.3}"))
-                .unwrap_or("n/a".into()),
-            policy["minGradedCoverage"]
-                .as_f64()
-                .map(|v| format!("{v:.3}"))
-                .unwrap_or("n/a".into()),
-            policy["minPairedTaskFraction"]
-                .as_f64()
-                .map(|v| format!("{v:.3}"))
-                .unwrap_or("n/a".into()),
+            frac("minTrialCoverage"),
+            frac("minGradedCoverage"),
+            frac("minPairedTaskFraction"),
             if policy["defaultsApplied"].as_bool() == Some(true) {
                 " (the suite declared no gates.evidence: conservative defaults applied)"
             } else {
@@ -3111,6 +3146,145 @@ mod tests {
             Some(&evidence),
         );
         assert_eq!(gate["status"], "pass");
+    }
+
+    #[test]
+    fn a_dead_trial_cannot_refute_a_claim_after_a_coverage_relaxation() {
+        // The coordinator summarizes the audit sink for every repoise trial,
+        // so a trial that died or was cancelled before its first search
+        // carries a clean `not_observed` audit with zero searches. Relaxing
+        // the coverage minimums must not turn that missing outcome into
+        // observed non-use: the claim stays `insufficient_data` and the gate
+        // is never a `fail` on the strength of a trial that never ran.
+        for status in ["error", "infra_error", "cancelled"] {
+            let mut trials = vec![
+                trial(
+                    "task-a",
+                    "baseline",
+                    "completed",
+                    None,
+                    Some(2000),
+                    None,
+                    Some("pass"),
+                ),
+                trial(
+                    "task-b",
+                    "baseline",
+                    "completed",
+                    None,
+                    Some(2000),
+                    None,
+                    Some("pass"),
+                ),
+                trial(
+                    "task-a",
+                    "candidate",
+                    status,
+                    Some("adapter_failure"),
+                    Some(50),
+                    None,
+                    None,
+                ),
+                trial(
+                    "task-b",
+                    "candidate",
+                    "completed",
+                    None,
+                    Some(1000),
+                    None,
+                    Some("pass"),
+                ),
+            ];
+            // The dead trial's server shut down cleanly with no search call.
+            trials[2].trial["audit"] = json!({
+                "status": "not_observed",
+                "cleanShutdown": true,
+                "searches": { "succeeded": 0, "failed": 0, "degraded": 0, "effective": {} },
+                "malformedRecords": 0
+            });
+            let gates: Gates = serde_json::from_value(json!({
+                "baseline": "baseline",
+                "minCorrectness": 1.0,
+                "improvements": [{ "candidate": "candidate", "metric": "agentMs", "threshold": 0.10 }],
+                "evidence": {
+                    "minTrialCoverage": 0.5,
+                    "minGradedCoverage": 0.5,
+                    "minPairedTaskFraction": 0.5,
+                    "claims": [{ "condition": "candidate", "kind": "search-used" }]
+                }
+            }))
+            .unwrap();
+            let slots = slots_for(&["task-a", "task-b"], &["baseline", "candidate"]);
+            let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+            let evidence = evidence_summary(
+                &trials,
+                &base_tasks(),
+                &conditions(),
+                &gates,
+                &slots,
+                Some(&paired),
+            );
+            let claim = &evidence["claims"][0];
+            assert_eq!(claim["refuted"], 0, "{status} trial must not refute");
+            assert_eq!(claim["unknown"], 1, "{status} trial stays unknown");
+            // Only task-a is retrieval-relevant (task-b is a category
+            // `other` control), so the dead trial is the whole claim set.
+            assert_eq!(claim["attempted"], 1, "{status}");
+            assert_eq!(claim["controlTaskTrials"], 1, "{status}");
+            assert_eq!(claim["verdict"], "insufficient_data");
+            let note = claim["trialEvidence"][0]["note"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert!(
+                note.contains(&format!("status '{status}'")) && note.contains("never observed"),
+                "the unknown note must name the dead status: {note}"
+            );
+            let gate = quality_gate(
+                &trials,
+                &conditions(),
+                Some(&gates),
+                Some(&paired),
+                Some(&evidence),
+            );
+            let claim_check = gate["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|check| check["name"] == "claim:search-used:candidate")
+                .unwrap();
+            assert_eq!(claim_check["status"], "insufficient_data", "{status}");
+            assert_eq!(gate["status"], "insufficient_data", "{status}");
+        }
+    }
+
+    #[test]
+    fn a_censored_timeout_still_refutes_on_a_clean_no_search_audit() {
+        // A trial the wall clock cut off did run its agent phase with the
+        // tool offered: its clean no-search audit stays a real workflow
+        // outcome and still refutes, unlike a dead or cancelled trial.
+        let mut trials = covered_run_with_audit(None);
+        trials[2].trial["status"] = json!("error");
+        trials[2].trial["reason"] = json!("wall_clock_exceeded");
+        trials[2].trial["audit"] = json!({
+            "status": "not_observed",
+            "cleanShutdown": true,
+            "searches": { "succeeded": 0, "failed": 0, "degraded": 0, "effective": {} },
+            "malformedRecords": 0
+        });
+        let gates = claim_gates("search-used");
+        let slots = slots_for(&["task-a", "task-b"], &["baseline", "candidate"]);
+        let paired = paired_analysis(&trials, &base_tasks(), &gates, &report_spec());
+        let evidence = evidence_summary(
+            &trials,
+            &base_tasks(),
+            &conditions(),
+            &gates,
+            &slots,
+            Some(&paired),
+        );
+        assert_eq!(evidence["claims"][0]["refuted"], 1);
+        assert_eq!(evidence["claims"][0]["verdict"], "not_supported");
     }
 
     #[test]

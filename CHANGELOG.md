@@ -74,16 +74,20 @@ descriptive statistics are untouched.
   outcome into a wrong answer, a zero or a failure.
 - Claims consume the trial's MCP audit: observed searches support
   `search-used`; `not_observed` (a complete audit with no search call)
-  refutes it (a real workflow outcome — no-tool trials stay in the
-  primary all-assigned-trials comparison, no observed-use subset is
-  reported as primary); `hybrid-executed` is refuted by an observed
-  lexical fallback or degraded search and is supported only from a
-  complete, clean audit stream — all-hybrid counts from a truncated
+  refutes it only on a trial that actually ran its agent phase
+  (`completed`, or a censored timeout — a real workflow outcome, and
+  no-tool trials stay in the primary all-assigned-trials comparison, with
+  no observed-use subset reported as primary); `hybrid-executed` is refuted
+  by an observed lexical fallback or degraded search and is supported only
+  from a complete, clean audit stream — all-hybrid counts from a truncated
   (`cleanShutdown: false`) or lossy (`malformedRecords > 0`) stream stay
   unknown, never support. Missing or unreadable audit stays unknown for
   either claim and keeps it from passing; a truncated or lossy stream
   additionally blocks `hybrid-executed` support only (a counted search is
-  positive proof for `search-used`). Retrieval-control tasks
+  positive proof for `search-used`). A trial that errored, failed on
+  infrastructure or was cancelled keeps its clean zero-search audit as
+  `unknown`, so relaxing the coverage minimums can never turn that missing
+  outcome into a failed claim check. Retrieval-control tasks
   (category `other`) never carry or refute a claim.
 - `bench report` rebuilds reproduce the same sufficiency and gate
   decisions from the frozen manifest (verified by a rebuild regression

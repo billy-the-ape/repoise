@@ -548,9 +548,16 @@ evidence verdict only decides whether a `pass` may stand:
   lost tail could have held the refuting search), while a fallback
   actually recorded in a partial stream still refutes. `not_observed` —
   a complete audit with no search call — refutes a `search-used` claim
-  (a real workflow outcome), but cannot by itself refute the paired
-  comparison: no-tool trials remain in the primary all-assigned-trials
-  comparison, and no observed-use subset is ever reported as primary.
+  only when the trial actually ran its agent phase (`completed`, or a
+  censored timeout): the coordinator summarizes the sink for every repoise
+  trial, so a trial that errored, failed on infrastructure or was
+  cancelled before its first search also shows a clean zero-search audit,
+  and that missing outcome stays `unknown` — whatever the coverage
+  thresholds allow, it never becomes a `failed` claim check. A recorded
+  search supports or refutes regardless of how the trial later ended.
+  `not_observed` cannot by itself refute the paired comparison either:
+  no-tool trials stay in the primary all-assigned-trials comparison, and
+  no observed-use subset is ever reported as primary.
   Unknown audit evidence (`incomplete`, `unavailable`, no audit at all, or
   a truncated or lossy `observed` stream for a `hybrid-executed` claim)
   stays unknown: it keeps the claim `insufficient_data` and the gate from
