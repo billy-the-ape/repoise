@@ -80,8 +80,10 @@ descriptive statistics are untouched.
   lexical fallback or degraded search and is supported only from a
   complete, clean audit stream — all-hybrid counts from a truncated
   (`cleanShutdown: false`) or lossy (`malformedRecords > 0`) stream stay
-  unknown, never support. Missing, truncated or unreadable audit stays
-  unknown and keeps the claim from passing. Retrieval-control tasks
+  unknown, never support. Missing or unreadable audit stays unknown for
+  either claim and keeps it from passing; a truncated or lossy stream
+  additionally blocks `hybrid-executed` support only (a counted search is
+  positive proof for `search-used`). Retrieval-control tasks
   (category `other`) never carry or refute a claim.
 - `bench report` rebuilds reproduce the same sufficiency and gate
   decisions from the frozen manifest (verified by a rebuild regression

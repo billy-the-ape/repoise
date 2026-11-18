@@ -551,10 +551,13 @@ evidence verdict only decides whether a `pass` may stand:
   (a real workflow outcome), but cannot by itself refute the paired
   comparison: no-tool trials remain in the primary all-assigned-trials
   comparison, and no observed-use subset is ever reported as primary.
-  Unknown audit evidence (`incomplete`, `unavailable`, a truncated or
-  lossy `observed` stream, or no audit at all) stays unknown: it keeps
-  the claim `insufficient_data` and the gate from passing, and is never
-  counted as zero tool use.
+  Unknown audit evidence (`incomplete`, `unavailable`, no audit at all, or
+  a truncated or lossy `observed` stream for a `hybrid-executed` claim)
+  stays unknown: it keeps the claim `insufficient_data` and the gate from
+  passing, and is never counted as zero tool use. The stream-completeness
+  rule is scoped to `hybrid-executed`: a `search-used` claim is supported
+  by any `observed` stream that counted a search, because that counted
+  search is positive evidence the server itself recorded.
 
 ## Artifacts
 

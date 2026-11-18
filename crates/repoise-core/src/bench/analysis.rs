@@ -1224,7 +1224,7 @@ pub fn evidence_summary(
 /// `claim:<kind>:<condition>`), so a claim-bearing `pass` can never stand
 /// on insufficient evidence: unmet coverage and unproven claims are
 /// `insufficient_data`, observed fallback or no-use refutes the claim
-/// (`failed`). The quality metrics above are untouched either way.
+/// (`failed`). The measured quality checks are unchanged either way.
 /// Overall status: `insufficient_data` when no check was declared or any
 /// check could not be evaluated, `fail` when any evaluated check fails, and
 /// `pass` only when every declared check was evaluated and passed.

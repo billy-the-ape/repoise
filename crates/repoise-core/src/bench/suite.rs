@@ -319,7 +319,6 @@ pub struct ExecutionClaim {
     /// Condition id the claim attaches to (never the baseline).
     pub condition: String,
     /// `search-used` or `hybrid-executed` (see [`CLAIM_KINDS`]).
-    #[serde(rename = "kind")]
     pub kind: String,
 }
 
